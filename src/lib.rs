@@ -1,13 +1,26 @@
+use app::App;
 use panic_handler::initialize_panic_handler;
-use tracing::{info, level_filters::LevelFilter, Level};
+use tracing::{error, info, level_filters::LevelFilter, Level};
 use tracing_appender::non_blocking::WorkerGuard;
 
+mod app;
 mod panic_handler;
+mod settings;
 mod tui;
 
+/// Wrapper runner so any fatal errors get properly logged.
 pub fn run() -> color_eyre::Result<()> {
     initialize_panic_handler()?;
     let _log_guard = initialize_logging(Level::TRACE)?;
+    if let Err(e) = run_inner() {
+        error!("Fatal error: {e}");
+    }
+    ratatui::restore();
+    Ok(())
+}
+
+fn run_inner() -> color_eyre::Result<()> {
+    // Err(color_eyre::Report::msg("AAA"))?;
     tracing::info!("meow");
     // None::<u8>.unwrap();
     let ports = serialport::available_ports().expect("No ports found!");
@@ -15,14 +28,15 @@ pub fn run() -> color_eyre::Result<()> {
         println!("{p:#?}");
         info!("{p:?}");
     }
-
-    Ok(())
+    let terminal = ratatui::init();
+    let result = App::new().run(terminal);
+    result
 }
 
 pub fn initialize_logging(max_level: Level) -> color_eyre::Result<WorkerGuard> {
     use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
     // use tracing::info;
-    use tracing_subscriber::{filter, prelude::*};
+    use tracing_subscriber::prelude::*;
     use tracing_subscriber::{
         fmt::time::ChronoLocal, layer::SubscriberExt, util::SubscriberInitExt,
     };
