@@ -11,7 +11,7 @@ pub fn initialize_panic_handler() -> Result<()> {
         .into_hooks();
     eyre_hook.install()?;
     std::panic::set_hook(Box::new(move |panic_info| {
-        ratatui::restore();
+        _ = ratatui::restore();
 
         let msg = format!("{}", panic_hook.panic_report(panic_info));
         #[cfg(not(debug_assertions))]

@@ -1,5 +1,9 @@
+use std::sync::mpsc;
+
 use app::App;
+use color_eyre::eyre::Context;
 use panic_handler::initialize_panic_handler;
+use ratatui::crossterm::{self, terminal};
 use tracing::{error, info, level_filters::LevelFilter, Level};
 use tracing_appender::non_blocking::WorkerGuard;
 
@@ -12,24 +16,44 @@ mod tui;
 pub fn run() -> color_eyre::Result<()> {
     initialize_panic_handler()?;
     let _log_guard = initialize_logging(Level::TRACE)?;
-    if let Err(e) = run_inner() {
+    let result = run_inner();
+    if let Err(e) = &result {
         error!("Fatal error: {e}");
     }
+
     ratatui::restore();
-    Ok(())
+    result
 }
 
 fn run_inner() -> color_eyre::Result<()> {
     // Err(color_eyre::Report::msg("AAA"))?;
-    tracing::info!("meow");
     // None::<u8>.unwrap();
-    let ports = serialport::available_ports().expect("No ports found!");
-    for p in ports {
-        println!("{p:#?}");
-        info!("{p:?}");
-    }
+
+    let (tx, rx) = mpsc::channel::<app::Event>();
+
+    let crossterm_events = std::thread::spawn(move || loop {
+        use crossterm::event::Event;
+        use crossterm::event::KeyEventKind;
+        match crossterm::event::read().unwrap() {
+            Event::Resize(_, _) => tx.send(app::Event::Resize).unwrap(),
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                tx.send(app::Event::KeyPress(key)).unwrap();
+            }
+            _ => (),
+        };
+    });
+
+    let ports = serialport::available_ports().wrap_err("No ports found!")?;
+    // let mut tui = tui::Tui::new(rx, ports);
+
+    tracing::info!("meow");
+    // for p in ports {
+    //     println!("{p:#?}");
+    //     info!("{p:?}");
+    // }
     let terminal = ratatui::init();
-    let result = App::new().run(terminal);
+    let result = App::new(rx, ports).run(terminal);
+
     result
 }
 
