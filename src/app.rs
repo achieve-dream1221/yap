@@ -10,6 +10,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use serialport::{SerialPortInfo, SerialPortType};
+use tracing::info;
 
 pub enum Event {
     Resize,
@@ -17,7 +18,7 @@ pub enum Event {
     Quit,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub enum Menu {
     #[default]
     PortSelection,
@@ -29,6 +30,12 @@ pub enum RunningState {
     Running,
     Finished,
 }
+
+// 0 is for a custom baud rate
+const COMMON_BAUD: &[u32] = &[
+    4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 0,
+];
+const DEFAULT_BAUD_INDEX: usize = 5;
 
 // Maybe have the buffer in the TUI struct?
 
@@ -75,15 +82,30 @@ impl App {
             },
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),
+            KeyCode::Enter => self.enter_pressed(),
             _ => (),
         }
     }
+    // consider making these some kind of trait method?
+    // for the different menus and selections
+    // not sure, things are gonna get interesting with the key presses
     fn scroll_up(&mut self) {
         self.table_state.scroll_up_by(1);
     }
     fn scroll_down(&mut self) {
         // self.table_state.select(Some(0));
         self.table_state.scroll_down_by(1);
+    }
+    fn enter_pressed(&mut self) {
+        match self.menu {
+            Menu::PortSelection => {
+                let selected = self.ports.get(self.table_state.selected().unwrap_or(0));
+                if let Some(info) = selected {
+                    info!("Port {}", info.port_name);
+                }
+                // connect to port
+            }
+        }
     }
     pub fn draw(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
         terminal.draw(|frame| self.render_app(frame))?;
