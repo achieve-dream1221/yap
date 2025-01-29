@@ -1,14 +1,15 @@
 use std::sync::mpsc::Receiver;
 
-use color_eyre::eyre::Result;
+use color_eyre::{eyre::Result, owo_colors::OwoColorize};
 use ratatui::{
-    crossterm::event::{KeyCode, KeyEvent},
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::{Constraint, Layout, Rect},
     prelude::Backend,
     style::{Style, Stylize},
     widgets::{Block, Row, Table, TableState, Widget},
     Frame, Terminal,
 };
+use ratatui_macros::{horizontal, line, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
 use tracing::info;
 
@@ -22,6 +23,7 @@ pub enum Event {
 pub enum Menu {
     #[default]
     PortSelection,
+    Terminal,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -48,12 +50,12 @@ pub struct App {
 }
 
 impl App {
-    pub const fn new(rx: Receiver<Event>, ports: Vec<SerialPortInfo>) -> Self {
+    pub fn new(rx: Receiver<Event>, ports: Vec<SerialPortInfo>) -> Self {
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection,
             rx,
-            table_state: TableState::new(),
+            table_state: TableState::new().with_selected(Some(0)),
             ports,
         }
     }
@@ -77,7 +79,11 @@ impl App {
     fn handle_key_press(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char(char) => match char {
-                'q' => self.state = RunningState::Finished,
+                'q' | 'Q' => self.state = RunningState::Finished,
+                'c' | 'C' if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // TODO Quit prompt when connected?
+                    self.state = RunningState::Finished
+                }
                 _ => (),
             },
             KeyCode::Up => self.scroll_up(),
@@ -104,7 +110,9 @@ impl App {
                     info!("Port {}", info.port_name);
                 }
                 // connect to port
+                self.menu = Menu::Terminal;
             }
+            Menu::Terminal => (),
         }
     }
     pub fn draw(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
@@ -122,25 +130,39 @@ impl App {
         match self.menu {
             Menu::PortSelection => port_selection(
                 &self.ports,
+                COMMON_BAUD[DEFAULT_BAUD_INDEX],
                 frame,
                 vertical_slices[1],
                 &mut self.table_state,
             ),
+            Menu::Terminal => terminal_menu(frame, frame.area()),
         }
     }
 }
 
-// pub fn terminal_menu(frame: &mut Frame, area: Rect, state: &mut TableState) {}
+pub fn terminal_menu(
+    frame: &mut Frame,
+    area: Rect,
+    // state: &mut TableState
+) {
+    let [terminal, line, input] = vertical![*=1, ==1, ==1].areas(area);
+
+    repeating_pattern_widget(frame, line, false);
+}
 
 pub fn port_selection(
     ports: &[SerialPortInfo],
+    current_baud: u32,
     frame: &mut Frame,
     area: Rect,
     state: &mut TableState,
 ) {
-    let block = Block::default()
+    let [_, area, _] = horizontal![==25%, ==50%, ==25%].areas(area);
+    let block = Block::bordered()
         .title("Port Selection")
-        .borders(ratatui::widgets::Borders::ALL);
+        .border_style(Style::new().blue())
+        .title_style(Style::reset())
+        .title_alignment(ratatui::layout::Alignment::Center);
 
     let rows: Vec<Row> = ports
         .iter()
@@ -157,10 +179,31 @@ pub fn port_selection(
     let widths = [Constraint::Percentage(50), Constraint::Percentage(50)];
 
     let table = Table::new(rows, widths)
-        .block(block)
         .row_highlight_style(Style::new().reversed())
         .highlight_symbol(">>");
-    // .widths(&[Constraint::Percentage(50), Constraint::Percentage(50)]);
 
-    frame.render_stateful_widget(table, area, state);
+    let [table_area, _filler, baud] = vertical![*=1, ==1, ==1].areas(block.inner(area));
+
+    let static_baud = line![format!("← {current_baud} →")];
+
+    frame.render_widget(block, area);
+
+    frame.render_stateful_widget(table, table_area, state);
+
+    frame.render_widget(static_baud.centered(), baud);
+}
+
+pub fn repeating_pattern_widget(frame: &mut Frame, area: Rect, swap: bool) {
+    let repeat_count = area.width as usize / 2;
+    let remainder = area.width as usize % 2;
+    let base_pattern = if swap { "-~" } else { "~-" };
+
+    let pattern = if remainder == 0 {
+        base_pattern.repeat(repeat_count)
+    } else {
+        base_pattern.repeat(repeat_count) + &base_pattern[..1]
+    };
+
+    let pattern_widget = ratatui::widgets::Paragraph::new(pattern);
+    frame.render_widget(pattern_widget, area);
 }
