@@ -1,4 +1,4 @@
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 
 use color_eyre::{eyre::Result, owo_colors::OwoColorize};
 use ratatui::{
@@ -6,6 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     prelude::Backend,
     style::{Style, Stylize},
+    text::Text,
     widgets::{Block, Row, Table, TableState, Widget},
     Frame, Terminal,
 };
@@ -13,9 +14,16 @@ use ratatui_macros::{horizontal, line, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
 use tracing::info;
 
-pub enum Event {
+use crate::serial::{SerialEvent, SerialHandle};
+
+pub enum CrosstermEvent {
     Resize,
     KeyPress(KeyEvent),
+}
+
+pub enum Event {
+    Crossterm(CrosstermEvent),
+    Serial(SerialEvent),
     Quit,
 }
 
@@ -47,32 +55,46 @@ pub struct App {
     rx: Receiver<Event>,
     table_state: TableState,
     ports: Vec<SerialPortInfo>,
+    serial: SerialHandle,
+    raw_buffer: Vec<u8>,
+    string_buffer: String,
 }
 
 impl App {
-    pub fn new(rx: Receiver<Event>, ports: Vec<SerialPortInfo>) -> Self {
+    pub fn new(tx: Sender<Event>, rx: Receiver<Event>, ports: Vec<SerialPortInfo>) -> Self {
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection,
             rx,
             table_state: TableState::new().with_selected(Some(0)),
             ports,
+            serial: SerialHandle::new(tx),
+            raw_buffer: Vec::with_capacity(1024),
+            string_buffer: String::with_capacity(1024),
         }
     }
     fn is_running(&self) -> bool {
         self.state == RunningState::Running
     }
     pub fn run(&mut self, mut terminal: Terminal<impl Backend>) -> Result<()> {
-        self.draw(&mut terminal)?;
-
         while self.is_running() {
+            self.draw(&mut terminal)?;
             let msg = self.rx.recv().unwrap();
             match msg {
                 Event::Quit => self.state = RunningState::Finished,
-                Event::Resize => (),
-                Event::KeyPress(key) => self.handle_key_press(key),
+
+                Event::Crossterm(CrosstermEvent::Resize) => (),
+                Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
+
+                Event::Serial(SerialEvent::Connected) => info!("Connected!"),
+                Event::Serial(SerialEvent::Disconnected) => self.menu = Menu::PortSelection,
+                Event::Serial(SerialEvent::RxBuffer(mut data)) => {
+                    let converted = String::from_utf8_lossy(&data).to_string();
+                    self.raw_buffer.append(&mut data);
+                    self.string_buffer += &converted;
+                    info!("{}", self.string_buffer);
+                }
             }
-            self.draw(&mut terminal)?
         }
         Ok(())
     }
@@ -108,9 +130,11 @@ impl App {
                 let selected = self.ports.get(self.table_state.selected().unwrap_or(0));
                 if let Some(info) = selected {
                     info!("Port {}", info.port_name);
+
+                    self.serial.connect(&info.port_name);
+
+                    self.menu = Menu::Terminal;
                 }
-                // connect to port
-                self.menu = Menu::Terminal;
             }
             Menu::Terminal => (),
         }
@@ -135,7 +159,7 @@ impl App {
                 vertical_slices[1],
                 &mut self.table_state,
             ),
-            Menu::Terminal => terminal_menu(frame, frame.area()),
+            Menu::Terminal => terminal_menu(frame, frame.area(), &self.string_buffer),
         }
     }
 }
@@ -143,10 +167,13 @@ impl App {
 pub fn terminal_menu(
     frame: &mut Frame,
     area: Rect,
+    buffer: &str,
     // state: &mut TableState
 ) {
     let [terminal, line, input] = vertical![*=1, ==1, ==1].areas(area);
 
+    let text = Text::from(buffer);
+    frame.render_widget(text, terminal);
     repeating_pattern_widget(frame, line, false);
 }
 

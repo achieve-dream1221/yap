@@ -1,6 +1,9 @@
-use std::sync::mpsc;
+use std::{
+    net::TcpStream,
+    sync::{mpsc, Mutex},
+};
 
-use app::App;
+use app::{App, CrosstermEvent};
 use color_eyre::eyre::Context;
 use panic_handler::initialize_panic_handler;
 use ratatui::crossterm::{self, terminal};
@@ -9,6 +12,7 @@ use tracing_appender::non_blocking::WorkerGuard;
 
 mod app;
 mod panic_handler;
+mod serial;
 mod settings;
 mod tui;
 
@@ -30,14 +34,18 @@ fn run_inner() -> color_eyre::Result<()> {
     // None::<u8>.unwrap();
 
     let (tx, rx) = mpsc::channel::<app::Event>();
-
+    let crossterm_tx = tx.clone();
     let crossterm_events = std::thread::spawn(move || loop {
         use crossterm::event::Event;
         use crossterm::event::KeyEventKind;
         match crossterm::event::read().unwrap() {
-            Event::Resize(_, _) => tx.send(app::Event::Resize).unwrap(),
+            Event::Resize(_, _) => crossterm_tx
+                .send(app::Event::Crossterm(CrosstermEvent::Resize))
+                .unwrap(),
             Event::Key(key) if key.kind == KeyEventKind::Press => {
-                tx.send(app::Event::KeyPress(key)).unwrap();
+                crossterm_tx
+                    .send(app::Event::Crossterm(CrosstermEvent::KeyPress(key)))
+                    .unwrap();
             }
             _ => (),
         };
@@ -52,7 +60,7 @@ fn run_inner() -> color_eyre::Result<()> {
     //     info!("{p:?}");
     // }
     let terminal = ratatui::init();
-    let result = App::new(rx, ports).run(terminal);
+    let result = App::new(tx, rx, ports).run(terminal);
 
     result
 }
@@ -84,16 +92,32 @@ pub fn initialize_logging(max_level: Level) -> color_eyre::Result<WorkerGuard> {
         .with_file(false)
         .with_ansi(false)
         .with_target(true)
-        .with_timer(time_fmt)
+        .with_timer(time_fmt.clone())
         .with_line_number(true)
         .with_filter(LevelFilter::from_level(max_level));
+
     // let (fmt_layer, reload_handle) = tracing_subscriber::reload::Layer::new(fmt_layer);
     // Allow everything through but limit lnk to just info, since it spits out a bit too much when reading shortcuts
     // let env_filter = tracing_subscriber::EnvFilter::new("trace,lnk=info");
-    tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         // .with(console)
         // .with(env_filter)
-        .with(fmt_layer)
-        .init();
+        .with(fmt_layer);
+
+    // Try to connect to tcp_log_listener
+    if let Ok(stream) = TcpStream::connect("127.0.0.1:7331") {
+        let tcp_layer = tracing_subscriber::fmt::layer()
+            .with_writer(Mutex::new(stream))
+            // .pretty()
+            .with_file(false)
+            .with_ansi(true)
+            .with_target(true)
+            .with_timer(time_fmt)
+            .with_line_number(true)
+            .with_filter(LevelFilter::from_level(max_level));
+        registry.with(tcp_layer).init();
+    } else {
+        registry.init();
+    }
     Ok(guard)
 }
