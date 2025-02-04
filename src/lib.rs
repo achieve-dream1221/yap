@@ -6,7 +6,12 @@ use std::{
 use app::{App, CrosstermEvent};
 use color_eyre::eyre::Context;
 use panic_handler::initialize_panic_handler;
-use ratatui::crossterm::{self, terminal};
+use ratatui::crossterm::{
+    self,
+    event::{DisableMouseCapture, EnableMouseCapture, MouseEventKind},
+    terminal,
+};
+use serialport::{SerialPortInfo, SerialPortType};
 use tracing::{error, info, level_filters::LevelFilter, Level};
 use tracing_appender::non_blocking::WorkerGuard;
 
@@ -26,6 +31,7 @@ pub fn run() -> color_eyre::Result<()> {
     }
 
     ratatui::restore();
+    crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
     result
 }
 
@@ -35,23 +41,46 @@ fn run_inner() -> color_eyre::Result<()> {
 
     let (tx, rx) = mpsc::channel::<app::Event>();
     let crossterm_tx = tx.clone();
-    let crossterm_events = std::thread::spawn(move || loop {
-        use crossterm::event::Event;
-        use crossterm::event::KeyEventKind;
-        match crossterm::event::read().unwrap() {
-            Event::Resize(_, _) => crossterm_tx
-                .send(app::Event::Crossterm(CrosstermEvent::Resize))
-                .unwrap(),
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                crossterm_tx
-                    .send(app::Event::Crossterm(CrosstermEvent::KeyPress(key)))
-                    .unwrap();
+    let crossterm_events =
+        std::thread::spawn(move || -> color_eyre::Result<()> {
+            loop {
+                use crossterm::event::Event;
+                use crossterm::event::KeyEventKind;
+                match crossterm::event::read().unwrap() {
+                    Event::Resize(_, _) => {
+                        crossterm_tx.send(app::Event::Crossterm(CrosstermEvent::Resize))?
+                    }
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        crossterm_tx.send(app::Event::Crossterm(CrosstermEvent::KeyPress(key)))?;
+                    }
+                    Event::Mouse(mouse) => match mouse.kind {
+                        MouseEventKind::ScrollUp => crossterm_tx.send(app::Event::Crossterm(
+                            CrosstermEvent::MouseScroll { up: true },
+                        ))?,
+                        MouseEventKind::ScrollDown => crossterm_tx.send(app::Event::Crossterm(
+                            CrosstermEvent::MouseScroll { up: false },
+                        ))?,
+                        _ => (),
+                    },
+                    _ => (),
+                };
             }
-            _ => (),
-        };
-    });
+        });
 
-    let ports = serialport::available_ports().wrap_err("No ports found!")?;
+    let mut ports = serialport::available_ports().wrap_err("No ports found!")?;
+    ports.push(SerialPortInfo {
+        port_name: "virtual-port".to_owned(),
+        port_type: SerialPortType::Unknown,
+    });
+    // TODO: Add filters for this in UI
+    #[cfg(unix)]
+    let ports: Vec<_> = ports
+        .into_iter()
+        .filter(|port| {
+            !(port.port_type == SerialPortType::Unknown && !port.port_name.starts_with("virtual"))
+        })
+        .collect();
+
     // let mut tui = tui::Tui::new(rx, ports);
 
     tracing::info!("meow");
@@ -60,6 +89,7 @@ fn run_inner() -> color_eyre::Result<()> {
     //     info!("{p:?}");
     // }
     let terminal = ratatui::init();
+    crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = App::new(tx, rx, ports).run(terminal);
 
     result

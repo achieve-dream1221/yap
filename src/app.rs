@@ -7,7 +7,7 @@ use ratatui::{
     prelude::Backend,
     style::{Style, Stylize},
     text::Text,
-    widgets::{Block, Row, Table, TableState, Widget},
+    widgets::{Block, Paragraph, Row, Table, TableState, Widget, Wrap},
     Frame, Terminal,
 };
 use ratatui_macros::{horizontal, line, vertical};
@@ -19,6 +19,7 @@ use crate::serial::{SerialEvent, SerialHandle};
 pub enum CrosstermEvent {
     Resize,
     KeyPress(KeyEvent),
+    MouseScroll { up: bool },
 }
 
 pub enum Event {
@@ -57,6 +58,8 @@ pub struct App {
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
     raw_buffer: Vec<u8>,
+    // Maybe convert to Vec<Lines>?
+    // Should always be kept congruent with raw_buffer's contents
     string_buffer: String,
 }
 
@@ -83,8 +86,11 @@ impl App {
             match msg {
                 Event::Quit => self.state = RunningState::Finished,
 
-                Event::Crossterm(CrosstermEvent::Resize) => (),
+                Event::Crossterm(CrosstermEvent::Resize) => terminal.autoresize()?,
                 Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
+                Event::Crossterm(CrosstermEvent::MouseScroll { up }) => {
+                    // TODO: Handle scrolls
+                }
 
                 Event::Serial(SerialEvent::Connected) => info!("Connected!"),
                 Event::Serial(SerialEvent::Disconnected) => self.menu = Menu::PortSelection,
@@ -146,7 +152,7 @@ impl App {
     fn render_app(&mut self, frame: &mut Frame) {
         let vertical_slices = Layout::vertical([
             Constraint::Fill(1),
-            Constraint::Fill(2),
+            Constraint::Fill(4),
             Constraint::Fill(1),
         ])
         .split(frame.area());
@@ -173,6 +179,7 @@ pub fn terminal_menu(
     let [terminal, line, input] = vertical![*=1, ==1, ==1].areas(area);
 
     let text = Text::from(buffer);
+    let text = Paragraph::new(text).wrap(Wrap { trim: false });
     frame.render_widget(text, terminal);
     repeating_pattern_widget(frame, line, false);
 }

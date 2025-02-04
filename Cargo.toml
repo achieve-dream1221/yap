@@ -20,3 +20,4 @@ tracing = { version = "0.1.41", features = ["log"] }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter"] }
 tui-input = "0.11.1"
+virtual-serialport = "0.1.3"

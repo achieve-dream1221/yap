@@ -1,4 +1,5 @@
 use color_eyre::Result;
+use ratatui::crossterm::event::DisableMouseCapture;
 
 pub fn initialize_panic_handler() -> Result<()> {
     let (panic_hook, eyre_hook) = color_eyre::config::HookBuilder::default()
@@ -12,6 +13,7 @@ pub fn initialize_panic_handler() -> Result<()> {
     eyre_hook.install()?;
     std::panic::set_hook(Box::new(move |panic_info| {
         _ = ratatui::restore();
+        _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
 
         let msg = format!("{}", panic_hook.panic_report(panic_info));
         #[cfg(not(debug_assertions))]
