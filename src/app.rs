@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     prelude::Backend,
     style::{Style, Stylize},
-    text::Text,
+    text::{Line, Text},
     widgets::{Block, Paragraph, Row, Table, TableState, Widget, Wrap},
     Frame, Terminal,
 };
@@ -46,11 +46,14 @@ pub enum RunningState {
 const COMMON_BAUD: &[u32] = &[
     4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 0,
 ];
-const DEFAULT_BAUD_INDEX: usize = 5;
+const COMMON_BAUD_DEFAULT: usize = 5;
+
+const LINE_ENDINGS: &[&str] = &["\n", "\r", "\r\n"];
+const LINE_ENDINGS_DEFAULT: usize = 0;
 
 // Maybe have the buffer in the TUI struct?
 
-pub struct App {
+pub struct App<'a> {
     state: RunningState,
     menu: Menu,
     rx: Receiver<Event>,
@@ -60,10 +63,12 @@ pub struct App {
     raw_buffer: Vec<u8>,
     // Maybe convert to Vec<Lines>?
     // Should always be kept congruent with raw_buffer's contents
-    string_buffer: String,
+    // Need to consider how I'm going to include echos added to the buffer, if I ever need to rebuild string_buffer
+    strings: Vec<String>,
+    lines: Vec<Line<'a>>,
 }
 
-impl App {
+impl App<'_> {
     pub fn new(tx: Sender<Event>, rx: Receiver<Event>, ports: Vec<SerialPortInfo>) -> Self {
         Self {
             state: RunningState::Running,
@@ -73,7 +78,8 @@ impl App {
             ports,
             serial: SerialHandle::new(tx),
             raw_buffer: Vec::with_capacity(1024),
-            string_buffer: String::with_capacity(1024),
+            strings: Vec::new(),
+            lines: Vec::new(),
         }
     }
     fn is_running(&self) -> bool {
@@ -97,8 +103,29 @@ impl App {
                 Event::Serial(SerialEvent::RxBuffer(mut data)) => {
                     let converted = String::from_utf8_lossy(&data).to_string();
                     self.raw_buffer.append(&mut data);
-                    self.string_buffer += &converted;
-                    info!("{}", self.string_buffer);
+                    let mut appending = match self.strings.last() {
+                        None => false,
+                        Some(str) => !str.ends_with(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]),
+                    };
+                    for line in converted.split_inclusive(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]) {
+                        if appending {
+                            // Unwrap should be safe due to above check
+                            self.strings.last_mut().unwrap().push_str(line);
+                            appending = false;
+                        } else {
+                            self.strings.push(line.to_owned());
+                        }
+                    }
+
+                    self.lines.clear();
+                    for line in &self.strings {
+                        self.lines.push(Line::raw(line));
+                    }
+
+                    // self.lines.push(Line::raw(self.strings.last().unwrap()));
+
+                    // self.string_buffer += &converted;
+                    // info!("{}", self.string_buffer);
                 }
             }
         }
@@ -160,12 +187,12 @@ impl App {
         match self.menu {
             Menu::PortSelection => port_selection(
                 &self.ports,
-                COMMON_BAUD[DEFAULT_BAUD_INDEX],
+                COMMON_BAUD[COMMON_BAUD_DEFAULT],
                 frame,
                 vertical_slices[1],
                 &mut self.table_state,
             ),
-            Menu::Terminal => terminal_menu(frame, frame.area(), &self.string_buffer),
+            Menu::Terminal => terminal_menu(frame, frame.area(), &self.lines),
         }
     }
 }
@@ -173,13 +200,13 @@ impl App {
 pub fn terminal_menu(
     frame: &mut Frame,
     area: Rect,
-    buffer: &str,
+    buffer: &Vec<Line>,
     // state: &mut TableState
 ) {
     let [terminal, line, input] = vertical![*=1, ==1, ==1].areas(area);
 
-    let text = Text::from(buffer);
-    let text = Paragraph::new(text).wrap(Wrap { trim: false });
+    // let text = Text::from(buffer);
+    let text = Paragraph::new(buffer.to_owned()).wrap(Wrap { trim: false });
     frame.render_widget(text, terminal);
     repeating_pattern_widget(frame, line, false);
 }
