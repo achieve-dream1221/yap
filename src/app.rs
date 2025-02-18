@@ -7,7 +7,10 @@ use ratatui::{
     prelude::Backend,
     style::{Style, Stylize},
     text::{Line, Text},
-    widgets::{Block, Paragraph, Row, Table, TableState, Widget, Wrap},
+    widgets::{
+        Block, Borders, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
+        TableState, Widget, Wrap,
+    },
     Frame, Terminal,
 };
 use ratatui_macros::{horizontal, line, vertical};
@@ -63,7 +66,11 @@ pub struct App<'a> {
     table_state: TableState,
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
+
     buffer: Buffer<'a>,
+    buffer_scroll: usize,
+    buffer_scroll_state: ScrollbarState,
+    buffer_stick_to_bottom: bool,
 }
 
 impl App<'_> {
@@ -76,6 +83,9 @@ impl App<'_> {
             ports,
             serial: SerialHandle::new(tx),
             buffer: Buffer::new(),
+            buffer_scroll: 0,
+            buffer_scroll_state: ScrollbarState::default(),
+            buffer_stick_to_bottom: true,
         }
     }
     fn is_running(&self) -> bool {
@@ -91,7 +101,7 @@ impl App<'_> {
                 Event::Crossterm(CrosstermEvent::Resize) => terminal.autoresize()?,
                 Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
                 Event::Crossterm(CrosstermEvent::MouseScroll { up }) => {
-                    // TODO: Handle scrolls
+                    self.update_scroll(Some(up));
                 }
 
                 Event::Serial(SerialEvent::Connected) => info!("Connected!"),
@@ -169,26 +179,73 @@ impl App<'_> {
                 vertical_slices[1],
                 &mut self.table_state,
             ),
-            Menu::Terminal => terminal_menu(frame, frame.area(), self.buffer.lines()),
+            Menu::Terminal => self.terminal_menu(frame, frame.area()),
         }
     }
-}
 
-pub fn terminal_menu<'a>(
-    frame: &mut Frame,
-    area: Rect,
-    buffer: impl Iterator<Item = Line<'a>>,
-    // state: &mut TableState
-) {
-    let [terminal, line, input] = vertical![*=1, ==1, ==1].areas(area);
+    fn update_scroll(&mut self, up: Option<bool>) {
+        // TODO Unstick from bottom when scrolling up
+        // TODO Don't allow scrolling past the contents into the void
+        match up {
+            Some(true) => self.buffer_scroll = self.buffer_scroll.saturating_sub(1),
+            Some(false) => self.buffer_scroll = self.buffer_scroll.saturating_add(1),
+            None => (), // Used to trigger scroll update actions from non-user scrolling events.
+        }
+        self.buffer_scroll_state = self.buffer_scroll_state.position(self.buffer_scroll);
 
-    // let text = Text::from(buffer);
-    let lines: Vec<_> = buffer.collect();
-    let text = Paragraph::new(lines).wrap(Wrap { trim: false });
+        if self.buffer_stick_to_bottom {
+            // TODO Maybe update buffer_scroll_state.content_length in here?
+            // But that would require using Paragraph::line_count outside of rendering...
+        }
+    }
 
-    // let text = Paragraph::new(buffer.to_owned());
-    frame.render_widget(text, terminal);
-    repeating_pattern_widget(frame, line, false);
+    pub fn terminal_menu<'a>(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        // buffer: impl Iterator<Item = Line<'a>>,
+        // state: &mut TableState
+    ) {
+        let [terminal, line, input] = vertical![*=1, ==1, ==1].areas(area);
+
+        // let text = Text::from(buffer);
+        let buffer = self.buffer.lines();
+        let lines: Vec<_> = buffer.collect();
+        let para = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::new().borders(Borders::RIGHT));
+
+        let mut vert_scroll = self.buffer_scroll as u16;
+
+        // let text = Paragraph::new(buffer.to_owned());
+
+        let total_lines = para.line_count(terminal.width.saturating_sub(1));
+        self.buffer_scroll_state = self.buffer_scroll_state.content_length(total_lines);
+
+        // info!("{}", total_lines);
+
+        if self.buffer_stick_to_bottom {
+            let new_pos = total_lines.saturating_sub(terminal.height as usize);
+            self.buffer_scroll_state = self.buffer_scroll_state.position(new_pos);
+            vert_scroll = new_pos as u16;
+        }
+
+        let para = para.scroll((vert_scroll, 0));
+
+        frame.render_widget(para, terminal);
+
+        // TODO Fix scrollbar, not sure if I need to half it or what.
+        // (It's only reaching the bottom when the entirety is off the screen)
+        // Need to flip..?
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓")),
+            terminal,
+            &mut self.buffer_scroll_state,
+        );
+        repeating_pattern_widget(frame, line, false);
+    }
 }
 
 pub fn port_selection(
