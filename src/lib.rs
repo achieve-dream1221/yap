@@ -16,6 +16,7 @@ use tracing::{error, info, level_filters::LevelFilter, Level};
 use tracing_appender::non_blocking::WorkerGuard;
 
 mod app;
+mod buffer;
 mod panic_handler;
 mod serial;
 mod settings;

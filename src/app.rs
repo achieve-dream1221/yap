@@ -14,7 +14,10 @@ use ratatui_macros::{horizontal, line, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
 use tracing::info;
 
-use crate::serial::{SerialEvent, SerialHandle};
+use crate::{
+    buffer::Buffer,
+    serial::{SerialEvent, SerialHandle},
+};
 
 pub enum CrosstermEvent {
     Resize,
@@ -48,8 +51,8 @@ const COMMON_BAUD: &[u32] = &[
 ];
 const COMMON_BAUD_DEFAULT: usize = 5;
 
-const LINE_ENDINGS: &[&str] = &["\n", "\r", "\r\n"];
-const LINE_ENDINGS_DEFAULT: usize = 0;
+pub const LINE_ENDINGS: &[&str] = &["\n", "\r", "\r\n"];
+pub const LINE_ENDINGS_DEFAULT: usize = 0;
 
 // Maybe have the buffer in the TUI struct?
 
@@ -60,12 +63,7 @@ pub struct App<'a> {
     table_state: TableState,
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
-    raw_buffer: Vec<u8>,
-    // Maybe convert to Vec<Lines>?
-    // Should always be kept congruent with raw_buffer's contents
-    // Need to consider how I'm going to include echos added to the buffer, if I ever need to rebuild string_buffer
-    strings: Vec<String>,
-    lines: Vec<Line<'a>>,
+    buffer: Buffer<'a>,
 }
 
 impl App<'_> {
@@ -77,9 +75,7 @@ impl App<'_> {
             table_state: TableState::new().with_selected(Some(0)),
             ports,
             serial: SerialHandle::new(tx),
-            raw_buffer: Vec::with_capacity(1024),
-            strings: Vec::new(),
-            lines: Vec::new(),
+            buffer: Buffer::new(),
         }
     }
     fn is_running(&self) -> bool {
@@ -101,26 +97,7 @@ impl App<'_> {
                 Event::Serial(SerialEvent::Connected) => info!("Connected!"),
                 Event::Serial(SerialEvent::Disconnected) => self.menu = Menu::PortSelection,
                 Event::Serial(SerialEvent::RxBuffer(mut data)) => {
-                    let converted = String::from_utf8_lossy(&data).to_string();
-                    self.raw_buffer.append(&mut data);
-                    let mut appending = match self.strings.last() {
-                        None => false,
-                        Some(str) => !str.ends_with(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]),
-                    };
-                    for line in converted.split_inclusive(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]) {
-                        if appending {
-                            // Unwrap should be safe due to above check
-                            self.strings.last_mut().unwrap().push_str(line);
-                            appending = false;
-                        } else {
-                            self.strings.push(line.to_owned());
-                        }
-                    }
-
-                    self.lines.clear();
-                    for line in &self.strings {
-                        self.lines.push(Line::raw(line));
-                    }
+                    self.buffer.append_bytes(&mut data);
 
                     // self.lines.push(Line::raw(self.strings.last().unwrap()));
 
@@ -192,21 +169,24 @@ impl App<'_> {
                 vertical_slices[1],
                 &mut self.table_state,
             ),
-            Menu::Terminal => terminal_menu(frame, frame.area(), &self.lines),
+            Menu::Terminal => terminal_menu(frame, frame.area(), self.buffer.lines()),
         }
     }
 }
 
-pub fn terminal_menu(
+pub fn terminal_menu<'a>(
     frame: &mut Frame,
     area: Rect,
-    buffer: &Vec<Line>,
+    buffer: impl Iterator<Item = Line<'a>>,
     // state: &mut TableState
 ) {
     let [terminal, line, input] = vertical![*=1, ==1, ==1].areas(area);
 
     // let text = Text::from(buffer);
-    let text = Paragraph::new(buffer.to_owned()).wrap(Wrap { trim: false });
+    let lines: Vec<_> = buffer.collect();
+    let text = Paragraph::new(lines).wrap(Wrap { trim: false });
+
+    // let text = Paragraph::new(buffer.to_owned());
     frame.render_widget(text, terminal);
     repeating_pattern_widget(frame, line, false);
 }
