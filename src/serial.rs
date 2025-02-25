@@ -48,6 +48,7 @@ pub struct SerialWorker {
     command_rx: Receiver<SerialCommand>,
     event_tx: Sender<Event>,
     port: Option<Box<dyn SerialPort>>,
+    buffer: Vec<u8>,
 }
 
 impl SerialWorker {
@@ -56,10 +57,10 @@ impl SerialWorker {
             command_rx,
             event_tx,
             port: None,
+            buffer: vec![0; 1024 * 1024],
         }
     }
     fn work_loop(&mut self) -> color_eyre::Result<()> {
-        let mut serial_buf: Vec<u8> = vec![0; 1024];
         loop {
             match self.command_rx.try_recv() {
                 Ok(cmd) => match cmd {
@@ -82,9 +83,9 @@ impl SerialWorker {
                 // if port.bytes_to_read().unwrap() == 0 {
                 //     continue;
                 // }
-                match port.read(serial_buf.as_mut_slice()) {
+                match port.read(self.buffer.as_mut_slice()) {
                     Ok(t) if t > 0 => {
-                        let cloned_buff = serial_buf[..t].to_owned();
+                        let cloned_buff = self.buffer[..t].to_owned();
                         // info!("{:?}", &serial_buf[..t]);
                         self.event_tx
                             .send(Event::Serial(SerialEvent::RxBuffer(cloned_buff)))?;

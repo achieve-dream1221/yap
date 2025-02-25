@@ -1,4 +1,7 @@
-use std::sync::mpsc::{Receiver, Sender};
+use std::{
+    borrow::Cow,
+    sync::mpsc::{Receiver, Sender},
+};
 
 use color_eyre::{eyre::Result, owo_colors::OwoColorize};
 use ratatui::{
@@ -8,8 +11,8 @@ use ratatui::{
     style::{Style, Stylize},
     text::{Line, Text},
     widgets::{
-        Block, Borders, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
-        TableState, Widget, Wrap,
+        Block, Borders, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Table, TableState, Widget, Wrap,
     },
     Frame, Terminal,
 };
@@ -71,6 +74,8 @@ pub struct App<'a> {
     buffer_scroll: usize,
     buffer_scroll_state: ScrollbarState,
     buffer_stick_to_bottom: bool,
+    // Filled in while drawing UI
+    buffer_rendered_lines: usize,
 }
 
 impl App<'_> {
@@ -86,6 +91,7 @@ impl App<'_> {
             buffer_scroll: 0,
             buffer_scroll_state: ScrollbarState::default(),
             buffer_stick_to_bottom: true,
+            buffer_rendered_lines: 0,
         }
     }
     fn is_running(&self) -> bool {
@@ -196,6 +202,10 @@ impl App<'_> {
         if self.buffer_stick_to_bottom {
             // TODO Maybe update buffer_scroll_state.content_length in here?
             // But that would require using Paragraph::line_count outside of rendering...
+            if let Some(true) = up {
+
+                // self.buffer_stick_to_bottom = false;
+            }
         }
     }
 
@@ -209,8 +219,32 @@ impl App<'_> {
         let [terminal, line, input] = vertical![*=1, ==1, ==1].areas(area);
 
         // let text = Text::from(buffer);
-        let buffer = self.buffer.lines();
-        let lines: Vec<_> = buffer.collect();
+        // let buffer = self.buffer.lines();
+        // let lines: Vec<_> = buffer.collect();
+
+        let lines: Vec<_> = self
+            .buffer
+            .strings
+            .iter()
+            .map(|s| Cow::Borrowed(s.as_str()))
+            .map(|c| {
+                if c.len() < 5 {
+                    Line::from(c)
+                } else {
+                    let line = Line::from(c);
+                    let slice = &&line.spans[0].content[..5];
+                    match *slice {
+                        "Got m" => line.blue(),
+                        "ID:0x" => line.green(),
+                        "Chan." => line.dark_gray(),
+                        "Mode:" => line.yellow(),
+                        "Power" => line.red(),
+                        _ => line,
+                    }
+                }
+            })
+            .collect();
+        // let lines = self.buffer.lines.iter();
         let para = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .block(Block::new().borders(Borders::RIGHT));
@@ -221,6 +255,7 @@ impl App<'_> {
 
         let total_lines = para.line_count(terminal.width.saturating_sub(1));
         self.buffer_scroll_state = self.buffer_scroll_state.content_length(total_lines);
+        self.buffer_rendered_lines = total_lines;
 
         // info!("{}", total_lines);
 
@@ -232,6 +267,7 @@ impl App<'_> {
 
         let para = para.scroll((vert_scroll, 0));
 
+        // frame.render_widget(Clear, terminal);
         frame.render_widget(para, terminal);
 
         // TODO Fix scrollbar, not sure if I need to half it or what.
