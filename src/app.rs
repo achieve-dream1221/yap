@@ -1,12 +1,13 @@
 use std::{
     borrow::Cow,
+    i32,
     sync::mpsc::{Receiver, Sender},
 };
 
-use color_eyre::{eyre::Result, owo_colors::OwoColorize};
+use color_eyre::eyre::Result;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect, Size},
     prelude::Backend,
     style::{Style, Stylize},
     text::{Line, Text},
@@ -18,7 +19,7 @@ use ratatui::{
 };
 use ratatui_macros::{horizontal, line, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
-use tracing::info;
+use tracing::{error, info, instrument};
 
 use crate::{
     buffer::Buffer,
@@ -70,12 +71,15 @@ pub struct App<'a> {
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
 
+    last_terminal_size: Size,
+
     buffer: Buffer<'a>,
     buffer_scroll: usize,
     buffer_scroll_state: ScrollbarState,
     buffer_stick_to_bottom: bool,
     // Filled in while drawing UI
     buffer_rendered_lines: usize,
+    buffer_wrapping: bool,
 }
 
 impl App<'_> {
@@ -87,11 +91,13 @@ impl App<'_> {
             table_state: TableState::new().with_selected(Some(0)),
             ports,
             serial: SerialHandle::new(tx),
+            last_terminal_size: Size::default(),
             buffer: Buffer::new(),
             buffer_scroll: 0,
             buffer_scroll_state: ScrollbarState::default(),
             buffer_stick_to_bottom: true,
             buffer_rendered_lines: 0,
+            buffer_wrapping: true,
         }
     }
     fn is_running(&self) -> bool {
@@ -104,16 +110,26 @@ impl App<'_> {
             match msg {
                 Event::Quit => self.state = RunningState::Finished,
 
-                Event::Crossterm(CrosstermEvent::Resize) => terminal.autoresize()?,
+                Event::Crossterm(CrosstermEvent::Resize) => {
+                    terminal.autoresize()?;
+                    if let Ok(size) = terminal.size() {
+                        self.last_terminal_size = size;
+                    } else {
+                        error!("Failed to query terminal size!");
+                    }
+                }
                 Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
                 Event::Crossterm(CrosstermEvent::MouseScroll { up }) => {
-                    self.update_scroll(Some(up));
+                    let amount = if up { 1 } else { -1 };
+                    self.scroll_buffer(amount);
                 }
 
                 Event::Serial(SerialEvent::Connected) => info!("Connected!"),
                 Event::Serial(SerialEvent::Disconnected) => self.menu = Menu::PortSelection,
                 Event::Serial(SerialEvent::RxBuffer(mut data)) => {
                     self.buffer.append_bytes(&mut data);
+                    self.scroll_buffer(0);
+                    self.update_line_count();
 
                     // self.lines.push(Line::raw(self.strings.last().unwrap()));
 
@@ -125,28 +141,35 @@ impl App<'_> {
         Ok(())
     }
     fn handle_key_press(&mut self, key: KeyEvent) {
+        let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Char(char) => match char {
                 'q' | 'Q' => self.state = RunningState::Finished,
-                'c' | 'C' if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                'c' | 'C' if ctrl_pressed => {
                     // TODO Quit prompt when connected?
                     self.state = RunningState::Finished
                 }
                 _ => (),
             },
-            KeyCode::Up => self.scroll_up(),
-            KeyCode::Down => self.scroll_down(),
+            KeyCode::PageUp if ctrl_pressed || shift_pressed => self.scroll_buffer(i32::MAX),
+            KeyCode::PageDown if ctrl_pressed || shift_pressed => self.scroll_buffer(i32::MIN),
+            KeyCode::PageUp => self.scroll_buffer(10),
+            KeyCode::PageDown => self.scroll_buffer(-10),
+            KeyCode::Up => self.scroll_menu_up(),
+            KeyCode::Down => self.scroll_menu_down(),
             KeyCode::Enter => self.enter_pressed(),
+            KeyCode::Esc => self.state = RunningState::Finished,
             _ => (),
         }
     }
     // consider making these some kind of trait method?
     // for the different menus and selections
     // not sure, things are gonna get interesting with the key presses
-    fn scroll_up(&mut self) {
+    fn scroll_menu_up(&mut self) {
         self.table_state.scroll_up_by(1);
     }
-    fn scroll_down(&mut self) {
+    fn scroll_menu_down(&mut self) {
         // self.table_state.select(Some(0));
         self.table_state.scroll_down_by(1);
     }
@@ -170,6 +193,8 @@ impl App<'_> {
         Ok(())
     }
     fn render_app(&mut self, frame: &mut Frame) {
+        self.last_terminal_size = frame.area().as_size();
+
         let vertical_slices = Layout::vertical([
             Constraint::Fill(1),
             Constraint::Fill(4),
@@ -189,23 +214,130 @@ impl App<'_> {
         }
     }
 
-    fn update_scroll(&mut self, up: Option<bool>) {
+    // #[instrument(skip(self))]
+    fn scroll_buffer(&mut self, up: i32) {
         // TODO Unstick from bottom when scrolling up
         // TODO Don't allow scrolling past the contents into the void
         match up {
-            Some(true) => self.buffer_scroll = self.buffer_scroll.saturating_sub(1),
-            Some(false) => self.buffer_scroll = self.buffer_scroll.saturating_add(1),
-            None => (), // Used to trigger scroll update actions from non-user scrolling events.
+            0 => (), // Used to trigger scroll update actions from non-user scrolling events.
+            // TODO do this proper when wrapping is toggleable
+            // Scroll all the way up
+            i32::MAX => {
+                self.buffer_scroll = 0;
+                self.buffer_stick_to_bottom = false;
+            }
+            // Scroll all the way down
+            i32::MIN => self.buffer_scroll = self.buffer_rendered_lines,
+
+            // Scroll up
+            x if up > 0 => {
+                self.buffer_scroll = self.buffer_scroll.saturating_sub(x as usize);
+            }
+            // Scroll down
+            x if up < 0 => {
+                self.buffer_scroll = self.buffer_scroll.saturating_add(x.abs() as usize);
+            }
+            _ => unreachable!(),
         }
-        self.buffer_scroll_state = self.buffer_scroll_state.position(self.buffer_scroll);
+
+        if up > 0 {
+            self.buffer_stick_to_bottom = false;
+        } else if self.buffer_scroll + self.last_terminal_size.height as usize
+            > self.buffer_rendered_lines
+        {
+            self.buffer_scroll = self.buffer_rendered_lines;
+            self.buffer_stick_to_bottom = true;
+        }
 
         if self.buffer_stick_to_bottom {
+            let last_size = self.last_terminal_size;
+
+            let total_lines = self.line_count();
+            let new_pos = total_lines.saturating_sub(last_size.height as usize);
+
+            self.buffer_scroll = new_pos.saturating_add(1);
+
+            // let last_size = self.last_terminal_size;
+
+            // info!(
+            //     "total rendered lines: {total_lines}, line vec count: {}",
+            //     self.buffer.strings.len()
+            // );
+
+            // info!("{}", total_lines);
+
+            // if self.buffer_stick_to_bottom {
+            // }
+
             // TODO Maybe update buffer_scroll_state.content_length in here?
             // But that would require using Paragraph::line_count outside of rendering...
-            if let Some(true) = up {
+            // if let Some(true) = amount {
 
-                // self.buffer_stick_to_bottom = false;
+            // self.buffer_stick_to_bottom = false;
+            // }
+        }
+        self.buffer_scroll_state = self
+            .buffer_scroll_state
+            .position(self.buffer_scroll)
+            .content_length(
+                self.line_count()
+                    .saturating_sub(self.last_terminal_size.height as usize),
+            );
+    }
+
+    fn line_count(&self) -> usize {
+        if self.buffer_wrapping {
+            self.buffer.strings.len()
+        } else {
+            self.buffer_rendered_lines
+        }
+    }
+
+    fn update_line_count(&mut self) -> usize {
+        self.buffer_rendered_lines = if self.buffer_wrapping {
+            self.buffer.strings.len()
+        } else {
+            let paragraph = self.terminal_paragraph(false);
+            paragraph.line_count(self.last_terminal_size.width.saturating_sub(1))
+        };
+        self.buffer_rendered_lines
+    }
+
+    // TODO Move this into impl Buffer?
+    pub fn terminal_paragraph<'a>(&'a self, styled: bool) -> Paragraph<'a> {
+        let coloring = |c: Cow<'a, str>| -> Line<'a> {
+            if c.len() < 5 {
+                Line::from(c)
+            } else {
+                let line = Line::from(c);
+                // info!("{}", line.spans.len());
+                // info!("{}", line.spans[0].content.len());
+                // TODO Change this from byte indexing since it might run in the middle of a multi-byte char at some point
+                let slice = &&line.spans[0].content[..5];
+                match *slice {
+                    "Got m" => line.blue(),
+                    "ID:0x" => line.green(),
+                    "Chan." => line.dark_gray(),
+                    "Mode:" => line.yellow(),
+                    "Power" => line.red(),
+                    _ => line,
+                }
             }
+        };
+        let lines: Vec<_> = self
+            .buffer
+            .strings
+            .iter()
+            .map(|s| Cow::Borrowed(s.as_str()))
+            .map(|c| if styled { coloring(c) } else { Line::raw(c) })
+            .collect();
+        // let lines = self.buffer.lines.iter();
+
+        let para = Paragraph::new(lines).block(Block::new().borders(Borders::RIGHT));
+        if self.buffer_wrapping {
+            para.wrap(Wrap { trim: false })
+        } else {
+            para
         }
     }
 
@@ -222,53 +354,36 @@ impl App<'_> {
         // let buffer = self.buffer.lines();
         // let lines: Vec<_> = buffer.collect();
 
-        let lines: Vec<_> = self
-            .buffer
-            .strings
-            .iter()
-            .map(|s| Cow::Borrowed(s.as_str()))
-            .map(|c| {
-                if c.len() < 5 {
-                    Line::from(c)
-                } else {
-                    let line = Line::from(c);
-                    let slice = &&line.spans[0].content[..5];
-                    match *slice {
-                        "Got m" => line.blue(),
-                        "ID:0x" => line.green(),
-                        "Chan." => line.dark_gray(),
-                        "Mode:" => line.yellow(),
-                        "Power" => line.red(),
-                        _ => line,
-                    }
-                }
-            })
-            .collect();
-        // let lines = self.buffer.lines.iter();
-        let para = Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(Block::new().borders(Borders::RIGHT));
-
-        let mut vert_scroll = self.buffer_scroll as u16;
+        let vert_scroll = self.buffer_scroll as u16;
 
         // let text = Paragraph::new(buffer.to_owned());
 
+        let para = self.terminal_paragraph(true);
+
         let total_lines = para.line_count(terminal.width.saturating_sub(1));
-        self.buffer_scroll_state = self.buffer_scroll_state.content_length(total_lines);
-        self.buffer_rendered_lines = total_lines;
+
+        // info!(
+        //     "total rendered lines: {total_lines}, line vec count: {}",
+        //     self.buffer.strings.len()
+        // );
 
         // info!("{}", total_lines);
 
-        if self.buffer_stick_to_bottom {
-            let new_pos = total_lines.saturating_sub(terminal.height as usize);
-            self.buffer_scroll_state = self.buffer_scroll_state.position(new_pos);
-            vert_scroll = new_pos as u16;
-        }
+        // if self.buffer_stick_to_bottom {
+        //     let new_pos = total_lines.saturating_sub(terminal.height as usize);
+        //     self.buffer_scroll_state = self.buffer_scroll_state.position(new_pos);
+        //     vert_scroll = new_pos as u16;
+        // }
+
+        info!("scroll: {vert_scroll}, lines: {}", self.line_count());
 
         let para = para.scroll((vert_scroll, 0));
 
         // frame.render_widget(Clear, terminal);
         frame.render_widget(para, terminal);
+
+        // self.buffer_scroll_state = self.buffer_scroll_state.content_length(total_lines);
+        self.buffer_rendered_lines = total_lines;
 
         // TODO Fix scrollbar, not sure if I need to half it or what.
         // (It's only reaching the bottom when the entirety is off the screen)
@@ -291,6 +406,7 @@ pub fn port_selection(
     area: Rect,
     state: &mut TableState,
 ) {
+    // TODO Width detection for minimum area
     let [_, area, _] = horizontal![==25%, ==50%, ==25%].areas(area);
     let block = Block::bordered()
         .title("Port Selection")

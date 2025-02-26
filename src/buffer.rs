@@ -11,6 +11,7 @@ pub struct Buffer<'a> {
     pub string: String,
     pub strings: Vec<String>,
     pub lines: Vec<Line<'a>>,
+    // if not true, then the last line in [strings] is "incomplete" (no leading line-ending), and should be appended to
     last_line_finished: bool,
 }
 
@@ -21,6 +22,7 @@ impl<'a> Buffer<'a> {
             string: String::new(),
             strings: Vec::new(),
             lines: Vec::new(),
+            // there is no line to append to, so just act as if "finished"
             last_line_finished: true,
         }
     }
@@ -38,12 +40,16 @@ impl<'a> Buffer<'a> {
 
         // split_inclusive() or split()?
         for line in converted.split(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]) {
+            // Removing messy-to-render characters, but they should be preserved in the raw_buffer for those who need to see them
+            // TODO Replace tab with multiple spaces? (As \t causes smearing with ratatui currently.)
             let s = line.replace(&['\t', '\n', '\r'][..], "");
             // TODO UTF-8 multi byte preservation between \n's?
-            // Since if I am getting only one byte per second or read, then `String::from_utf8_lossy` fail extra for no reason.
+            // Since if I am getting only one byte per second or read, then `String::from_utf8_lossy` could fail extra for no reason.
             if appending {
-                // Unwrap should be safe due to above check
-                self.strings.last_mut().unwrap().push_str(&s);
+                self.strings
+                    .last_mut()
+                    .expect("Promised line to append to")
+                    .push_str(&s);
                 appending = false;
             } else {
                 self.strings.push(s);
