@@ -97,7 +97,8 @@ impl App<'_> {
             buffer_scroll_state: ScrollbarState::default(),
             buffer_stick_to_bottom: true,
             buffer_rendered_lines: 0,
-            buffer_wrapping: true,
+
+            buffer_wrapping: false,
         }
     }
     fn is_running(&self) -> bool {
@@ -117,6 +118,8 @@ impl App<'_> {
                     } else {
                         error!("Failed to query terminal size!");
                     }
+                    self.update_line_count();
+                    self.scroll_buffer(0);
                 }
                 Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
                 Event::Crossterm(CrosstermEvent::MouseScroll { up }) => {
@@ -124,12 +127,15 @@ impl App<'_> {
                     self.scroll_buffer(amount);
                 }
 
-                Event::Serial(SerialEvent::Connected) => info!("Connected!"),
+                Event::Serial(SerialEvent::Connected) => {
+                    info!("Connected!");
+                    self.scroll_buffer(0);
+                }
                 Event::Serial(SerialEvent::Disconnected) => self.menu = Menu::PortSelection,
                 Event::Serial(SerialEvent::RxBuffer(mut data)) => {
                     self.buffer.append_bytes(&mut data);
-                    self.scroll_buffer(0);
                     self.update_line_count();
+                    self.scroll_buffer(0);
 
                     // self.lines.push(Line::raw(self.strings.last().unwrap()));
 
@@ -240,22 +246,29 @@ impl App<'_> {
             _ => unreachable!(),
         }
 
-        if up > 0 {
+        let last_size = {
+            let mut size = self.last_terminal_size;
+            // "2" is the lines from the repeating_pattern_widget and the input buffer.
+            // Might need to make more dynamic later?
+            size.height = size.height.saturating_sub(2);
+            size
+        };
+        let total_lines = self.line_count();
+        let more_lines_than_height = total_lines > last_size.height as usize;
+
+        if up > 0 && more_lines_than_height {
             self.buffer_stick_to_bottom = false;
-        } else if self.buffer_scroll + self.last_terminal_size.height as usize
-            > self.buffer_rendered_lines
-        {
+        } else if self.buffer_scroll + last_size.height as usize >= self.buffer_rendered_lines {
             self.buffer_scroll = self.buffer_rendered_lines;
             self.buffer_stick_to_bottom = true;
         }
 
         if self.buffer_stick_to_bottom {
-            let last_size = self.last_terminal_size;
-
-            let total_lines = self.line_count();
             let new_pos = total_lines.saturating_sub(last_size.height as usize);
 
-            self.buffer_scroll = new_pos.saturating_add(1);
+            // if more_lines_than_height {
+            self.buffer_scroll = new_pos.saturating_add(0);
+            // }
 
             // let last_size = self.last_terminal_size;
 
@@ -279,28 +292,26 @@ impl App<'_> {
         self.buffer_scroll_state = self
             .buffer_scroll_state
             .position(self.buffer_scroll)
-            .content_length(
-                self.line_count()
-                    .saturating_sub(self.last_terminal_size.height as usize),
-            );
+            .content_length(self.line_count().saturating_sub(last_size.height as usize));
     }
 
     fn line_count(&self) -> usize {
         if self.buffer_wrapping {
-            self.buffer.strings.len()
-        } else {
             self.buffer_rendered_lines
+        } else {
+            self.buffer.strings.len()
         }
     }
 
     fn update_line_count(&mut self) -> usize {
-        self.buffer_rendered_lines = if self.buffer_wrapping {
-            self.buffer.strings.len()
-        } else {
+        if self.buffer_wrapping {
             let paragraph = self.terminal_paragraph(false);
-            paragraph.line_count(self.last_terminal_size.width.saturating_sub(1))
-        };
-        self.buffer_rendered_lines
+            let line_count = paragraph.line_count(self.last_terminal_size.width.saturating_sub(1));
+            self.buffer_rendered_lines = line_count;
+            line_count
+        } else {
+            self.buffer.strings.len()
+        }
     }
 
     // TODO Move this into impl Buffer?
@@ -375,7 +386,11 @@ impl App<'_> {
         //     vert_scroll = new_pos as u16;
         // }
 
-        info!("scroll: {vert_scroll}, lines: {}", self.line_count());
+        info!(
+            "scroll: {vert_scroll}, lines: {}, term height: {}",
+            self.line_count(),
+            self.last_terminal_size.height
+        );
 
         let para = para.scroll((vert_scroll, 0));
 
@@ -384,6 +399,18 @@ impl App<'_> {
 
         // self.buffer_scroll_state = self.buffer_scroll_state.content_length(total_lines);
         self.buffer_rendered_lines = total_lines;
+
+        if !self.buffer_stick_to_bottom {
+            let scroll_notice = Line::raw("More... Shift+PgDn to jump to newest").dark_gray();
+            let notice_area = {
+                let mut rect = terminal.clone();
+                rect.y = rect.bottom().saturating_sub(1);
+                rect.height = 1;
+                rect
+            };
+            frame.render_widget(Clear, notice_area);
+            frame.render_widget(scroll_notice, notice_area);
+        }
 
         // TODO Fix scrollbar, not sure if I need to half it or what.
         // (It's only reaching the bottom when the entirety is off the screen)
@@ -396,6 +423,8 @@ impl App<'_> {
             &mut self.buffer_scroll_state,
         );
         repeating_pattern_widget(frame, line, false);
+
+        frame.set_cursor_position(input.as_position());
     }
 }
 
