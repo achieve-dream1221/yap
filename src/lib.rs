@@ -42,31 +42,28 @@ fn run_inner() -> color_eyre::Result<()> {
 
     let (tx, rx) = mpsc::channel::<app::Event>();
     let crossterm_tx = tx.clone();
-    let crossterm_events =
-        std::thread::spawn(move || -> color_eyre::Result<()> {
-            loop {
-                use crossterm::event::Event;
-                use crossterm::event::KeyEventKind;
-                match crossterm::event::read().unwrap() {
-                    Event::Resize(_, _) => {
-                        crossterm_tx.send(app::Event::Crossterm(CrosstermEvent::Resize))?
+    let crossterm_events = std::thread::spawn(move || -> color_eyre::Result<()> {
+        loop {
+            use crossterm::event::Event;
+            use crossterm::event::KeyEventKind;
+            match crossterm::event::read().unwrap() {
+                Event::Resize(_, _) => crossterm_tx.send(CrosstermEvent::Resize.into())?,
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    crossterm_tx.send(CrosstermEvent::KeyPress(key).into())?;
+                }
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        crossterm_tx.send(CrosstermEvent::MouseScroll { up: true }.into())?
                     }
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        crossterm_tx.send(app::Event::Crossterm(CrosstermEvent::KeyPress(key)))?;
+                    MouseEventKind::ScrollDown => {
+                        crossterm_tx.send(CrosstermEvent::MouseScroll { up: false }.into())?
                     }
-                    Event::Mouse(mouse) => match mouse.kind {
-                        MouseEventKind::ScrollUp => crossterm_tx.send(app::Event::Crossterm(
-                            CrosstermEvent::MouseScroll { up: true },
-                        ))?,
-                        MouseEventKind::ScrollDown => crossterm_tx.send(app::Event::Crossterm(
-                            CrosstermEvent::MouseScroll { up: false },
-                        ))?,
-                        _ => (),
-                    },
                     _ => (),
-                };
-            }
-        });
+                },
+                _ => (),
+            };
+        }
+    });
 
     let mut ports = serialport::available_ports().wrap_err("No ports found!")?;
     ports.push(SerialPortInfo {

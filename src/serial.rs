@@ -14,8 +14,15 @@ pub enum SerialEvent {
     Disconnected,
 }
 
+impl From<SerialEvent> for Event {
+    fn from(value: SerialEvent) -> Self {
+        Self::Serial(value)
+    }
+}
+
 pub enum SerialCommand {
     Connect { port: String },
+    TxBuffer(Vec<u8>),
     Disconnect,
 }
 
@@ -30,7 +37,9 @@ impl SerialHandle {
         let mut worker = SerialWorker::new(command_rx, event_tx);
 
         std::thread::spawn(move || {
-            worker.work_loop().unwrap();
+            worker
+                .work_loop()
+                .expect("Serial worker encountered an error!");
         });
 
         Self { command_tx }
@@ -41,6 +50,15 @@ impl SerialHandle {
                 port: port.to_owned(),
             })
             .unwrap();
+    }
+    pub fn send_bytes(&mut self, input: Vec<u8>) {
+        self.command_tx
+            .send(SerialCommand::TxBuffer(input))
+            .unwrap();
+    }
+    pub fn send_str(&mut self, input: &str) {
+        let buffer = input.as_bytes().to_owned();
+        self.send_bytes(buffer);
     }
 }
 
@@ -67,13 +85,24 @@ impl SerialWorker {
                     // TODO: Catch failures to connect here instead of propogating to the whole task
                     SerialCommand::Connect { port } => {
                         self.connect_to_port(&port)?;
-                        info!("Connected to {port}");
+                        info!("Serial worker connected to: {port}");
+                        self.event_tx.send(SerialEvent::Connected.into()).unwrap();
                     }
 
                     SerialCommand::Disconnect => std::mem::drop(self.port.take()),
                     // This should maybe reply with a success/fail in case the
                     // port is having an issue, so the user's input buffer isn't consumed visually
-                    // SerialCommand::TxBuffer
+                    SerialCommand::TxBuffer(mut data) if self.port.is_some() => {
+                        let port = self.port.as_mut().unwrap();
+
+                        // TODO use user-specified line-ending
+                        data.push(b'\n');
+
+                        if let Err(e) = port.write_all(&data) {
+                            todo!("{e}");
+                        }
+                    }
+                    SerialCommand::TxBuffer(_) => todo!(), // Tried to send with no port
                 },
                 Err(std::sync::mpsc::TryRecvError::Empty) => (),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
@@ -88,7 +117,7 @@ impl SerialWorker {
                         let cloned_buff = self.buffer[..t].to_owned();
                         // info!("{:?}", &serial_buf[..t]);
                         self.event_tx
-                            .send(Event::Serial(SerialEvent::RxBuffer(cloned_buff)))?;
+                            .send(SerialEvent::RxBuffer(cloned_buff).into())?;
                     }
                     // 0-size read, ignoring
                     Ok(_) => (),
@@ -97,8 +126,7 @@ impl SerialWorker {
                     Err(e) => {
                         error!("{:?}", e);
                         _ = self.port.take();
-                        self.event_tx
-                            .send(Event::Serial(SerialEvent::Disconnected))?;
+                        self.event_tx.send(SerialEvent::Disconnected.into())?;
                     }
                 }
             }

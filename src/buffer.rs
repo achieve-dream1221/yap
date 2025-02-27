@@ -29,6 +29,13 @@ impl<'a> Buffer<'a> {
     // pub fn append_str(&mut self, str: &str) {
     // }
 
+    // TODO also do append_user_bytes
+    pub fn append_user_text(&mut self, text: &str) {
+        self.last_line_finished = true;
+        let input: String = format!("USER> {}", text.escape_debug());
+        self.strings.push(input);
+    }
+
     // Forced to use Vec<u8> for now
     pub fn append_bytes(&mut self, bytes: &mut Vec<u8>) {
         let converted = String::from_utf8_lossy(&bytes).to_string();

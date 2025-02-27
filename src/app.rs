@@ -7,7 +7,7 @@ use std::{
 use color_eyre::eyre::Result;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
-    layout::{Constraint, Layout, Rect, Size},
+    layout::{Constraint, Layout, Offset, Rect, Size},
     prelude::Backend,
     style::{Style, Stylize},
     text::{Line, Text},
@@ -20,6 +20,7 @@ use ratatui::{
 use ratatui_macros::{horizontal, line, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
 use tracing::{error, info, instrument};
+use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     buffer::Buffer,
@@ -30,6 +31,12 @@ pub enum CrosstermEvent {
     Resize,
     KeyPress(KeyEvent),
     MouseScroll { up: bool },
+}
+
+impl From<CrosstermEvent> for Event {
+    fn from(value: CrosstermEvent) -> Self {
+        Self::Crossterm(value)
+    }
 }
 
 pub enum Event {
@@ -70,16 +77,24 @@ pub struct App<'a> {
     table_state: TableState,
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
+    // Might ArcBool this in the Handle later
+    // Might be worth an enum instead?
+    serial_healthy: bool,
+
+    user_input: Input,
 
     last_terminal_size: Size,
 
     buffer: Buffer<'a>,
+    // Tempted to move these into Buffer, or a new BufferState
     buffer_scroll: usize,
     buffer_scroll_state: ScrollbarState,
     buffer_stick_to_bottom: bool,
+    buffer_wrapping: bool,
     // Filled in while drawing UI
     buffer_rendered_lines: usize,
-    buffer_wrapping: bool,
+
+    repeating_line_flip: bool,
 }
 
 impl App<'_> {
@@ -91,6 +106,10 @@ impl App<'_> {
             table_state: TableState::new().with_selected(Some(0)),
             ports,
             serial: SerialHandle::new(tx),
+            serial_healthy: false,
+
+            user_input: Input::default(),
+
             last_terminal_size: Size::default(),
             buffer: Buffer::new(),
             buffer_scroll: 0,
@@ -98,7 +117,9 @@ impl App<'_> {
             buffer_stick_to_bottom: true,
             buffer_rendered_lines: 0,
 
-            buffer_wrapping: false,
+            buffer_wrapping: true,
+
+            repeating_line_flip: false,
         }
     }
     fn is_running(&self) -> bool {
@@ -108,6 +129,7 @@ impl App<'_> {
         while self.is_running() {
             self.draw(&mut terminal)?;
             let msg = self.rx.recv().unwrap();
+            // TODO SecondTick event
             match msg {
                 Event::Quit => self.state = RunningState::Finished,
 
@@ -130,17 +152,18 @@ impl App<'_> {
                 Event::Serial(SerialEvent::Connected) => {
                     info!("Connected!");
                     self.scroll_buffer(0);
+                    self.serial_healthy = true;
                 }
-                Event::Serial(SerialEvent::Disconnected) => self.menu = Menu::PortSelection,
+                Event::Serial(SerialEvent::Disconnected) => {
+                    // self.menu = Menu::PortSelection;
+                    self.serial_healthy = false;
+                }
                 Event::Serial(SerialEvent::RxBuffer(mut data)) => {
                     self.buffer.append_bytes(&mut data);
                     self.update_line_count();
                     self.scroll_buffer(0);
 
-                    // self.lines.push(Line::raw(self.strings.last().unwrap()));
-
-                    // self.string_buffer += &converted;
-                    // info!("{}", self.string_buffer);
+                    self.repeating_line_flip = !self.repeating_line_flip;
                 }
             }
         }
@@ -149,14 +172,27 @@ impl App<'_> {
     fn handle_key_press(&mut self, key: KeyEvent) {
         let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
+
+        // let at_port_selection = matches!(self.menu, Menu::PortSelection);
+        let mut at_port_selection = false;
+        match self.menu {
+            Menu::Terminal => {
+                self.user_input
+                    .handle_event(&ratatui::crossterm::event::Event::Key(key));
+            }
+            Menu::PortSelection => at_port_selection = true,
+        }
         match key.code {
             KeyCode::Char(char) => match char {
-                'q' | 'Q' => self.state = RunningState::Finished,
+                'q' | 'Q' if at_port_selection => self.state = RunningState::Finished,
                 'c' | 'C' if ctrl_pressed => {
                     // TODO Quit prompt when connected?
                     self.state = RunningState::Finished
                 }
-                _ => (),
+                _ => {
+                    // self.user_input
+                    //     .handle_event(&ratatui::crossterm::event::Event::Key(key));
+                }
             },
             KeyCode::PageUp if ctrl_pressed || shift_pressed => self.scroll_buffer(i32::MAX),
             KeyCode::PageDown if ctrl_pressed || shift_pressed => self.scroll_buffer(i32::MIN),
@@ -191,7 +227,20 @@ impl App<'_> {
                     self.menu = Menu::Terminal;
                 }
             }
-            Menu::Terminal => (),
+            Menu::Terminal => {
+                if self.serial_healthy {
+                    let user_input = self.user_input.value();
+                    self.serial.send_str(user_input);
+                    self.buffer.append_user_text(user_input);
+                    self.user_input.reset();
+
+                    self.repeating_line_flip = !self.repeating_line_flip;
+                    self.update_line_count();
+                    self.scroll_buffer(0);
+                } else {
+                    // Temporarily show text on red background when trying to send while unhealthy
+                }
+            }
         }
     }
     pub fn draw(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
@@ -326,6 +375,7 @@ impl App<'_> {
                 // TODO Change this from byte indexing since it might run in the middle of a multi-byte char at some point
                 let slice = &&line.spans[0].content[..5];
                 match *slice {
+                    "USER>" => line.dark_gray(),
                     "Got m" => line.blue(),
                     "ID:0x" => line.green(),
                     "Chan." => line.dark_gray(),
@@ -359,7 +409,7 @@ impl App<'_> {
         // buffer: impl Iterator<Item = Line<'a>>,
         // state: &mut TableState
     ) {
-        let [terminal, line, input] = vertical![*=1, ==1, ==1].areas(area);
+        let [terminal_area, line_area, input_area] = vertical![*=1, ==1, ==1].areas(area);
 
         // let text = Text::from(buffer);
         // let buffer = self.buffer.lines();
@@ -371,7 +421,7 @@ impl App<'_> {
 
         let para = self.terminal_paragraph(true);
 
-        let total_lines = para.line_count(terminal.width.saturating_sub(1));
+        let total_lines = para.line_count(terminal_area.width.saturating_sub(1));
 
         // info!(
         //     "total rendered lines: {total_lines}, line vec count: {}",
@@ -395,7 +445,7 @@ impl App<'_> {
         let para = para.scroll((vert_scroll, 0));
 
         // frame.render_widget(Clear, terminal);
-        frame.render_widget(para, terminal);
+        frame.render_widget(para, terminal_area);
 
         // self.buffer_scroll_state = self.buffer_scroll_state.content_length(total_lines);
         self.buffer_rendered_lines = total_lines;
@@ -403,7 +453,7 @@ impl App<'_> {
         if !self.buffer_stick_to_bottom {
             let scroll_notice = Line::raw("More... Shift+PgDn to jump to newest").dark_gray();
             let notice_area = {
-                let mut rect = terminal.clone();
+                let mut rect = terminal_area.clone();
                 rect.y = rect.bottom().saturating_sub(1);
                 rect.height = 1;
                 rect
@@ -419,12 +469,31 @@ impl App<'_> {
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("↑"))
                 .end_symbol(Some("↓")),
-            terminal,
+            terminal_area,
             &mut self.buffer_scroll_state,
         );
-        repeating_pattern_widget(frame, line, false);
+        repeating_pattern_widget(
+            frame,
+            line_area,
+            self.repeating_line_flip,
+            self.serial_healthy,
+        );
 
-        frame.set_cursor_position(input.as_position());
+        if self.user_input.value().is_empty() {
+            let input_hint = Line::raw("Input goes here.").dark_gray();
+            frame.render_widget(input_hint, input_area.offset(Offset { x: 1, y: 0 }));
+            frame.set_cursor_position(input_area.as_position());
+        } else {
+            let width = input_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge
+            let scroll = self.user_input.visual_scroll(width as usize);
+            let input_text = Paragraph::new(self.user_input.value()).scroll((0, scroll as u16));
+            frame.render_widget(input_text, input_area);
+            frame.set_cursor_position((
+                // Put cursor past the end of the input text
+                input_area.x + ((self.user_input.visual_cursor()).max(scroll) - scroll) as u16,
+                input_area.y,
+            ));
+        }
     }
 }
 
@@ -432,11 +501,15 @@ pub fn port_selection(
     ports: &[SerialPortInfo],
     current_baud: u32,
     frame: &mut Frame,
-    area: Rect,
+    given_area: Rect,
     state: &mut TableState,
 ) {
-    // TODO Width detection for minimum area
-    let [_, area, _] = horizontal![==25%, ==50%, ==25%].areas(area);
+    let area = if frame.area().width < 45 {
+        given_area
+    } else {
+        let [_, middle_area, _] = horizontal![==25%, ==50%, ==25%].areas(given_area);
+        middle_area
+    };
     let block = Block::bordered()
         .title("Port Selection")
         .border_style(Style::new().blue())
@@ -472,7 +545,7 @@ pub fn port_selection(
     frame.render_widget(static_baud.centered(), baud);
 }
 
-pub fn repeating_pattern_widget(frame: &mut Frame, area: Rect, swap: bool) {
+pub fn repeating_pattern_widget(frame: &mut Frame, area: Rect, swap: bool, healthy: bool) {
     let repeat_count = area.width as usize / 2;
     let remainder = area.width as usize % 2;
     let base_pattern = if swap { "-~" } else { "~-" };
@@ -484,5 +557,10 @@ pub fn repeating_pattern_widget(frame: &mut Frame, area: Rect, swap: bool) {
     };
 
     let pattern_widget = ratatui::widgets::Paragraph::new(pattern);
+    let pattern_widget = if healthy {
+        pattern_widget.green()
+    } else {
+        pattern_widget.red()
+    };
     frame.render_widget(pattern_widget, area);
 }
