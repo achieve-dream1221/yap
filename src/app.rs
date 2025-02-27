@@ -4,6 +4,7 @@ use std::{
     sync::mpsc::{Receiver, Sender},
 };
 
+use arboard::Clipboard;
 use color_eyre::eyre::Result;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
@@ -31,6 +32,7 @@ pub enum CrosstermEvent {
     Resize,
     KeyPress(KeyEvent),
     MouseScroll { up: bool },
+    RightClick,
 }
 
 impl From<CrosstermEvent> for Event {
@@ -82,6 +84,7 @@ pub struct App<'a> {
     serial_healthy: bool,
 
     user_input: Input,
+    clipboard: Clipboard,
 
     last_terminal_size: Size,
 
@@ -109,6 +112,7 @@ impl App<'_> {
             serial_healthy: false,
 
             user_input: Input::default(),
+            clipboard: Clipboard::new().unwrap(),
 
             last_terminal_size: Size::default(),
             buffer: Buffer::new(),
@@ -148,6 +152,18 @@ impl App<'_> {
                     let amount = if up { 1 } else { -1 };
                     self.scroll_buffer(amount);
                 }
+
+                Event::Crossterm(CrosstermEvent::RightClick) => match self.clipboard.get_text() {
+                    Ok(clipboard_text) => {
+                        let mut previous_value = self.user_input.value().to_owned();
+                        previous_value.push_str(&clipboard_text);
+                        self.user_input = previous_value.into();
+                    }
+                    Err(e) => {
+                        // error!("Failed to get clipboard text!");
+                        error!("{e}");
+                    }
+                },
 
                 Event::Serial(SerialEvent::Connected) => {
                     info!("Connected!");
@@ -200,6 +216,7 @@ impl App<'_> {
             KeyCode::PageDown => self.scroll_buffer(-10),
             KeyCode::Up => self.scroll_menu_up(),
             KeyCode::Down => self.scroll_menu_down(),
+            KeyCode::Left | KeyCode::Right => (),
             KeyCode::Enter => self.enter_pressed(),
             KeyCode::Esc => self.state = RunningState::Finished,
             _ => (),
@@ -236,7 +253,9 @@ impl App<'_> {
 
                     self.repeating_line_flip = !self.repeating_line_flip;
                     self.update_line_count();
-                    self.scroll_buffer(0);
+                    // Scroll all the way down
+                    // TODO: Make this behavior a toggle
+                    self.scroll_buffer(i32::MIN);
                 } else {
                     // Temporarily show text on red background when trying to send while unhealthy
                 }
@@ -271,8 +290,6 @@ impl App<'_> {
 
     // #[instrument(skip(self))]
     fn scroll_buffer(&mut self, up: i32) {
-        // TODO Unstick from bottom when scrolling up
-        // TODO Don't allow scrolling past the contents into the void
         match up {
             0 => (), // Used to trigger scroll update actions from non-user scrolling events.
             // TODO do this proper when wrapping is toggleable
@@ -436,11 +453,11 @@ impl App<'_> {
         //     vert_scroll = new_pos as u16;
         // }
 
-        info!(
-            "scroll: {vert_scroll}, lines: {}, term height: {}",
-            self.line_count(),
-            self.last_terminal_size.height
-        );
+        // info!(
+        //     "scroll: {vert_scroll}, lines: {}, term height: {}",
+        //     self.line_count(),
+        //     self.last_terminal_size.height
+        // );
 
         let para = para.scroll((vert_scroll, 0));
 

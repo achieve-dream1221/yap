@@ -9,6 +9,7 @@ pub struct Buffer<'a> {
     // Should always be kept congruent with raw_buffer's contents
     // Need to consider how I'm going to include echos added to the buffer, if I ever need to rebuild string_buffer
     pub string: String,
+    // Cursed idea, maybe (String, height)?
     pub strings: Vec<String>,
     pub lines: Vec<Line<'a>>,
     // if not true, then the last line in [strings] is "incomplete" (no leading line-ending), and should be appended to
@@ -32,7 +33,8 @@ impl<'a> Buffer<'a> {
     // TODO also do append_user_bytes
     pub fn append_user_text(&mut self, text: &str) {
         self.last_line_finished = true;
-        let input: String = format!("USER> {}", text.escape_debug());
+        // TODO dont use \n
+        let input: String = format!("USER> {}\n", text.escape_debug());
         self.strings.push(input);
     }
 

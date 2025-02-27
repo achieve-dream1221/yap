@@ -1,10 +1,11 @@
 use std::{
-    io::Write,
+    io::{BufWriter, Write},
     sync::mpsc::{self, Receiver, Sender},
+    time::Duration,
 };
 
 use serialport::SerialPort;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::app::Event;
 
@@ -57,6 +58,7 @@ impl SerialHandle {
             .unwrap();
     }
     pub fn send_str(&mut self, input: &str) {
+        // debug!("Outputting to serial: {input}");
         let buffer = input.as_bytes().to_owned();
         self.send_bytes(buffer);
     }
@@ -94,13 +96,56 @@ impl SerialWorker {
                     // port is having an issue, so the user's input buffer isn't consumed visually
                     SerialCommand::TxBuffer(mut data) if self.port.is_some() => {
                         let port = self.port.as_mut().unwrap();
+                        info!(
+                            "bytes incoming: {}, bytes outcoming: {}",
+                            port.bytes_to_read().unwrap(),
+                            port.bytes_to_write().unwrap()
+                        );
 
                         // TODO use user-specified line-ending
                         data.push(b'\n');
 
-                        if let Err(e) = port.write_all(&data) {
-                            todo!("{e}");
+                        let mut buf = &data[..];
+
+                        // let mut writer = BufWriter::new(&mut port);
+
+                        // TODO This is because the ESP32-S3's virtual USB serial port
+                        // has an issue with payloads larger than 256 bytes????
+                        let slow_writes = true;
+
+                        let max_bytes = 8;
+
+                        while !buf.is_empty() {
+                            let write_size = if slow_writes {
+                                std::cmp::min(max_bytes, buf.len())
+                            } else {
+                                buf.len()
+                            };
+                            match port.write(&buf[..write_size]) {
+                                Ok(0) => {
+                                    // return Err(Error::WRITE_ALL_EOF);
+                                    todo!();
+                                }
+                                Ok(n) => {
+                                    // info!(
+                                    //     "bytes incoming: {}, bytes outcoming: {}",
+                                    //     port.bytes_to_read().unwrap(),
+                                    //     port.bytes_to_write().unwrap()
+                                    // );
+                                    info!("buf n: {n}");
+                                    buf = &buf[n..];
+                                    std::thread::sleep(Duration::from_millis(1));
+                                }
+                                Err(e) => todo!("{e}"),
+                            }
                         }
+
+                        // if let Err(e) = port.write_all(&data) {
+                        //     todo!("{e}");
+                        // } else {
+                        //     info!("{data:?}");
+                        //     port.flush()?;
+                        // }
                     }
                     SerialCommand::TxBuffer(_) => todo!(), // Tried to send with no port
                 },
@@ -112,6 +157,11 @@ impl SerialWorker {
                 // if port.bytes_to_read().unwrap() == 0 {
                 //     continue;
                 // }
+                // info!(
+                //     "bytes incoming: {}, bytes outcoming: {}",
+                //     port.bytes_to_read().unwrap(),
+                //     port.bytes_to_write().unwrap()
+                // );
                 match port.read(self.buffer.as_mut_slice()) {
                     Ok(t) if t > 0 => {
                         let cloned_buff = self.buffer[..t].to_owned();
@@ -143,7 +193,9 @@ impl SerialWorker {
 
             virt_port.into_boxed()
         } else {
-            serialport::new(port, 115200).open()?
+            serialport::new(port, 115200)
+                // .flow_control(serialport::FlowControl::Software)
+                .open()?
         };
         // let port = serialport::new(port, 115200).open()?;
         self.port = Some(port);

@@ -8,7 +8,7 @@ use color_eyre::eyre::Context;
 use panic_handler::initialize_panic_handler;
 use ratatui::crossterm::{
     self,
-    event::{DisableMouseCapture, EnableMouseCapture, MouseEventKind},
+    event::{DisableMouseCapture, EnableMouseCapture, MouseButton, MouseEventKind},
     terminal,
 };
 use serialport::{SerialPortInfo, SerialPortType};
@@ -58,6 +58,12 @@ fn run_inner() -> color_eyre::Result<()> {
                     MouseEventKind::ScrollDown => {
                         crossterm_tx.send(CrosstermEvent::MouseScroll { up: false }.into())?
                     }
+                    MouseEventKind::Down(button) => match button {
+                        MouseButton::Left | MouseButton::Middle => (),
+                        MouseButton::Right => {
+                            crossterm_tx.send(CrosstermEvent::RightClick.into())?
+                        }
+                    },
                     _ => (),
                 },
                 _ => (),
