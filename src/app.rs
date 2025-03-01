@@ -5,7 +5,7 @@ use std::{
 };
 
 use arboard::Clipboard;
-use color_eyre::eyre::Result;
+use color_eyre::{eyre::Result, owo_colors::OwoColorize};
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::{Constraint, Layout, Offset, Rect, Size},
@@ -21,10 +21,11 @@ use ratatui::{
 use ratatui_macros::{horizontal, line, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
 use tracing::{error, info, instrument};
-use tui_input::{backend::crossterm::EventHandler, Input};
+use tui_input::{backend::crossterm::EventHandler, Input, StateChanged};
 
 use crate::{
     buffer::Buffer,
+    history::{History, UserInput},
     serial::{SerialEvent, SerialHandle},
 };
 
@@ -83,8 +84,7 @@ pub struct App<'a> {
     // Might be worth an enum instead?
     serial_healthy: bool,
 
-    user_input: Input,
-    clipboard: Clipboard,
+    user_input: UserInput,
 
     last_terminal_size: Size,
 
@@ -111,8 +111,7 @@ impl App<'_> {
             serial: SerialHandle::new(tx),
             serial_healthy: false,
 
-            user_input: Input::default(),
-            clipboard: Clipboard::new().unwrap(),
+            user_input: UserInput::default(),
 
             last_terminal_size: Size::default(),
             buffer: Buffer::new(),
@@ -153,17 +152,19 @@ impl App<'_> {
                     self.scroll_buffer(amount);
                 }
 
-                Event::Crossterm(CrosstermEvent::RightClick) => match self.clipboard.get_text() {
-                    Ok(clipboard_text) => {
-                        let mut previous_value = self.user_input.value().to_owned();
-                        previous_value.push_str(&clipboard_text);
-                        self.user_input = previous_value.into();
+                Event::Crossterm(CrosstermEvent::RightClick) => {
+                    match self.user_input.clipboard.get_text() {
+                        Ok(clipboard_text) => {
+                            let mut previous_value = self.user_input.input_box.value().to_owned();
+                            previous_value.push_str(&clipboard_text);
+                            self.user_input.input_box = previous_value.into();
+                        }
+                        Err(e) => {
+                            // error!("Failed to get clipboard text!");
+                            error!("{e}");
+                        }
                     }
-                    Err(e) => {
-                        // error!("Failed to get clipboard text!");
-                        error!("{e}");
-                    }
-                },
+                }
 
                 Event::Serial(SerialEvent::Connected) => {
                     info!("Connected!");
@@ -193,8 +194,21 @@ impl App<'_> {
         let mut at_port_selection = false;
         match self.menu {
             Menu::Terminal => {
-                self.user_input
-                    .handle_event(&ratatui::crossterm::event::Event::Key(key));
+                match self
+                    .user_input
+                    .input_box
+                    .handle_event(&ratatui::crossterm::event::Event::Key(key))
+                {
+                    // If we changed something in the value when handling the key event,
+                    // we should clear the user_history selection.
+                    Some(StateChanged {
+                        value,
+                        cursor: _cursor,
+                    }) if value => {
+                        self.user_input.history.clear_selection();
+                    }
+                    _ => (),
+                }
             }
             Menu::PortSelection => at_port_selection = true,
         }
@@ -212,14 +226,31 @@ impl App<'_> {
             },
             KeyCode::PageUp if ctrl_pressed || shift_pressed => self.scroll_buffer(i32::MAX),
             KeyCode::PageDown if ctrl_pressed || shift_pressed => self.scroll_buffer(i32::MIN),
+            KeyCode::Delete if ctrl_pressed && shift_pressed => {
+                self.user_input.reset();
+            }
+            // TODO reactive page up/down amounts based on last_size
             KeyCode::PageUp => self.scroll_buffer(10),
             KeyCode::PageDown => self.scroll_buffer(-10),
-            KeyCode::Up => self.scroll_menu_up(),
-            KeyCode::Down => self.scroll_menu_down(),
+            // TODO History scrolling
+            KeyCode::Up => self.up_pressed(),
+            KeyCode::Down => self.down_pressed(),
             KeyCode::Left | KeyCode::Right => (),
             KeyCode::Enter => self.enter_pressed(),
             KeyCode::Esc => self.state = RunningState::Finished,
             _ => (),
+        }
+    }
+    fn up_pressed(&mut self) {
+        match self.menu {
+            Menu::PortSelection => self.scroll_menu_up(),
+            Menu::Terminal => self.user_input.scroll(true),
+        }
+    }
+    fn down_pressed(&mut self) {
+        match self.menu {
+            Menu::PortSelection => self.scroll_menu_down(),
+            Menu::Terminal => self.user_input.scroll(false),
         }
     }
     // consider making these some kind of trait method?
@@ -246,9 +277,10 @@ impl App<'_> {
             }
             Menu::Terminal => {
                 if self.serial_healthy {
-                    let user_input = self.user_input.value();
+                    let user_input = self.user_input.input_box.value();
                     self.serial.send_str(user_input);
                     self.buffer.append_user_text(user_input);
+                    self.user_input.history.push(user_input);
                     self.user_input.reset();
 
                     self.repeating_line_flip = !self.repeating_line_flip;
@@ -496,18 +528,20 @@ impl App<'_> {
             self.serial_healthy,
         );
 
-        if self.user_input.value().is_empty() {
+        if self.user_input.input_box.value().is_empty() {
             let input_hint = Line::raw("Input goes here.").dark_gray();
             frame.render_widget(input_hint, input_area.offset(Offset { x: 1, y: 0 }));
             frame.set_cursor_position(input_area.as_position());
         } else {
             let width = input_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge
-            let scroll = self.user_input.visual_scroll(width as usize);
-            let input_text = Paragraph::new(self.user_input.value()).scroll((0, scroll as u16));
+            let scroll = self.user_input.input_box.visual_scroll(width as usize);
+            let input_text =
+                Paragraph::new(self.user_input.input_box.value()).scroll((0, scroll as u16));
             frame.render_widget(input_text, input_area);
             frame.set_cursor_position((
                 // Put cursor past the end of the input text
-                input_area.x + ((self.user_input.visual_cursor()).max(scroll) - scroll) as u16,
+                input_area.x
+                    + ((self.user_input.input_box.visual_cursor()).max(scroll) - scroll) as u16,
                 input_area.y,
             ));
         }

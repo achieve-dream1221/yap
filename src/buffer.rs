@@ -10,10 +10,17 @@ pub struct Buffer<'a> {
     // Need to consider how I'm going to include echos added to the buffer, if I ever need to rebuild string_buffer
     pub string: String,
     // Cursed idea, maybe (String, height)?
+    // or a custom crate::Line {value:String,rendered_height,color,is_finished,raw_buffer_index,timestamp} struct
     pub strings: Vec<String>,
     pub lines: Vec<Line<'a>>,
     // if not true, then the last line in [strings] is "incomplete" (no leading line-ending), and should be appended to
     last_line_finished: bool,
+}
+
+impl Default for Buffer<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<'a> Buffer<'a> {
