@@ -2,6 +2,8 @@ use std::{
     borrow::Cow,
     i32,
     sync::mpsc::{Receiver, Sender},
+    thread::JoinHandle,
+    time::Duration,
 };
 
 use arboard::Clipboard;
@@ -20,15 +22,18 @@ use ratatui::{
 };
 use ratatui_macros::{horizontal, line, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
+use takeable::Takeable;
 use tracing::{error, info, instrument};
 use tui_input::{backend::crossterm::EventHandler, Input, StateChanged};
 
 use crate::{
     buffer::Buffer,
+    event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     serial::{SerialEvent, SerialHandle},
 };
 
+#[derive(Clone, Debug)]
 pub enum CrosstermEvent {
     Resize,
     KeyPress(KeyEvent),
@@ -42,9 +47,11 @@ impl From<CrosstermEvent> for Event {
     }
 }
 
+#[derive(Clone, Debug)]
 pub enum Event {
     Crossterm(CrosstermEvent),
     Serial(SerialEvent),
+    TickSecond,
     Quit,
 }
 
@@ -80,9 +87,13 @@ pub struct App<'a> {
     table_state: TableState,
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
+    serial_thread: Takeable<JoinHandle<()>>,
     // Might ArcBool this in the Handle later
     // Might be worth an enum instead?
     serial_healthy: bool,
+
+    carousel: CarouselHandle<Event>,
+    carousel_thread: Takeable<JoinHandle<()>>,
 
     user_input: UserInput,
 
@@ -101,14 +112,23 @@ pub struct App<'a> {
 }
 
 impl App<'_> {
-    pub fn new(tx: Sender<Event>, rx: Receiver<Event>, ports: Vec<SerialPortInfo>) -> Self {
+    pub fn new(tx: Sender<Event>, rx: Receiver<Event>) -> Self {
+        let (event_carousel, carousel_thread) = CarouselHandle::new(tx.clone());
+        let (serial_handle, serial_thread) = SerialHandle::new(tx);
+
+        event_carousel.add_event(Event::TickSecond, Duration::from_secs(1));
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection,
             rx,
             table_state: TableState::new().with_selected(Some(0)),
-            ports,
-            serial: SerialHandle::new(tx),
+            ports: Vec::new(),
+
+            carousel: event_carousel,
+            carousel_thread: Takeable::new(carousel_thread),
+
+            serial: serial_handle,
+            serial_thread: Takeable::new(serial_thread),
             serial_healthy: false,
 
             user_input: UserInput::default(),
@@ -182,6 +202,36 @@ impl App<'_> {
 
                     self.repeating_line_flip = !self.repeating_line_flip;
                 }
+                Event::Serial(SerialEvent::Ports(ports)) => {
+                    self.ports = ports;
+                    if self.table_state.selected().is_none() {
+                        self.table_state = TableState::new().with_selected(Some(0));
+                    }
+                }
+                Event::TickSecond => match self.menu {
+                    Menu::Terminal => {
+                        if !self.serial_healthy {
+                            self.repeating_line_flip = !self.repeating_line_flip;
+                            self.serial.request_reconnect();
+                        }
+                    }
+                    Menu::PortSelection => {
+                        self.serial.request_port_scan();
+                    }
+                },
+            }
+        }
+        // Shutting down worker threads, with timeouts
+        if self.serial.shutdown().is_ok() {
+            let serial_thread = self.serial_thread.take();
+            if let Err(_) = serial_thread.join() {
+                error!("Serial thread closed with an error!");
+            }
+        }
+        if self.carousel.shutdown().is_ok() {
+            let carousel = self.carousel_thread.take();
+            if let Err(_) = carousel.join() {
+                error!("Carousel thread closed with an error!");
             }
         }
         Ok(())
@@ -232,7 +282,9 @@ impl App<'_> {
             // TODO reactive page up/down amounts based on last_size
             KeyCode::PageUp => self.scroll_buffer(10),
             KeyCode::PageDown => self.scroll_buffer(-10),
-            // TODO History scrolling
+            // KeyCode::End => self
+            //     .event_carousel
+            //     .add_event(Event::TickSecond, Duration::from_secs(3)),
             KeyCode::Up => self.up_pressed(),
             KeyCode::Down => self.down_pressed(),
             KeyCode::Left | KeyCode::Right => (),
@@ -266,11 +318,11 @@ impl App<'_> {
     fn enter_pressed(&mut self) {
         match self.menu {
             Menu::PortSelection => {
-                let selected = self.ports.get(self.table_state.selected().unwrap_or(0));
+                let selected = self.ports.get(self.table_state.selected().unwrap());
                 if let Some(info) = selected {
                     info!("Port {}", info.port_name);
 
-                    self.serial.connect(&info.port_name);
+                    self.serial.connect(&info);
 
                     self.menu = Menu::Terminal;
                 }
@@ -498,6 +550,7 @@ impl App<'_> {
 
         // self.buffer_scroll_state = self.buffer_scroll_state.content_length(total_lines);
         self.buffer_rendered_lines = total_lines;
+        // maybe debug_assert this when we roll our own line-counting?
 
         if !self.buffer_stick_to_bottom {
             let scroll_notice = Line::raw("More... Shift+PgDn to jump to newest").dark_gray();

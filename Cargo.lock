@@ -1463,6 +1463,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "takeable"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7efe11d01772262041364ebf855e0c6c9e2bd0dd4f059083e540a5f1cda69477"
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2030,6 +2036,7 @@ dependencies = [
  "serde",
  "serialport",
  "strip-ansi-escapes",
+ "takeable",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

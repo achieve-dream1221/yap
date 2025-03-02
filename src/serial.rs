@@ -1,15 +1,20 @@
 use std::{
     io::{BufWriter, Write},
     sync::mpsc::{self, Receiver, Sender},
+    thread::JoinHandle,
     time::Duration,
 };
 
-use serialport::SerialPort;
+use serialport::{SerialPort, SerialPortInfo, SerialPortType};
 use tracing::{debug, error, info};
 
 use crate::app::Event;
 
+// TODO maybe relegate this to the serial worker thread in case it blocks?
+
+#[derive(Clone, Debug)]
 pub enum SerialEvent {
+    Ports(Vec<SerialPortInfo>),
     Connected,
     RxBuffer(Vec<u8>),
     Disconnected,
@@ -22,9 +27,12 @@ impl From<SerialEvent> for Event {
 }
 
 pub enum SerialCommand {
-    Connect { port: String },
+    RequestPortScan,
+    Connect(SerialPortInfo),
     TxBuffer(Vec<u8>),
+    RequestReconnect,
     Disconnect,
+    Shutdown(Sender<()>),
 }
 
 pub struct SerialHandle {
@@ -32,24 +40,24 @@ pub struct SerialHandle {
 }
 
 impl SerialHandle {
-    pub fn new(event_tx: Sender<Event>) -> Self {
+    pub fn new(event_tx: Sender<Event>) -> (Self, JoinHandle<()>) {
         let (command_tx, command_rx) = mpsc::channel();
 
         let mut worker = SerialWorker::new(command_rx, event_tx);
 
-        std::thread::spawn(move || {
+        let worker = std::thread::spawn(move || {
             worker
                 .work_loop()
                 .expect("Serial worker encountered an error!");
         });
 
-        Self { command_tx }
+        let mut handle = Self { command_tx };
+        handle.request_port_scan();
+        (handle, worker)
     }
-    pub fn connect(&mut self, port: &str) {
+    pub fn connect(&mut self, port: &SerialPortInfo) {
         self.command_tx
-            .send(SerialCommand::Connect {
-                port: port.to_owned(),
-            })
+            .send(SerialCommand::Connect(port.to_owned()))
             .unwrap();
     }
     pub fn send_bytes(&mut self, input: Vec<u8>) {
@@ -62,12 +70,42 @@ impl SerialHandle {
         let buffer = input.as_bytes().to_owned();
         self.send_bytes(buffer);
     }
+    pub fn request_port_scan(&mut self) {
+        self.command_tx
+            .send(SerialCommand::RequestPortScan)
+            .unwrap();
+    }
+    pub fn request_reconnect(&mut self) {
+        self.command_tx
+            .send(SerialCommand::RequestReconnect)
+            .unwrap();
+    }
+    pub fn shutdown(&self) -> Result<(), ()> {
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        if self
+            .command_tx
+            .send(SerialCommand::Shutdown(shutdown_tx))
+            .is_ok()
+        {
+            if shutdown_rx.recv_timeout(Duration::from_secs(3)).is_ok() {
+                Ok(())
+            } else {
+                error!("Serial worker didn't react to shutdown request.");
+                Err(())
+            }
+        } else {
+            error!("Couldn't send serial worker shutdown.");
+            Err(())
+        }
+    }
 }
 
 pub struct SerialWorker {
     command_rx: Receiver<SerialCommand>,
     event_tx: Sender<Event>,
     port: Option<Box<dyn SerialPort>>,
+    connected_port_info: Option<SerialPortInfo>,
+    scan_snapshot: Vec<SerialPortInfo>,
     buffer: Vec<u8>,
 }
 
@@ -77,6 +115,8 @@ impl SerialWorker {
             command_rx,
             event_tx,
             port: None,
+            connected_port_info: None,
+            scan_snapshot: vec![],
             buffer: vec![0; 1024 * 1024],
         }
     }
@@ -85,13 +125,32 @@ impl SerialWorker {
             match self.command_rx.try_recv() {
                 Ok(cmd) => match cmd {
                     // TODO: Catch failures to connect here instead of propogating to the whole task
-                    SerialCommand::Connect { port } => {
+                    SerialCommand::Connect(port) => {
                         self.connect_to_port(&port)?;
-                        info!("Serial worker connected to: {port}");
-                        self.event_tx.send(SerialEvent::Connected.into()).unwrap();
                     }
+                    SerialCommand::Shutdown(shutdown_tx) => {
+                        shutdown_tx
+                            .send(())
+                            .expect("Failed to reply to shutdown request");
 
-                    SerialCommand::Disconnect => std::mem::drop(self.port.take()),
+                        _ = self.connected_port_info.take();
+                        _ = self.port.take();
+                        break;
+                    }
+                    SerialCommand::RequestPortScan => {
+                        let ports = self.scan_for_serial_ports().unwrap();
+                        self.scan_snapshot = ports.clone();
+                        self.event_tx
+                            .send(SerialEvent::Ports(ports).into())
+                            .unwrap();
+                    }
+                    SerialCommand::RequestReconnect => {
+                        self.attempt_reconnect().unwrap();
+                    }
+                    SerialCommand::Disconnect => {
+                        _ = self.connected_port_info.take();
+                        _ = self.port.take();
+                    }
                     // This should maybe reply with a success/fail in case the
                     // port is having an issue, so the user's input buffer isn't consumed visually
                     SerialCommand::TxBuffer(mut data) if self.port.is_some() => {
@@ -111,6 +170,8 @@ impl SerialWorker {
 
                         // TODO This is because the ESP32-S3's virtual USB serial port
                         // has an issue with payloads larger than 256 bytes????
+                        // So this might need to be a throttle toggle,
+                        // maybe on by default since its not too bad?
                         let slow_writes = true;
 
                         let max_bytes = 8;
@@ -150,7 +211,9 @@ impl SerialWorker {
                     SerialCommand::TxBuffer(_) => todo!(), // Tried to send with no port
                 },
                 Err(std::sync::mpsc::TryRecvError::Empty) => (),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    panic!("Worker lost all Handles");
+                }
             }
 
             if let Some(port) = &mut self.port {
@@ -175,34 +238,141 @@ impl SerialWorker {
                     Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => (),
                     Err(e) => {
                         error!("{:?}", e);
+                        self.scan_snapshot = self.scan_for_serial_ports().unwrap();
                         _ = self.port.take();
+                        // Don't take since we're using it to find the port for reconnections.
+                        // _ = self.connected_port_info.take();
                         self.event_tx.send(SerialEvent::Disconnected.into())?;
                     }
                 }
             }
         }
 
-        // Not actually unreachable, but I want it to crash if it gets here (for now)
-        unreachable!()
+        Ok(())
     }
-    pub fn connect_to_port(&mut self, port: &str) -> color_eyre::Result<()> {
-        let port = if port.starts_with("virtual") {
+    fn attempt_reconnect(&mut self) -> Result<(), serialport::Error> {
+        assert!(self.connected_port_info.is_some());
+        // assert!(self.port.is_none());
+        if self.port.is_some() {
+            error!("Got request to reconnect when already connected to port!");
+            return Ok(());
+        }
+        let current_ports = self.scan_for_serial_ports()?;
+        let desired_port = self.connected_port_info.as_ref().unwrap();
+
+        // Checking for a perfect match
+        if let Some(port) = current_ports.iter().find(|p| *p == desired_port) {
+            // Sleeping to give the device some time to intialize with Windows
+            // (Otherwise Access Denied errors can occur from trying to connect too quick)
+            info!("Perfect match found! Reconnecting to: {}", port.port_name);
+            std::thread::sleep(Duration::from_secs(1));
+            self.connect_to_port(&port)?;
+            return Ok(());
+        };
+
+        // Try to find a *new* port that has the same USB characteristics
+        if let Some(port) = current_ports
+            .iter()
+            // Only searching for USB Serial port devices
+            .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
+            // Filtering out ports that didn't change across scans
+            // (so we don't connect to an identical device, but was already present)
+            .filter(|p| !self.scan_snapshot.contains(p))
+            .find(|p| p.port_type == desired_port.port_type)
+        {
+            info!("Connecting to similar device on port: {}", port.port_name);
+            std::thread::sleep(Duration::from_secs(1));
+            self.connect_to_port(&port)?;
+            return Ok(());
+        };
+
+        // Maybe add an extra USB attempt that just tries based on *just* USB PID & VID?
+
+        // Last ditch effort, just try to connect to the same port_name
+        if let Some(port) = current_ports
+            .iter()
+            .find(|p| *p.port_name == desired_port.port_name)
+        {
+            info!("Last ditch connect attempt on: {}", port.port_name);
+            std::thread::sleep(Duration::from_secs(1));
+            self.connect_to_port(&port)?;
+            return Ok(());
+        }
+
+        // {}
+
+        Ok(())
+    }
+    fn scan_for_serial_ports(&mut self) -> Result<Vec<SerialPortInfo>, serialport::Error> {
+        // TODO error handling
+        let mut ports = serialport::available_ports()?;
+        ports.push(SerialPortInfo {
+            port_name: MOCK_PORT_NAME.to_owned(),
+            port_type: SerialPortType::Unknown,
+        });
+
+        // ports
+        //     .iter()
+        //     .map(|p| match &p.port_type {
+        //         SerialPortType::UsbPort(usb) => info!("{usb:#?}"),
+        //         _ => (),
+        //     })
+        //     .count();
+
+        ports.retain(|p| match &p.port_type {
+            SerialPortType::UsbPort(usb) => {
+                // Hardcoded filter for Index/Beyond's Bluetooth COM Port
+                // Will want to make this a proper configurable filter soon.
+                if usb.vid == 0x28DE && usb.pid == 0x2102 {
+                    false
+                } else {
+                    true
+                }
+            }
+            _ => true,
+        });
+
+        // TODO: Add filters for this in UI
+        #[cfg(unix)]
+        ports.retain(|port| {
+            !(port.port_type == SerialPortType::Unknown && !port.port_name.eq(MOCK_PORT_NAME))
+        });
+
+        info!("Serial port scanning found {} ports", ports.len());
+        // self.scanned_ports = ports;
+        Ok(ports)
+    }
+    fn connect_to_port(&mut self, port_info: &SerialPortInfo) -> Result<(), serialport::Error> {
+        let port = if port_info.port_name.eq(MOCK_PORT_NAME) {
             let mut virt_port =
                 virtual_serialport::VirtualPort::loopback(115200, MOCK_DATA.len() as u32)?;
             virt_port.write_all(MOCK_DATA.as_bytes())?;
 
             virt_port.into_boxed()
         } else {
-            serialport::new(port, 115200)
+            serialport::new(&port_info.port_name, 115200)
                 // .flow_control(serialport::FlowControl::Software)
                 .open()?
         };
         // let port = serialport::new(port, 115200).open()?;
         self.port = Some(port);
+        self.connected_port_info = Some(port_info.to_owned());
 
+        // Blech, if connecting from current_ports in attempt_reconnect, this may not exist.
+        // self.connected_port_info = self
+        //     .scanned_ports
+        //     .iter()
+        //     .find(|p| p.port_name == port_info)
+        //     .cloned();
+
+        assert!(self.connected_port_info.is_some());
+        info!("Serial worker connected to: {}", port_info.port_name);
+        self.event_tx.send(SerialEvent::Connected.into()).unwrap();
         Ok(())
     }
 }
+
+const MOCK_PORT_NAME: &str = "lorem-ipsum";
 
 const MOCK_DATA: &str = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Duis porta volutpat magna non suscipit. Fusce rhoncus placerat metus, in posuere elit porta eget. Praesent ut nulla euismod, pulvinar tellus a, interdum ipsum. Integer in risus vulputate, finibus sem a, mattis ipsum. Aenean nec hendrerit tellus. Fusce risus dolor, sagittis non libero tristique, mattis vulputate libero. Proin ultrices luctus malesuada. Vestibulum non condimentum augue. Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia curae; Vestibulum ultricies quis neque non pharetra. Nam fringilla nisl at tortor malesuada cursus. Nulla dictum, sem ac dignissim ullamcorper, est purus interdum tellus, at sagittis arcu risus suscipit neque. Mauris varius mauris vitae mi sollicitudin eleifend.
 

@@ -11,12 +11,15 @@ use ratatui::crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture, MouseButton, MouseEventKind},
     terminal,
 };
+
 use serialport::{SerialPortInfo, SerialPortType};
 use tracing::{error, info, level_filters::LevelFilter, Level};
 use tracing_appender::non_blocking::WorkerGuard;
 
 mod app;
 mod buffer;
+mod event_carousel;
+mod history;
 mod panic_handler;
 mod serial;
 mod settings;
@@ -71,30 +74,13 @@ fn run_inner() -> color_eyre::Result<()> {
         }
     });
 
-    let mut ports = serialport::available_ports().wrap_err("No ports found!")?;
-    ports.push(SerialPortInfo {
-        port_name: "virtual-port".to_owned(),
-        port_type: SerialPortType::Unknown,
-    });
-    // TODO: Add filters for this in UI
-    #[cfg(unix)]
-    let ports: Vec<_> = ports
-        .into_iter()
-        .filter(|port| {
-            !(port.port_type == SerialPortType::Unknown && !port.port_name.starts_with("virtual"))
-        })
-        .collect();
-
-    // let mut tui = tui::Tui::new(rx, ports);
-
-    tracing::info!("meow");
     // for p in ports {
     //     println!("{p:#?}");
     //     info!("{p:?}");
     // }
     let terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-    let result = App::new(tx, rx, ports).run(terminal);
+    let result = App::new(tx, rx).run(terminal);
 
     result
 }
