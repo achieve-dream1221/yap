@@ -60,6 +60,8 @@ impl SerialHandle {
             .send(SerialCommand::Connect(port.to_owned()))
             .unwrap();
     }
+    /// Sends the supplied bytes through the connected Serial device.
+    /// Newlines are automatically appended by the serial worker.
     pub fn send_bytes(&mut self, input: Vec<u8>) {
         self.command_tx
             .send(SerialCommand::TxBuffer(input))
@@ -70,16 +72,19 @@ impl SerialHandle {
         let buffer = input.as_bytes().to_owned();
         self.send_bytes(buffer);
     }
+    /// Non-blocking request for the serial worker to scan for ports and send a list of available ports
     pub fn request_port_scan(&mut self) {
         self.command_tx
             .send(SerialCommand::RequestPortScan)
             .unwrap();
     }
+    /// Non-blocking request for the serial worker to attempt to reconnect to the "current" device
     pub fn request_reconnect(&mut self) {
         self.command_tx
             .send(SerialCommand::RequestReconnect)
             .unwrap();
     }
+    /// Tells the worker thread to shutdown, blocking for up to three seconds before aborting.
     pub fn shutdown(&self) -> Result<(), ()> {
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         if self
@@ -170,6 +175,8 @@ impl SerialWorker {
 
                         // TODO This is because the ESP32-S3's virtual USB serial port
                         // has an issue with payloads larger than 256 bytes????
+                        // (Sending too fast causes the buffer to fill up too quickly for the
+                        // actual firmware to notice anything present and drain it before it hits the cap)
                         // So this might need to be a throttle toggle,
                         // maybe on by default since its not too bad?
                         let slow_writes = true;
@@ -254,7 +261,7 @@ impl SerialWorker {
         assert!(self.connected_port_info.is_some());
         // assert!(self.port.is_none());
         if self.port.is_some() {
-            error!("Got request to reconnect when already connected to port!");
+            error!("Got request to reconnect when already connected to port! Not acting...");
             return Ok(());
         }
         let current_ports = self.scan_for_serial_ports()?;
@@ -262,33 +269,37 @@ impl SerialWorker {
 
         // Checking for a perfect match
         if let Some(port) = current_ports.iter().find(|p| *p == desired_port) {
+            info!("Perfect match found! Reconnecting to: {}", port.port_name);
             // Sleeping to give the device some time to intialize with Windows
             // (Otherwise Access Denied errors can occur from trying to connect too quick)
-            info!("Perfect match found! Reconnecting to: {}", port.port_name);
             std::thread::sleep(Duration::from_secs(1));
             self.connect_to_port(&port)?;
             return Ok(());
         };
 
-        // Try to find a *new* port that has the same USB characteristics
-        if let Some(port) = current_ports
-            .iter()
-            // Only searching for USB Serial port devices
-            .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
-            // Filtering out ports that didn't change across scans
-            // (so we don't connect to an identical device, but was already present)
-            .filter(|p| !self.scan_snapshot.contains(p))
-            .find(|p| p.port_type == desired_port.port_type)
-        {
-            info!("Connecting to similar device on port: {}", port.port_name);
-            std::thread::sleep(Duration::from_secs(1));
-            self.connect_to_port(&port)?;
-            return Ok(());
-        };
+        let desired_is_usb = matches!(desired_port.port_type, SerialPortType::UsbPort(_));
+        if desired_is_usb {
+            // Try to find a *new* port that has all the same USB characteristics
+            if let Some(port) = current_ports
+                .iter()
+                // Only searching for USB Serial port devices
+                .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
+                // Filtering out ports that didn't change across scans
+                // (so we don't connect to an identical device that was already present and not being used)
+                .filter(|p| !self.scan_snapshot.contains(p))
+                .find(|p| p.port_type == desired_port.port_type)
+            {
+                info!("Connecting to similar device on port: {}", port.port_name);
+                std::thread::sleep(Duration::from_secs(1));
+                self.connect_to_port(&port)?;
+                return Ok(());
+            };
+            // Maybe add an extra USB attempt that just tries based on *just* USB PID & VID?
+            // (As some devices seem to change their Serial # arbitrarily?)
+            // Could be a toggle with Strict/Loose options.
+        }
 
-        // Maybe add an extra USB attempt that just tries based on *just* USB PID & VID?
-
-        // Last ditch effort, just try to connect to the same port_name
+        // Last ditch effort, just try to connect to the same port_name if it's present.
         if let Some(port) = current_ports
             .iter()
             .find(|p| *p.port_name == desired_port.port_name)
