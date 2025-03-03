@@ -1,37 +1,99 @@
-use ratatui::{style::Stylize, text::Line};
-use tracing::debug;
+use std::time::Instant;
+
+use color_eyre::owo_colors::OwoColorize;
+use ratatui::{
+    layout::Size,
+    style::{Style, Stylize},
+    text::Line,
+    widgets::{Block, Borders, Paragraph, Wrap},
+};
 
 use crate::app::{LINE_ENDINGS, LINE_ENDINGS_DEFAULT};
 
-pub struct Buffer<'a> {
+pub struct Buffer {
     raw_buffer: Vec<u8>,
-    // Maybe convert to Vec<Lines>?
-    // Should always be kept congruent with raw_buffer's contents
-    // Need to consider how I'm going to include echos added to the buffer, if I ever need to rebuild string_buffer
-    pub string: String,
-    // Cursed idea, maybe (String, height)?
-    // or a custom crate::Line {value:String,rendered_height,color,is_finished,raw_buffer_index,timestamp} struct
-    pub strings: Vec<String>,
-    pub lines: Vec<Line<'a>>,
-    // if not true, then the last line in [strings] is "incomplete" (no leading line-ending), and should be appended to
-    last_line_finished: bool,
+    pub lines: Vec<BufLine>,
+    // This technically *works* but I have issues with it
+    // Namely that this is the size of the terminal
+    // and not the actual buffer render area.
+    pub last_terminal_size: Size,
+    // pub color_rules
 }
 
-impl Default for Buffer<'_> {
+#[derive(Debug)]
+pub struct BufLine {
+    value: String,
+    rendered_line_count: usize,
+    style: Option<Style>,
+    // Might not be exactly accurate, but would be enough to place user input lines in proper space if needing to
+    raw_buffer_index: usize,
+    timestamp: Instant,
+}
+// Many changes needed, esp. in regards to current app-state things (index, width, color)
+impl BufLine {
+    fn new(value: String, raw_buffer_index: usize, area_width: u16) -> Self {
+        let mut line = Self {
+            value,
+            raw_buffer_index,
+            style: None,
+            rendered_line_count: 0,
+            timestamp: Instant::now(),
+        };
+        line.update_line_count(area_width);
+        line.determine_color();
+        line
+    }
+    fn completed(&self, line_ending: &str) -> bool {
+        self.value.ends_with(line_ending)
+    }
+    fn update_line_count(&mut self, area_width: u16) {
+        let para = Paragraph::new(self.as_line()).wrap(Wrap { trim: false });
+        // TODO make the sub 1 more sane/clear
+        let height = para.line_count(area_width.saturating_sub(1));
+        self.rendered_line_count = height;
+        // debug!("{self:?}");
+    }
+    fn determine_color(&mut self) {
+        // What do I pass into here?
+        // The rules? Should it instead be an outside decider that supplies the color?
+
+        if let Some(slice) = first_chars_of_str(&self.value, 5) {
+            let mut style = Style::new();
+            style = match slice {
+                "USER>" => style.dark_gray(),
+                "Got m" => style.blue(),
+                "ID:0x" => style.green(),
+                "Chan." => style.dark_gray(),
+                "Mode:" => style.yellow(),
+                "Power" => style.red(),
+                _ => style,
+            };
+
+            if style != Style::new() {
+                self.style = Some(style);
+            }
+        }
+    }
+    pub fn as_line(&self) -> Line {
+        match self.style {
+            Some(style) => Line::styled(&self.value, style),
+            None => Line::raw(&self.value),
+        }
+    }
+}
+
+impl Default for Buffer {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a> Buffer<'a> {
+impl Buffer {
     pub fn new() -> Self {
         Self {
             raw_buffer: Vec::with_capacity(1024),
-            string: String::new(),
-            strings: Vec::new(),
-            lines: Vec::new(),
-            // there is no line to append to, so just act as if "finished"
-            last_line_finished: true,
+            lines: Vec::with_capacity(1024),
+            last_terminal_size: Size::default(),
         }
     }
     // pub fn append_str(&mut self, str: &str) {
@@ -39,18 +101,27 @@ impl<'a> Buffer<'a> {
 
     // TODO also do append_user_bytes
     pub fn append_user_text(&mut self, text: &str) {
-        self.last_line_finished = true;
         // TODO dont use \n
-        let input: String = format!("USER> {}\n", text.escape_debug());
-        self.strings.push(input);
+        let value: String = format!("USER> {}\n", text.escape_debug());
+        let line = BufLine::new(
+            value,
+            self.raw_buffer.len().saturating_sub(1),
+            self.last_terminal_size.width,
+        );
+        self.lines.push(line);
     }
 
     // Forced to use Vec<u8> for now
     pub fn append_bytes(&mut self, bytes: &mut Vec<u8>) {
         let converted = String::from_utf8_lossy(&bytes).to_string();
+        // TODO maybe do line ending splits at this level, so raw_buffer_index can be more accurate
         self.raw_buffer.append(bytes);
 
-        let mut appending = !self.last_line_finished;
+        let mut appending_to_last = self
+            .lines
+            .last()
+            .map(|l| !l.completed(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]))
+            .unwrap_or(false);
         // self.strings.iter_mut().for_each(|s| {
         // });
 
@@ -61,20 +132,24 @@ impl<'a> Buffer<'a> {
             let s = line.replace(&['\t', '\n', '\r'][..], "");
             // TODO UTF-8 multi byte preservation between \n's?
             // Since if I am getting only one byte per second or read, then `String::from_utf8_lossy` could fail extra for no reason.
-            if appending {
-                self.strings
-                    .last_mut()
-                    .expect("Promised line to append to")
-                    .push_str(&s);
-                appending = false;
+            if appending_to_last {
+                let line = self.lines.last_mut().expect("Promised line to append to");
+                line.value.push_str(&s);
+                line.determine_color();
+                line.update_line_count(self.last_terminal_size.width);
+                appending_to_last = false;
             } else {
-                self.strings.push(s);
+                self.lines.push(BufLine::new(
+                    s,
+                    self.raw_buffer.len().saturating_sub(1),
+                    self.last_terminal_size.width,
+                ));
                 // self.lines.push(Line::raw(line.to_owned()));
             }
         }
-        if let Some(line) = self.strings.last() {
-            self.last_line_finished = line.ends_with(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]);
-        }
+        // if let Some(line) = self.lines.last() {
+        //     self.last_line_finished = line.ends_with(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]);
+        // }
 
         // let _: Vec<_> = self
         //     .strings
@@ -85,28 +160,58 @@ impl<'a> Buffer<'a> {
         //     })
         //     .collect();
     }
+    pub fn line_count(&self) -> usize {
+        self.lines.iter().map(|l| l.rendered_line_count).sum()
+    }
+    pub fn update_line_count(&mut self) -> usize {
+        self.lines.iter_mut().fold(0, |total, l| {
+            l.update_line_count(self.last_terminal_size.width);
 
-    pub fn lines(&self) -> impl Iterator<Item = Line> {
-        // TODO styling based on line prefix
-        self.strings.iter().map(|s| {
-            if s.len() < 5 {
-                Line::raw(s)
-            } else {
-                // TODO See if theres a more efficient matching method with variable-length patterns
-                let slice = &s[..4];
-                let line = Line::raw(s);
-                match slice {
-                    "Got m" => line.blue(),
-                    "ID:0x" => line.green(),
-                    "Chan." => line.dark_gray(),
-                    "Mode:" => line.yellow(),
-                    "Power" => line.red(),
-                    _ => line,
-                }
-            }
+            total + l.rendered_line_count
         })
+    }
+    pub fn lines_iter(&self) -> impl Iterator<Item = Line> {
+        // TODO styling based on line prefix
+        self.lines.iter().map(|l| l.as_line())
+        //     .map(|s| {
+        //     if s.len() < 5 {
+        //         Line::raw(s)
+        //     } else {
+        //         // TODO See if theres a more efficient matching method with variable-length patterns
+        //         let slice = &s[..4];
+        //         let line = Line::raw(s);
+        //         match slice {
+        //             "Got m" => line.blue(),
+        //             "ID:0x" => line.green(),
+        //             "Chan." => line.dark_gray(),
+        //             "Mode:" => line.yellow(),
+        //             "Power" => line.red(),
+        //             _ => line,
+        //         }
+        //     }
+        // })
 
-        // std::iter::once(Line::raw(""))
+        //     // std::iter::once(Line::raw(""))
+    }
+    pub fn terminal_paragraph(&self, buffer_wrapping: bool) -> Paragraph<'_> {
+        // let lines: Vec<_> = self
+        //     .buffer
+        //     .lines
+        //     .iter()
+        //     .map(|s| Cow::Borrowed(s.as_str()))
+        //     .map(|c| if styled { coloring(c) } else { Line::raw(c) })
+        //     .collect();
+        let lines: Vec<_> = self.lines_iter().collect();
+
+        let para = Paragraph::new(lines).block(Block::new().borders(Borders::RIGHT));
+        if buffer_wrapping {
+            // TODO make better logic for this where it takes in the current scroll,
+            // only rendering the lines intersecting with the buffer's "window",
+            // and handling scrolling itself.
+            para.wrap(Wrap { trim: false })
+        } else {
+            para
+        }
     }
 }
 
@@ -115,3 +220,19 @@ impl<'a> Buffer<'a> {
 //     let line = Line::from(text);
 
 // }
+
+fn first_chars_of_str(value: &str, char_count: usize) -> Option<&str> {
+    let value_char_count = value.chars().count();
+    if value_char_count < char_count {
+        None
+    } else if value_char_count == char_count {
+        Some(value)
+    } else {
+        let end = value
+            .char_indices()
+            .nth(char_count)
+            .map(|(i, _)| i)
+            .expect("Not enough chars?");
+        Some(&value[..end])
+    }
+}

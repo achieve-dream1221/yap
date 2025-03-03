@@ -80,7 +80,7 @@ pub const LINE_ENDINGS_DEFAULT: usize = 0;
 
 // Maybe have the buffer in the TUI struct?
 
-pub struct App<'a> {
+pub struct App {
     state: RunningState,
     menu: Menu,
     rx: Receiver<Event>,
@@ -97,21 +97,18 @@ pub struct App<'a> {
 
     user_input: UserInput,
 
-    last_terminal_size: Size,
-
-    buffer: Buffer<'a>,
+    buffer: Buffer,
     // Tempted to move these into Buffer, or a new BufferState
     buffer_scroll: usize,
     buffer_scroll_state: ScrollbarState,
     buffer_stick_to_bottom: bool,
     buffer_wrapping: bool,
     // Filled in while drawing UI
-    buffer_rendered_lines: usize,
-
+    // buffer_rendered_lines: usize,
     repeating_line_flip: bool,
 }
 
-impl App<'_> {
+impl App {
     pub fn new(tx: Sender<Event>, rx: Receiver<Event>) -> Self {
         let (event_carousel, carousel_thread) = CarouselHandle::new(tx.clone());
         let (serial_handle, serial_thread) = SerialHandle::new(tx);
@@ -133,13 +130,11 @@ impl App<'_> {
 
             user_input: UserInput::default(),
 
-            last_terminal_size: Size::default(),
             buffer: Buffer::new(),
             buffer_scroll: 0,
             buffer_scroll_state: ScrollbarState::default(),
             buffer_stick_to_bottom: true,
-            buffer_rendered_lines: 0,
-
+            // buffer_rendered_lines: 0,
             buffer_wrapping: true,
 
             repeating_line_flip: false,
@@ -159,7 +154,7 @@ impl App<'_> {
                 Event::Crossterm(CrosstermEvent::Resize) => {
                     terminal.autoresize()?;
                     if let Ok(size) = terminal.size() {
-                        self.last_terminal_size = size;
+                        self.buffer.last_terminal_size = size;
                     } else {
                         error!("Failed to query terminal size!");
                     }
@@ -197,7 +192,6 @@ impl App<'_> {
                 }
                 Event::Serial(SerialEvent::RxBuffer(mut data)) => {
                     self.buffer.append_bytes(&mut data);
-                    self.update_line_count();
                     self.scroll_buffer(0);
 
                     self.repeating_line_flip = !self.repeating_line_flip;
@@ -269,6 +263,10 @@ impl App<'_> {
                     // TODO Quit prompt when connected?
                     self.state = RunningState::Finished
                 }
+                'w' | 'W' if ctrl_pressed => {
+                    self.buffer_wrapping = !self.buffer_wrapping;
+                    self.scroll_buffer(0);
+                }
                 _ => {
                     // self.user_input
                     //     .handle_event(&ratatui::crossterm::event::Event::Key(key));
@@ -336,7 +334,6 @@ impl App<'_> {
                     self.user_input.reset();
 
                     self.repeating_line_flip = !self.repeating_line_flip;
-                    self.update_line_count();
                     // Scroll all the way down
                     // TODO: Make this behavior a toggle
                     self.scroll_buffer(i32::MIN);
@@ -351,7 +348,7 @@ impl App<'_> {
         Ok(())
     }
     fn render_app(&mut self, frame: &mut Frame) {
-        self.last_terminal_size = frame.area().as_size();
+        self.buffer.last_terminal_size = frame.area().as_size();
 
         let vertical_slices = Layout::vertical([
             Constraint::Fill(1),
@@ -383,7 +380,7 @@ impl App<'_> {
                 self.buffer_stick_to_bottom = false;
             }
             // Scroll all the way down
-            i32::MIN => self.buffer_scroll = self.buffer_rendered_lines,
+            i32::MIN => self.buffer_scroll = self.line_count(),
 
             // Scroll up
             x if up > 0 => {
@@ -397,7 +394,7 @@ impl App<'_> {
         }
 
         let last_size = {
-            let mut size = self.last_terminal_size;
+            let mut size = self.buffer.last_terminal_size;
             // "2" is the lines from the repeating_pattern_widget and the input buffer.
             // Might need to make more dynamic later?
             size.height = size.height.saturating_sub(2);
@@ -408,8 +405,8 @@ impl App<'_> {
 
         if up > 0 && more_lines_than_height {
             self.buffer_stick_to_bottom = false;
-        } else if self.buffer_scroll + last_size.height as usize >= self.buffer_rendered_lines {
-            self.buffer_scroll = self.buffer_rendered_lines;
+        } else if self.buffer_scroll + last_size.height as usize >= self.line_count() {
+            self.buffer_scroll = self.line_count();
             self.buffer_stick_to_bottom = true;
         }
 
@@ -447,59 +444,17 @@ impl App<'_> {
 
     fn line_count(&self) -> usize {
         if self.buffer_wrapping {
-            self.buffer_rendered_lines
+            self.buffer.line_count()
         } else {
-            self.buffer.strings.len()
+            self.buffer.lines.len()
         }
     }
 
     fn update_line_count(&mut self) -> usize {
         if self.buffer_wrapping {
-            let paragraph = self.terminal_paragraph(false);
-            let line_count = paragraph.line_count(self.last_terminal_size.width.saturating_sub(1));
-            self.buffer_rendered_lines = line_count;
-            line_count
+            self.buffer.update_line_count()
         } else {
-            self.buffer.strings.len()
-        }
-    }
-
-    // TODO Move this into impl Buffer?
-    pub fn terminal_paragraph<'a>(&'a self, styled: bool) -> Paragraph<'a> {
-        let coloring = |c: Cow<'a, str>| -> Line<'a> {
-            if c.len() < 5 {
-                Line::from(c)
-            } else {
-                let line = Line::from(c);
-                // info!("{}", line.spans.len());
-                // info!("{}", line.spans[0].content.len());
-                // TODO Change this from byte indexing since it might run in the middle of a multi-byte char at some point
-                let slice = &&line.spans[0].content[..5];
-                match *slice {
-                    "USER>" => line.dark_gray(),
-                    "Got m" => line.blue(),
-                    "ID:0x" => line.green(),
-                    "Chan." => line.dark_gray(),
-                    "Mode:" => line.yellow(),
-                    "Power" => line.red(),
-                    _ => line,
-                }
-            }
-        };
-        let lines: Vec<_> = self
-            .buffer
-            .strings
-            .iter()
-            .map(|s| Cow::Borrowed(s.as_str()))
-            .map(|c| if styled { coloring(c) } else { Line::raw(c) })
-            .collect();
-        // let lines = self.buffer.lines.iter();
-
-        let para = Paragraph::new(lines).block(Block::new().borders(Borders::RIGHT));
-        if self.buffer_wrapping {
-            para.wrap(Wrap { trim: false })
-        } else {
-            para
+            self.buffer.lines.len()
         }
     }
 
@@ -520,9 +475,9 @@ impl App<'_> {
 
         // let text = Paragraph::new(buffer.to_owned());
 
-        let para = self.terminal_paragraph(true);
+        let para = self.buffer.terminal_paragraph(self.buffer_wrapping);
 
-        let total_lines = para.line_count(terminal_area.width.saturating_sub(1));
+        // let total_lines = para.line_count(terminal_area.width.saturating_sub(1));
 
         // info!(
         //     "total rendered lines: {total_lines}, line vec count: {}",
@@ -549,7 +504,7 @@ impl App<'_> {
         frame.render_widget(para, terminal_area);
 
         // self.buffer_scroll_state = self.buffer_scroll_state.content_length(total_lines);
-        self.buffer_rendered_lines = total_lines;
+        // self.buffer_rendered_lines = total_lines;
         // maybe debug_assert this when we roll our own line-counting?
 
         if !self.buffer_stick_to_bottom {

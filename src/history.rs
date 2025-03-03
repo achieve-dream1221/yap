@@ -33,12 +33,14 @@ impl UserInput {
     }
     pub fn scroll(&mut self, up: bool) {
         let entry = self.history.scroll(up);
+        // When first entering into history, cache the user's unsent input.
         if entry.is_some() && self.preserved_input.is_none() {
             self.preserved_input = Some(self.input_box.value().to_owned());
         }
         if let Some(entry) = entry {
             self.input_box = Input::new(entry.to_owned());
         } else {
+            // Returning user's input text when exiting history
             if let Some(preserved) = self.preserved_input.take() {
                 self.input_box = preserved.into();
             }
@@ -75,14 +77,19 @@ impl History {
 
         if up {
             match self.selected {
+                // At top of history, do nothing
                 Some(0) => (),
+                // Moving up the history (most recent elements first)
                 Some(x) => self.selected = Some(x - 1),
                 None => self.selected = Some(self.history.len() - 1),
             }
         } else {
             match self.selected {
+                // Move down if there's elements to be expected
                 Some(x) if x < self.history.len() - 1 => self.selected = Some(x + 1),
-                Some(_) => self.selected = None,
+                // No more elements, clear selection.
+                Some(_) => self.clear_selection(),
+                // Not in history, don't scroll.
                 None => (),
             }
         }
