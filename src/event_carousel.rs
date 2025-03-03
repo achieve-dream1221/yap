@@ -6,8 +6,8 @@ use std::{
 
 use tracing::{error, info};
 
-enum CarouselCommand<T> {
-    AddEvent(T, Duration),
+enum CarouselCommand<T: Clone> {
+    AddEvent(CarouselEvent<T>),
     Shutdown(Sender<()>),
 }
 
@@ -36,9 +36,26 @@ impl<T: Clone + Send + std::fmt::Debug + 'static> CarouselHandle<T> {
 
         (Self { command_tx }, worker)
     }
-    pub fn add_event(&self, payload: T, interval: Duration) {
+    pub fn add_repeating(&self, payload: T, interval: Duration) {
+        let event = CarouselEvent {
+            payload,
+            interval,
+            last_sent: Instant::now(),
+            event_type: EventType::Repeating,
+        };
         self.command_tx
-            .send(CarouselCommand::AddEvent(payload, interval))
+            .send(CarouselCommand::AddEvent(event))
+            .unwrap();
+    }
+    pub fn add_oneshot(&self, payload: T, delay: Duration) {
+        let event = CarouselEvent {
+            payload,
+            interval: delay,
+            last_sent: Instant::now(),
+            event_type: EventType::Oneshot,
+        };
+        self.command_tx
+            .send(CarouselCommand::AddEvent(event))
             .unwrap();
     }
     pub fn shutdown(&self) -> Result<(), ()> {
@@ -65,6 +82,14 @@ struct CarouselEvent<T: Clone> {
     interval: Duration,
     payload: T,
     last_sent: Instant,
+    event_type: EventType,
+}
+
+#[derive(PartialEq, Eq)]
+enum EventType {
+    Repeating,
+    Oneshot,
+    ExpiredOneshot,
 }
 
 struct CarouselWorker<T: Clone> {
@@ -80,14 +105,8 @@ impl<T: Clone> CarouselWorker<T> {
         let mut sleep_time = Duration::from_secs(5);
         let mut send_error = false;
         loop {
-            let now = Instant::now();
             match self.command_rx.recv_timeout(sleep_time) {
-                Ok(CarouselCommand::AddEvent(payload, interval)) => {
-                    let event = CarouselEvent {
-                        payload,
-                        interval,
-                        last_sent: now,
-                    };
+                Ok(CarouselCommand::AddEvent(event)) => {
                     self.events.push(event);
                 }
                 Ok(CarouselCommand::Shutdown(shutdown_tx)) => {
@@ -118,6 +137,11 @@ impl<T: Clone> CarouselWorker<T> {
                             error!("Failed to send {e:?}, closing carousel thread.");
                             send_error = true;
                         }
+
+                        if e.event_type == EventType::Oneshot {
+                            e.event_type = EventType::ExpiredOneshot;
+                        }
+
                         e.interval
                     } else {
                         let remaining = e.interval - since_last_send;
@@ -126,6 +150,10 @@ impl<T: Clone> CarouselWorker<T> {
 
                     shortest.min(until_next_send)
                 });
+
+            // Removing any expired oneshots
+            self.events
+                .retain(|e| e.event_type != EventType::ExpiredOneshot);
 
             if send_error {
                 break;

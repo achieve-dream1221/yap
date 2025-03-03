@@ -3,7 +3,7 @@ use std::{
     i32,
     sync::mpsc::{Receiver, Sender},
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use arboard::Clipboard;
@@ -23,7 +23,7 @@ use ratatui::{
 use ratatui_macros::{horizontal, line, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
 use takeable::Takeable;
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 use tui_input::{backend::crossterm::EventHandler, Input, StateChanged};
 
 use crate::{
@@ -51,8 +51,16 @@ impl From<CrosstermEvent> for Event {
 pub enum Event {
     Crossterm(CrosstermEvent),
     Serial(SerialEvent),
-    TickSecond,
+    Tick(Tick),
     Quit,
+}
+
+#[derive(Clone, Debug)]
+enum Tick {
+    // Sent every second
+    PerSecond,
+    // When just trying to update the UI a little early
+    Requested,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -78,6 +86,8 @@ const COMMON_BAUD_DEFAULT: usize = 5;
 pub const LINE_ENDINGS: &[&str] = &["\n", "\r", "\r\n"];
 pub const LINE_ENDINGS_DEFAULT: usize = 0;
 
+const FAILED_SEND_VISUAL_TIME: Duration = Duration::from_millis(750);
+
 // Maybe have the buffer in the TUI struct?
 
 pub struct App {
@@ -90,6 +100,7 @@ pub struct App {
     serial_thread: Takeable<JoinHandle<()>>,
     // Might ArcBool this in the Handle later
     // Might be worth an enum instead?
+    // Or a SerialStatus struct with current_port_info and health status
     serial_healthy: bool,
 
     carousel: CarouselHandle<Event>,
@@ -106,6 +117,7 @@ pub struct App {
     // Filled in while drawing UI
     // buffer_rendered_lines: usize,
     repeating_line_flip: bool,
+    failed_send_at: Option<Instant>,
 }
 
 impl App {
@@ -113,7 +125,7 @@ impl App {
         let (event_carousel, carousel_thread) = CarouselHandle::new(tx.clone());
         let (serial_handle, serial_thread) = SerialHandle::new(tx);
 
-        event_carousel.add_event(Event::TickSecond, Duration::from_secs(1));
+        event_carousel.add_repeating(Event::Tick(Tick::PerSecond), Duration::from_secs(1));
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection,
@@ -138,6 +150,8 @@ impl App {
             buffer_wrapping: true,
 
             repeating_line_flip: false,
+            failed_send_at: None,
+            // failed_send_at: Instant::now(),
         }
     }
     fn is_running(&self) -> bool {
@@ -202,7 +216,7 @@ impl App {
                         self.table_state = TableState::new().with_selected(Some(0));
                     }
                 }
-                Event::TickSecond => match self.menu {
+                Event::Tick(Tick::PerSecond) => match self.menu {
                     Menu::Terminal => {
                         if !self.serial_healthy {
                             self.repeating_line_flip = !self.repeating_line_flip;
@@ -213,6 +227,11 @@ impl App {
                         self.serial.request_port_scan();
                     }
                 },
+                Event::Tick(Tick::Requested) => {
+                    debug!("Requested tick recieved.");
+                    self.failed_send_at
+                        .take_if(|i| i.elapsed() >= FAILED_SEND_VISUAL_TIME);
+                }
             }
         }
         // Shutting down worker threads, with timeouts
@@ -338,6 +357,9 @@ impl App {
                     // TODO: Make this behavior a toggle
                     self.scroll_buffer(i32::MIN);
                 } else {
+                    self.failed_send_at = Some(Instant::now());
+                    self.carousel
+                        .add_oneshot(Event::Tick(Tick::Requested), FAILED_SEND_VISUAL_TIME);
                     // Temporarily show text on red background when trying to send while unhealthy
                 }
             }
@@ -542,7 +564,7 @@ impl App {
                         info
                     } else {
                         // Might remove later
-                        format!("Reconnecting to {info}")
+                        format!("[!] {info} [!]")
                     }
                 }
                 None => {
@@ -562,8 +584,15 @@ impl App {
         } else {
             let width = input_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge
             let scroll = self.user_input.input_box.visual_scroll(width as usize);
-            let input_text =
-                Paragraph::new(self.user_input.input_box.value()).scroll((0, scroll as u16));
+            let style = match &self.failed_send_at {
+                Some(instant) if instant.elapsed() < FAILED_SEND_VISUAL_TIME => {
+                    Style::new().on_red()
+                }
+                _ => Style::new(),
+            };
+            let input_text = Paragraph::new(self.user_input.input_box.value())
+                .scroll((0, scroll as u16))
+                .style(style);
             frame.render_widget(input_text, input_area);
             frame.set_cursor_position((
                 // Put cursor past the end of the input text
