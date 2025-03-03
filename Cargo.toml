@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 arboard = "3.4.1"
+arc-swap = "1.7.1"
 better-panic = "0.3.0"
 chrono = "0.4.39"
 color-eyre = "0.6.3"

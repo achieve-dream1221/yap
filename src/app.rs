@@ -30,7 +30,7 @@ use crate::{
     buffer::Buffer,
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
-    serial::{SerialEvent, SerialHandle},
+    serial::{PrintablePortInfo, SerialEvent, SerialHandle},
 };
 
 #[derive(Clone, Debug)]
@@ -158,7 +158,7 @@ impl App {
                     } else {
                         error!("Failed to query terminal size!");
                     }
-                    self.update_line_count();
+                    self.buffer.update_line_count();
                     self.scroll_buffer(0);
                 }
                 Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
@@ -412,9 +412,9 @@ impl App {
 
         if self.buffer_stick_to_bottom {
             let new_pos = total_lines.saturating_sub(last_size.height as usize);
+            self.buffer_scroll = new_pos;
 
             // if more_lines_than_height {
-            self.buffer_scroll = new_pos.saturating_add(0);
             // }
 
             // let last_size = self.last_terminal_size;
@@ -450,13 +450,13 @@ impl App {
         }
     }
 
-    fn update_line_count(&mut self) -> usize {
-        if self.buffer_wrapping {
-            self.buffer.update_line_count()
-        } else {
-            self.buffer.lines.len()
-        }
-    }
+    // fn update_line_count(&mut self) -> usize {
+    //     if self.buffer_wrapping {
+    //         self.buffer.update_line_count()
+    //     } else {
+    //         self.buffer.lines.len()
+    //     }
+    // }
 
     pub fn terminal_menu<'a>(
         &mut self,
@@ -519,9 +519,6 @@ impl App {
             frame.render_widget(scroll_notice, notice_area);
         }
 
-        // TODO Fix scrollbar, not sure if I need to half it or what.
-        // (It's only reaching the bottom when the entirety is off the screen)
-        // Need to flip..?
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("↑"))
@@ -535,6 +532,28 @@ impl App {
             self.repeating_line_flip,
             self.serial_healthy,
         );
+
+        {
+            let current_port = self.serial.current_port.load();
+            let port_text = match &*current_port {
+                Some(port) => {
+                    let info = port.info_as_string();
+                    if self.serial_healthy {
+                        info
+                    } else {
+                        // Might remove later
+                        format!("Reconnecting to {info}")
+                    }
+                }
+                None => {
+                    error!("Port info missing during render!");
+                    "Port info missing!".to_owned()
+                }
+            };
+
+            let port_name_line = Line::raw(port_text).centered();
+            frame.render_widget(port_name_line, line_area);
+        }
 
         if self.user_input.input_box.value().is_empty() {
             let input_hint = Line::raw("Input goes here.").dark_gray();

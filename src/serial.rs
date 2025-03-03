@@ -1,10 +1,14 @@
 use std::{
     io::{BufWriter, Write},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Arc, RwLock,
+    },
     thread::JoinHandle,
     time::Duration,
 };
 
+use arc_swap::ArcSwapOption;
 use serialport::{SerialPort, SerialPortInfo, SerialPortType};
 use tracing::{debug, error, info};
 
@@ -37,13 +41,39 @@ pub enum SerialCommand {
 
 pub struct SerialHandle {
     command_tx: Sender<SerialCommand>,
+    pub current_port: Arc<ArcSwapOption<SerialPortInfo>>,
+}
+
+pub trait PrintablePortInfo {
+    fn info_as_string(&self) -> String;
+}
+
+impl PrintablePortInfo for SerialPortInfo {
+    fn info_as_string(&self) -> String {
+        let extra_info = match &self.port_type {
+            SerialPortType::UsbPort(usb) => {
+                format!("PID: 0x{:04X}, VID: 0x{:04X}", usb.pid, usb.vid)
+            }
+            SerialPortType::Unknown => String::new(),
+            SerialPortType::PciPort => "PCI".to_owned(),
+            SerialPortType::BluetoothPort => "Bluetooth".to_owned(),
+        };
+
+        if extra_info.is_empty() {
+            format!("{}", self.port_name)
+        } else {
+            format!("{} | {extra_info}", self.port_name)
+        }
+    }
 }
 
 impl SerialHandle {
     pub fn new(event_tx: Sender<Event>) -> (Self, JoinHandle<()>) {
         let (command_tx, command_rx) = mpsc::channel();
 
-        let mut worker = SerialWorker::new(command_rx, event_tx);
+        let current_port = Arc::new(ArcSwapOption::empty());
+
+        let mut worker = SerialWorker::new(command_rx, event_tx, current_port.clone());
 
         let worker = std::thread::spawn(move || {
             worker
@@ -51,7 +81,10 @@ impl SerialHandle {
                 .expect("Serial worker encountered an error!");
         });
 
-        let mut handle = Self { command_tx };
+        let mut handle = Self {
+            command_tx,
+            current_port,
+        };
         handle.request_port_scan();
         (handle, worker)
     }
@@ -109,18 +142,23 @@ pub struct SerialWorker {
     command_rx: Receiver<SerialCommand>,
     event_tx: Sender<Event>,
     port: Option<Box<dyn SerialPort>>,
-    connected_port_info: Option<SerialPortInfo>,
     scan_snapshot: Vec<SerialPortInfo>,
     buffer: Vec<u8>,
+    connected_port_info: Arc<ArcSwapOption<SerialPortInfo>>,
 }
 
 impl SerialWorker {
-    fn new(command_rx: Receiver<SerialCommand>, event_tx: Sender<Event>) -> Self {
+    fn new(
+        command_rx: Receiver<SerialCommand>,
+        event_tx: Sender<Event>,
+        connected_port_info: Arc<ArcSwapOption<SerialPortInfo>>,
+    ) -> Self {
         Self {
             command_rx,
             event_tx,
+            connected_port_info,
+            // connected_port_info: None,
             port: None,
-            connected_port_info: None,
             scan_snapshot: vec![],
             buffer: vec![0; 1024 * 1024],
         }
@@ -138,7 +176,7 @@ impl SerialWorker {
                             .send(())
                             .expect("Failed to reply to shutdown request");
 
-                        _ = self.connected_port_info.take();
+                        self.connected_port_info.store(None);
                         _ = self.port.take();
                         break;
                     }
@@ -153,7 +191,7 @@ impl SerialWorker {
                         self.attempt_reconnect().unwrap();
                     }
                     SerialCommand::Disconnect => {
-                        _ = self.connected_port_info.take();
+                        self.connected_port_info.store(None);
                         _ = self.port.take();
                     }
                     // This should maybe reply with a success/fail in case the
@@ -258,17 +296,20 @@ impl SerialWorker {
         Ok(())
     }
     fn attempt_reconnect(&mut self) -> Result<(), serialport::Error> {
-        assert!(self.connected_port_info.is_some());
+        // assert!(self.connected_port_info.read().unwrap().is_some());
         // assert!(self.port.is_none());
         if self.port.is_some() {
             error!("Got request to reconnect when already connected to port! Not acting...");
             return Ok(());
         }
         let current_ports = self.scan_for_serial_ports()?;
-        let desired_port = self.connected_port_info.as_ref().unwrap();
+        let port_guard = self.connected_port_info.load();
+        let desired_port = port_guard.as_ref().unwrap();
 
         // Checking for a perfect match
-        if let Some(port) = current_ports.iter().find(|p| *p == desired_port) {
+        // TODO look into the USB Interface field for SerialPortInfo, see if we should keep it in mind
+        // for the potential extra+less strict check
+        if let Some(port) = current_ports.iter().find(|p| **p == **desired_port) {
             info!("Perfect match found! Reconnecting to: {}", port.port_name);
             // Sleeping to give the device some time to intialize with Windows
             // (Otherwise Access Denied errors can occur from trying to connect too quick)
@@ -367,7 +408,8 @@ impl SerialWorker {
         };
         // let port = serialport::new(port, 115200).open()?;
         self.port = Some(port);
-        self.connected_port_info = Some(port_info.to_owned());
+        self.connected_port_info
+            .store(Some(Arc::new(port_info.to_owned())));
 
         // Blech, if connecting from current_ports in attempt_reconnect, this may not exist.
         // self.connected_port_info = self
@@ -376,7 +418,7 @@ impl SerialWorker {
         //     .find(|p| p.port_name == port_info)
         //     .cloned();
 
-        assert!(self.connected_port_info.is_some());
+        // assert!(self.connected_port_info.is_some());
         info!("Serial worker connected to: {}", port_info.port_name);
         self.event_tx.send(SerialEvent::Connected.into()).unwrap();
         Ok(())
