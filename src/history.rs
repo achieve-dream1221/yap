@@ -60,8 +60,15 @@ impl History {
         if self.history.last().map_or(false, |s| s.eq(entry)) {
             return;
         }
-        self.history.push(entry.to_owned());
-        self.clear_selection();
+        // If it's instead further up the history, let's move it down to the bottom instead
+        // TODO toggle for this behavior?
+        if let Some(index) = self.history.iter().position(|s| s.eq(entry)) {
+            let existing = self.history.remove(index);
+            self.history.push(existing);
+        } else {
+            // Doesn't exist, push an owned version.
+            self.history.push(entry.to_owned());
+        }
     }
     pub fn get_selected(&self) -> Option<&str> {
         self.selected

@@ -12,7 +12,7 @@ use arc_swap::ArcSwapOption;
 use serialport::{SerialPort, SerialPortInfo, SerialPortType};
 use tracing::{debug, error, info};
 
-use crate::app::Event;
+use crate::app::{Event, Tick};
 
 // TODO maybe relegate this to the serial worker thread in case it blocks?
 
@@ -240,6 +240,7 @@ impl SerialWorker {
                                     // );
                                     info!("buf n: {n}");
                                     buf = &buf[n..];
+                                    self.event_tx.send(Tick::Tx.into()).unwrap();
                                     std::thread::sleep(Duration::from_millis(1));
                                 }
                                 Err(e) => todo!("{e}"),
@@ -318,8 +319,7 @@ impl SerialWorker {
             return Ok(());
         };
 
-        let desired_is_usb = matches!(desired_port.port_type, SerialPortType::UsbPort(_));
-        if desired_is_usb {
+        if let SerialPortType::UsbPort(desired_usb) = &desired_port.port_type {
             // Try to find a *new* port that has all the same USB characteristics
             if let Some(port) = current_ports
                 .iter()
@@ -330,14 +330,37 @@ impl SerialWorker {
                 .filter(|p| !self.scan_snapshot.contains(p))
                 .find(|p| p.port_type == desired_port.port_type)
             {
-                info!("Connecting to similar device on port: {}", port.port_name);
+                info!(
+                    "[STRICT] Connecting to similar USB device with port: {}",
+                    port.port_name
+                );
                 std::thread::sleep(Duration::from_secs(1));
                 self.connect_to_port(&port)?;
                 return Ok(());
             };
-            // Maybe add an extra USB attempt that just tries based on *just* USB PID & VID?
-            // (As some devices seem to change their Serial # arbitrarily?)
-            // Could be a toggle with Strict/Loose options.
+            if let Some(port) = current_ports
+                .iter()
+                // Filtering out ports that didn't change across scans
+                .filter(|p| !self.scan_snapshot.contains(p))
+                // Trying to find another USB device with *just* matching USB PID & VID
+                // Use cases: Some devices seem to change their Serial # arbitrarily?
+                //          - And for interfacing with several identical devices (one at a time) without reconnecting via TUI
+                // Needs a toggle with Strict/Loose options, as the extra behavior isn't always desirable.
+                .find(|p| match &p.port_type {
+                    SerialPortType::UsbPort(usb) => {
+                        usb.pid == desired_usb.pid && usb.vid == desired_usb.vid
+                    }
+                    _ => false,
+                })
+            {
+                info!(
+                    "[NON-STRICT] Connecting to similar USB device with port: {}",
+                    port.port_name
+                );
+                std::thread::sleep(Duration::from_secs(1));
+                self.connect_to_port(&port)?;
+                return Ok(());
+            };
         }
 
         // Last ditch effort, just try to connect to the same port_name if it's present.
@@ -355,7 +378,7 @@ impl SerialWorker {
 
         Ok(())
     }
-    fn scan_for_serial_ports(&mut self) -> Result<Vec<SerialPortInfo>, serialport::Error> {
+    fn scan_for_serial_ports(&self) -> Result<Vec<SerialPortInfo>, serialport::Error> {
         // TODO error handling
         let mut ports = serialport::available_ports()?;
         ports.push(SerialPortInfo {

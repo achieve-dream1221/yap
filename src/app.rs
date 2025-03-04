@@ -56,11 +56,19 @@ pub enum Event {
 }
 
 #[derive(Clone, Debug)]
-enum Tick {
+pub enum Tick {
     // Sent every second
     PerSecond,
     // When just trying to update the UI a little early
     Requested,
+    // Used to twiddle repeating_line_flip for each transmission
+    Tx,
+}
+
+impl From<Tick> for Event {
+    fn from(value: Tick) -> Self {
+        Self::Tick(value)
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -125,7 +133,7 @@ impl App {
         let (event_carousel, carousel_thread) = CarouselHandle::new(tx.clone());
         let (serial_handle, serial_thread) = SerialHandle::new(tx);
 
-        event_carousel.add_repeating(Event::Tick(Tick::PerSecond), Duration::from_secs(1));
+        event_carousel.add_repeating(Tick::PerSecond.into(), Duration::from_secs(1));
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection,
@@ -232,6 +240,7 @@ impl App {
                     self.failed_send_at
                         .take_if(|i| i.elapsed() >= FAILED_SEND_VISUAL_TIME);
                 }
+                Event::Tick(Tick::Tx) => self.repeating_line_flip = !self.repeating_line_flip,
             }
         }
         // Shutting down worker threads, with timeouts
@@ -350,6 +359,7 @@ impl App {
                     self.serial.send_str(user_input);
                     self.buffer.append_user_text(user_input);
                     self.user_input.history.push(user_input);
+                    self.user_input.history.clear_selection();
                     self.user_input.reset();
 
                     self.repeating_line_flip = !self.repeating_line_flip;
@@ -359,7 +369,7 @@ impl App {
                 } else {
                     self.failed_send_at = Some(Instant::now());
                     self.carousel
-                        .add_oneshot(Event::Tick(Tick::Requested), FAILED_SEND_VISUAL_TIME);
+                        .add_oneshot(Tick::Requested.into(), FAILED_SEND_VISUAL_TIME);
                     // Temporarily show text on red background when trying to send while unhealthy
                 }
             }
