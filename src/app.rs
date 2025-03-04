@@ -10,7 +10,7 @@ use arboard::Clipboard;
 use color_eyre::{eyre::Result, owo_colors::OwoColorize};
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
-    layout::{Constraint, Layout, Offset, Rect, Size},
+    layout::{Constraint, Layout, Margin, Offset, Rect, Size},
     prelude::Backend,
     style::{Style, Stylize},
     text::{Line, Text},
@@ -24,13 +24,14 @@ use ratatui_macros::{horizontal, line, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
 use takeable::Takeable;
 use tracing::{debug, error, info, instrument};
+use tui_big_text::{BigText, PixelSize};
 use tui_input::{backend::crossterm::EventHandler, Input, StateChanged};
 
 use crate::{
     buffer::Buffer,
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
-    serial::{PrintablePortInfo, SerialEvent, SerialHandle},
+    serial::{PrintablePortInfo, SerialEvent, SerialHandle, MOCK_PORT_NAME},
 };
 
 #[derive(Clone, Debug)]
@@ -381,7 +382,7 @@ impl App {
     }
     fn render_app(&mut self, frame: &mut Frame) {
         self.buffer.last_terminal_size = frame.area().as_size();
-
+        // TODO, make more reactive based on frame size :)
         let vertical_slices = Layout::vertical([
             Constraint::Fill(1),
             Constraint::Fill(4),
@@ -390,13 +391,23 @@ impl App {
         .split(frame.area());
 
         match self.menu {
-            Menu::PortSelection => port_selection(
-                &self.ports,
-                COMMON_BAUD[COMMON_BAUD_DEFAULT],
-                frame,
-                vertical_slices[1],
-                &mut self.table_state,
-            ),
+            Menu::PortSelection => {
+                let big_text = BigText::builder()
+                    .pixel_size(PixelSize::Quadrant)
+                    .style(Style::new().blue())
+                    .centered()
+                    .lines(vec!["yap".blue().into()])
+                    .build();
+                frame.render_widget(big_text, vertical_slices[0]);
+                port_selection(
+                    &self.ports,
+                    COMMON_BAUD[COMMON_BAUD_DEFAULT],
+                    frame,
+                    vertical_slices[1],
+                    &mut self.table_state,
+                    // &mut self.single_line_state,
+                );
+            }
             Menu::Terminal => self.terminal_menu(frame, frame.area()),
         }
     }
@@ -565,6 +576,23 @@ impl App {
             self.serial_healthy,
         );
 
+        #[cfg(debug_assertions)]
+        {
+            let line = Line::raw(format!(
+                "Entries: {} | Lines: {}",
+                self.buffer.lines.len(),
+                self.buffer.line_count()
+            ))
+            .right_aligned();
+            frame.render_widget(
+                line,
+                line_area.inner(Margin {
+                    horizontal: 3,
+                    vertical: 0,
+                }),
+            );
+        }
+
         {
             let current_port = self.serial.current_port.load();
             let port_text = match &*current_port {
@@ -637,15 +665,32 @@ pub fn port_selection(
         .iter()
         .map(|p| {
             Row::new(vec![
-                &p.port_name,
+                // Column 1: Port name
+                Cow::Borrowed(p.port_name.as_str()),
+                // Column 2: Port info
                 match &p.port_type {
-                    SerialPortType::UsbPort(usb) => usb.serial_number.as_ref().unwrap(),
-                    _ => "",
+                    SerialPortType::UsbPort(usb) => {
+                        let mut text =
+                            format!("[USB] PID: 0x{:04X} VID: 0x{:04X}", usb.pid, usb.vid);
+                        if let Some(serial_number) = &usb.serial_number {
+                            text.push_str(" S/N: ");
+                            text.push_str(serial_number);
+                        }
+
+                        Cow::Owned(text)
+                    }
+                    SerialPortType::BluetoothPort => Cow::Borrowed("[Bluetooth]"),
+                    SerialPortType::PciPort => Cow::Borrowed("[PCI]"),
+                    SerialPortType::Unknown if p.port_name == MOCK_PORT_NAME => {
+                        Cow::Borrowed("[Mock Testing Port]")
+                    }
+                    // TODO make more reactive for Unix stuff
+                    SerialPortType::Unknown => Cow::Borrowed("[Unspecified]"),
                 },
             ])
         })
         .collect();
-    let widths = [Constraint::Percentage(50), Constraint::Percentage(50)];
+    let widths = [Constraint::Percentage(25), Constraint::Percentage(75)];
 
     let table = Table::new(rows, widths)
         .row_highlight_style(Style::new().reversed())

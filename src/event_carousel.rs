@@ -80,6 +80,7 @@ impl<T: Clone + Send + std::fmt::Debug + 'static> CarouselHandle<T> {
 
 struct CarouselEvent<T: Clone> {
     interval: Duration,
+    // Could also be a Box<Fn() -> T> maybe
     payload: T,
     last_sent: Instant,
     event_type: EventType,
@@ -96,7 +97,6 @@ struct CarouselWorker<T: Clone> {
     event_tx: Sender<T>,
     command_rx: Receiver<CarouselCommand<T>>,
     woke_at: Instant,
-    // Could also be a Box<Fn> maybe
     events: Vec<CarouselEvent<T>>,
 }
 
