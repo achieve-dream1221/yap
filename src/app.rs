@@ -14,14 +14,14 @@ use ratatui::{
     layout::{Constraint, Layout, Margin, Offset, Rect, Size},
     prelude::Backend,
     style::{Style, Stylize},
-    text::{Line, Text},
+    text::{Line, Span, Text},
     widgets::{
         Block, Borders, Clear, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Table, TableState, Widget, Wrap,
     },
     Frame, Terminal,
 };
-use ratatui_macros::{horizontal, line, vertical};
+use ratatui_macros::{horizontal, line, span, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
 use takeable::Takeable;
 use tracing::{debug, error, info, instrument};
@@ -33,7 +33,9 @@ use crate::{
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     serial::{PrintablePortInfo, SerialEvent, SerialHandle, MOCK_PORT_NAME},
-    tui::single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
+    tui::single_line_selector::{
+        LastIndex, SingleLineSelector, SingleLineSelectorState, StateBottomed,
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -305,7 +307,8 @@ impl App {
                 }
             }
             Menu::PortSelection(PortSelectionElement::CustomBaud) => {
-                // filtering out letters from being put into the custom baud entry
+                // filtering out just letters from being put into the custom baud entry
+                // extra checks will be needed at parse stage to ensure non-digit chars arent present
                 if !matches!(key.code, KeyCode::Char(c) if c.is_alphabetic()) {
                     self.user_input
                         .input_box
@@ -351,7 +354,7 @@ impl App {
             KeyCode::Down => self.down_pressed(),
             KeyCode::Left if at_port_selection && self.single_line_state.active => {
                 if self.single_line_state.current_index == 0 {
-                    self.single_line_state.select(COMMON_BAUD.len() - 1);
+                    self.single_line_state.select(COMMON_BAUD.last_index());
                 } else {
                     self.single_line_state.prev();
                 }
@@ -459,8 +462,15 @@ impl App {
                 if let Some(info) = selected {
                     info!("Port {}", info.port_name);
 
-                    self.serial
-                        .connect(&info, COMMON_BAUD[self.single_line_state.current_index]);
+                    let baud_rate =
+                        if COMMON_BAUD.last_index_eq(self.single_line_state.current_index) {
+                            // TODO This should return an actual user-visible error
+                            self.user_input.input_box.value().parse().unwrap()
+                        } else {
+                            COMMON_BAUD[self.single_line_state.current_index]
+                        };
+
+                    self.serial.connect(&info, baud_rate);
 
                     self.user_input.reset();
                     self.menu = Menu::Terminal;
@@ -514,15 +524,7 @@ impl App {
                     .build();
                 frame.render_widget(big_text, vertical_slices[0]);
 
-                port_selection(
-                    &self.ports,
-                    // COMMON_BAUD[COMMON_BAUD_DEFAULT],
-                    frame,
-                    vertical_slices[1],
-                    &self.menu,
-                    &mut self.table_state,
-                    &mut self.single_line_state,
-                );
+                self.port_selection(frame, vertical_slices[1]);
             }
             Menu::Terminal => self.terminal_menu(frame, frame.area()),
         }
@@ -736,14 +738,14 @@ impl App {
             frame.render_widget(input_hint, input_area.offset(Offset { x: 1, y: 0 }));
             frame.set_cursor_position(input_area.as_position());
         } else {
-            let width = input_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge
-            let scroll = self.user_input.input_box.visual_scroll(width as usize);
             let style = match &self.failed_send_at {
                 Some(instant) if instant.elapsed() < FAILED_SEND_VISUAL_TIME => {
                     Style::new().on_red()
                 }
                 _ => Style::new(),
             };
+            let width = input_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge
+            let scroll = self.user_input.input_box.visual_scroll(width as usize);
             let input_text = Paragraph::new(self.user_input.input_box.value())
                 .scroll((0, scroll as u16))
                 .style(style);
@@ -756,109 +758,151 @@ impl App {
             ));
         }
     }
-}
 
-pub fn port_selection(
-    ports: &[SerialPortInfo],
-    frame: &mut Frame,
-    given_area: Rect,
-    menu: &Menu,
-    table_state: &mut TableState,
-    baud_state: &mut SingleLineSelectorState,
-) {
-    let area = if frame.area().width < 45 {
-        given_area
-    } else {
-        let [_, middle_area, _] = horizontal![==25%, ==50%, ==25%].areas(given_area);
-        middle_area
-    };
-    let block = Block::bordered()
-        .title("Port Selection")
-        .border_style(Style::new().blue())
-        .title_style(Style::reset())
-        .title_alignment(ratatui::layout::Alignment::Center);
-
-    let rows: Vec<Row> = ports
-        .iter()
-        .map(|p| {
-            Row::new(vec![
-                // Column 1: Port name
-                Cow::Borrowed(p.port_name.as_str()),
-                // Column 2: Port info
-                match &p.port_type {
-                    SerialPortType::UsbPort(usb) => {
-                        let mut text = format!("[USB] {:04X}:{:04X}", usb.vid, usb.pid);
-                        if let Some(serial_number) = &usb.serial_number {
-                            text.push_str(" S/N: ");
-                            text.push_str(serial_number);
-                        }
-
-                        Cow::Owned(text)
-                    }
-                    SerialPortType::BluetoothPort => Cow::Borrowed("[Bluetooth]"),
-                    SerialPortType::PciPort => Cow::Borrowed("[PCI]"),
-                    SerialPortType::Unknown if p.port_name == MOCK_PORT_NAME => {
-                        Cow::Borrowed("[Mock Testing Port]")
-                    }
-                    // TODO make more reactive for Unix stuff
-                    SerialPortType::Unknown => Cow::Borrowed("[Unspecified]"),
-                },
-            ])
-        })
-        .collect();
-    let widths = [Constraint::Percentage(25), Constraint::Percentage(75)];
-
-    let table = Table::new(rows, widths)
-        .row_highlight_style(Style::new().reversed())
-        .highlight_spacing(HighlightSpacing::Always)
-        .highlight_symbol(">>");
-
-    let [table_area, mut filler_or_custom_baud_entry, mut baud_text_area, mut baud_selector, more_options] =
-        vertical![*=1, ==1, ==1, ==1, ==1].areas(block.inner(area));
-
-    let custom_selected = baud_state.current_index == COMMON_BAUD.len() - 1;
-    if custom_selected {
-        std::mem::swap(&mut filler_or_custom_baud_entry, &mut baud_text_area);
-        std::mem::swap(&mut filler_or_custom_baud_entry, &mut baud_selector);
-    }
-
-    // let static_baud = line![format!("← {current_baud} →")];
-
-    let baud_text = line!["Baud Rate:"];
-
-    let more_options_button = line![format!("[More options]")];
-
-    frame.render_widget(block, area);
-
-    frame.render_stateful_widget(table, table_area, table_state);
-
-    frame.render_widget(baud_text.centered(), baud_text_area);
-
-    baud_state.active = matches!(
-        menu,
-        Menu::PortSelection(PortSelectionElement::BaudSelection)
-    );
-
-    let selector = SingleLineSelector::new(COMMON_BAUD.iter().map(|&b| {
-        if b == 0 {
-            "Custom".to_string()
+    fn port_selection(&mut self, frame: &mut Frame, given_area: Rect) {
+        let area = if frame.area().width < 45 {
+            given_area
         } else {
-            b.to_string()
+            let [_, middle_area, _] = horizontal![==25%, ==50%, ==25%].areas(given_area);
+            middle_area
+        };
+        let block = Block::bordered()
+            .title("Port Selection")
+            .border_style(Style::new().blue())
+            .title_style(Style::reset())
+            .title_alignment(ratatui::layout::Alignment::Center);
+
+        let rows: Vec<Row> = self
+            .ports
+            .iter()
+            .map(|p| {
+                Row::new(vec![
+                    // Column 1: Port name
+                    Cow::Borrowed(p.port_name.as_str()),
+                    // Column 2: Port info
+                    match &p.port_type {
+                        SerialPortType::UsbPort(usb) => {
+                            let mut text = format!("[USB] {:04X}:{:04X}", usb.vid, usb.pid);
+                            if let Some(serial_number) = &usb.serial_number {
+                                text.push_str(" S/N: ");
+                                text.push_str(serial_number);
+                            }
+
+                            Cow::Owned(text)
+                        }
+                        SerialPortType::BluetoothPort => Cow::Borrowed("[Bluetooth]"),
+                        SerialPortType::PciPort => Cow::Borrowed("[PCI]"),
+                        SerialPortType::Unknown if p.port_name == MOCK_PORT_NAME => {
+                            Cow::Borrowed("[Mock Testing Port]")
+                        }
+                        // TODO make more reactive for Unix stuff
+                        SerialPortType::Unknown => Cow::Borrowed("[Unspecified]"),
+                    },
+                ])
+            })
+            .collect();
+        let widths = [Constraint::Percentage(25), Constraint::Percentage(75)];
+
+        let table = Table::new(rows, widths)
+            .row_highlight_style(Style::new().reversed())
+            .highlight_spacing(HighlightSpacing::Always)
+            .highlight_symbol(">>");
+
+        let [table_area, mut filler_or_custom_baud_entry, mut baud_text_area, mut baud_selector, more_options] =
+            vertical![*=1, ==1, ==1, ==1, ==1].areas(block.inner(area));
+
+        let custom_visible = self.single_line_state.on_last(COMMON_BAUD);
+        let custom_selected = matches!(
+            self.menu,
+            Menu::PortSelection(PortSelectionElement::CustomBaud)
+        );
+        if custom_visible {
+            // ------ "Baud Rate:" [115200]
+            std::mem::swap(&mut filler_or_custom_baud_entry, &mut baud_text_area);
+            //  "Baud Rate:" ------ [115200]
+            std::mem::swap(&mut filler_or_custom_baud_entry, &mut baud_selector);
+            //  "Baud Rate:" [115200] ------
         }
-    }));
 
-    // let mut state = SingleLineSelectorState {
-    //     current_index: COMMON_BAUD_DEFAULT,
-    // };
+        // let static_baud = line![format!("← {current_baud} →")];
 
-    frame.render_stateful_widget(selector, baud_selector, baud_state);
+        let baud_text = line!["Baud Rate:"];
 
-    // frame.render_widget(static_baud.centered(), baud_selector);
+        let more_options_button = span![format!("[More options]")];
 
-    if matches!(menu, Menu::PortSelection(PortSelectionElement::MoreOptions)) {
-        frame.render_widget(more_options_button.centered().reversed(), more_options);
-    } else {
-        frame.render_widget(more_options_button.centered(), more_options);
+        frame.render_widget(block, area);
+
+        frame.render_stateful_widget(table, table_area, &mut self.table_state);
+
+        frame.render_widget(baud_text.centered(), baud_text_area);
+
+        self.single_line_state.active = matches!(
+            self.menu,
+            Menu::PortSelection(PortSelectionElement::BaudSelection)
+        );
+
+        let selector = SingleLineSelector::new(COMMON_BAUD.iter().map(|&b| {
+            if b == 0 {
+                "Custom:".to_string()
+            } else {
+                format!("{b:^6}")
+            }
+        }));
+
+        frame.render_stateful_widget(selector, baud_selector, &mut self.single_line_state);
+
+        if custom_visible {
+            let [left, input_area, right] =
+                horizontal![*=1, ==10, *=1].areas(filler_or_custom_baud_entry);
+
+            let style = if custom_selected {
+                Style::new().reversed()
+            } else {
+                Style::new()
+            };
+
+            frame.render_widget(Line::from(Span::styled("[", style)).right_aligned(), left);
+
+            let user_text: &str = self.user_input.input_box.value();
+
+            let user_input = Line::raw(if user_text.is_empty() { " " } else { user_text });
+
+            let width = input_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge
+            let scroll = self.user_input.input_box.visual_scroll(width as usize);
+            let input_text = Paragraph::new(user_input)
+                .scroll((0, scroll as u16))
+                .style(style);
+            frame.render_widget(input_text, input_area);
+
+            if custom_selected {
+                frame.set_cursor_position((
+                    // Put cursor past the end of the input text
+                    input_area.x
+                        + ((self.user_input.input_box.visual_cursor()).max(scroll) - scroll) as u16,
+                    input_area.y,
+                ));
+            }
+
+            frame.render_widget(Line::from(Span::styled("]", style)).left_aligned(), right);
+        }
+
+        // let mut state = SingleLineSelectorState {
+        //     current_index: COMMON_BAUD_DEFAULT,
+        // };
+
+        // frame.render_widget(static_baud.centered(), baud_selector);
+
+        if matches!(
+            self.menu,
+            Menu::PortSelection(PortSelectionElement::MoreOptions)
+        ) {
+            frame.render_widget(
+                Line::from(more_options_button.reversed()).centered(),
+                more_options,
+            );
+        } else {
+            frame.render_widget(Line::from(more_options_button).centered(), more_options);
+        }
     }
 }
 

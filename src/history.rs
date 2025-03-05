@@ -1,6 +1,8 @@
 use arboard::Clipboard;
 use tui_input::Input;
 
+use crate::tui::single_line_selector::LastIndex;
+
 #[derive(Debug, Default)]
 pub struct History {
     pub selected: Option<usize>,
@@ -88,12 +90,12 @@ impl History {
                 Some(0) => (),
                 // Moving up the history (most recent elements first)
                 Some(x) => self.selected = Some(x - 1),
-                None => self.selected = Some(self.history.len() - 1),
+                None => self.selected = Some(self.history.last_index()),
             }
         } else {
             match self.selected {
                 // Move down if there's elements to be expected
-                Some(x) if x < self.history.len() - 1 => self.selected = Some(x + 1),
+                Some(x) if x < self.history.last_index() => self.selected = Some(x + 1),
                 // No more elements, clear selection.
                 Some(_) => self.clear_selection(),
                 // Not in history, don't scroll.

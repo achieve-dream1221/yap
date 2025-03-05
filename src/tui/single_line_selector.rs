@@ -66,8 +66,8 @@ impl StatefulWidget for SingleLineSelector<'_> {
     type State = SingleLineSelectorState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        if state.current_index >= self.items.len() {
-            state.current_index = self.items.len().saturating_sub(1);
+        if self.items.last_index_eq_or_greater(state.current_index) {
+            state.current_index = self.items.last_index();
         }
 
         let source_line = { self.items.get(state.current_index).unwrap() };
@@ -83,7 +83,7 @@ impl StatefulWidget for SingleLineSelector<'_> {
             )
         };
 
-        let next_span = if state.current_index == self.items.len().saturating_sub(1) {
+        let next_span = if self.items.last_index_eq(state.current_index) {
             Span::raw(" ")
         } else {
             Span::styled(
@@ -186,6 +186,55 @@ fn line_chars(l: &Line<'_>) -> usize {
     l.iter().map(|s| s.content.chars().count()).sum()
 }
 
+pub trait LastIndex {
+    /// Returns `true` if the given index matches the index of the last element in the collection.
+    ///
+    /// Returns `false` if the index doesn't match, or if the collection is empty.
+    fn last_index_eq(&self, index: usize) -> bool;
+    /// Returns `true` if the given index matches or is greater than the index of the last element in the collection.
+    ///
+    /// Returns `false` if the index doesn't fit either condition, or if the collection is empty.
+    fn last_index_eq_or_greater(&self, index: usize) -> bool;
+    /// Returns the index of the last element in the collection.
+    ///
+    /// Returns `0` if the collection is empty.
+    fn last_index(&self) -> usize {
+        self.last_index_checked().unwrap_or(0)
+    }
+    /// Returns the index of the last element in the collection.
+    ///
+    /// Returns `None` if the collection is empty.
+    fn last_index_checked(&self) -> Option<usize>;
+}
+
+impl<T> LastIndex for [T] {
+    fn last_index_eq(&self, index: usize) -> bool {
+        if self.is_empty() {
+            false
+        } else if index == self.len() - 1 {
+            true
+        } else {
+            false
+        }
+    }
+    fn last_index_eq_or_greater(&self, index: usize) -> bool {
+        if self.is_empty() {
+            false
+        } else if index >= self.len() - 1 {
+            true
+        } else {
+            false
+        }
+    }
+    fn last_index_checked(&self) -> Option<usize> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.len() - 1)
+        }
+    }
+}
+
 pub trait StateBottomed<T> {
     /// Returns true if the index of the given state is equal to or greater than the index of the final element.
     fn on_last(&self, slice: &[T]) -> bool;
@@ -193,7 +242,7 @@ pub trait StateBottomed<T> {
 
 impl<T> StateBottomed<T> for SingleLineSelectorState {
     fn on_last(&self, slice: &[T]) -> bool {
-        self.current_index >= slice.len().saturating_sub(1)
+        self.current_index >= slice.last_index()
     }
 }
 
@@ -201,7 +250,7 @@ impl<T> StateBottomed<T> for TableState {
     fn on_last(&self, slice: &[T]) -> bool {
         match self.selected() {
             None => false,
-            Some(index) => index >= slice.len().saturating_sub(1),
+            Some(index) => index >= slice.last_index(),
         }
     }
 }
