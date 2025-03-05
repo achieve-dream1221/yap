@@ -31,7 +31,7 @@ impl UserInput {
         self.history.clear_selection();
         self.preserved_input = None;
     }
-    pub fn scroll(&mut self, up: bool) {
+    pub fn scroll_history(&mut self, up: bool) {
         let entry = self.history.scroll(up);
         // When first entering into history, cache the user's unsent input.
         if entry.is_some() && self.preserved_input.is_none() {

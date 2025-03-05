@@ -9,6 +9,7 @@ use std::{
 };
 
 use arc_swap::ArcSwapOption;
+use color_eyre::owo_colors::OwoColorize;
 use serialport::{SerialPort, SerialPortInfo, SerialPortType};
 use tracing::{debug, error, info};
 
@@ -32,38 +33,55 @@ impl From<SerialEvent> for Event {
 
 pub enum SerialCommand {
     RequestPortScan,
-    Connect(SerialPortInfo),
+    Connect {
+        port: SerialPortInfo,
+        baud_rate: u32,
+    },
+    ChangeBaud(u32),
     TxBuffer(Vec<u8>),
     RequestReconnect,
     Disconnect,
     Shutdown(Sender<()>),
 }
 
+pub struct SerialStatus {
+    current_port: Option<SerialPortInfo>,
+    baud_rate: u32,
+    healthy: bool,
+}
+
 pub struct SerialHandle {
     command_tx: Sender<SerialCommand>,
-    pub current_port: Arc<ArcSwapOption<SerialPortInfo>>,
+    pub current_port: Arc<ArcSwapOption<(SerialPortInfo, u32)>>,
 }
 
 pub trait PrintablePortInfo {
-    fn info_as_string(&self) -> String;
+    fn info_as_string(&self, baud_rate: Option<u32>) -> String;
 }
 
 impl PrintablePortInfo for SerialPortInfo {
-    fn info_as_string(&self) -> String {
+    fn info_as_string(&self, baud_rate: Option<u32>) -> String {
         let extra_info = match &self.port_type {
             SerialPortType::UsbPort(usb) => {
-                format!("PID: 0x{:04X}, VID: 0x{:04X}", usb.pid, usb.vid)
+                format!("VID: 0x{:04X}, PID: 0x{:04X}", usb.vid, usb.pid)
             }
             SerialPortType::Unknown => String::new(),
             SerialPortType::PciPort => "PCI".to_owned(),
             SerialPortType::BluetoothPort => "Bluetooth".to_owned(),
         };
-
-        if extra_info.is_empty() {
-            format!("{}", self.port_name)
-        } else {
-            format!("{} | {extra_info}", self.port_name)
+        let port = &self.port_name;
+        match (baud_rate, extra_info.is_empty()) {
+            (Some(baud), false) => format!("{port} @ {baud} | {extra_info}"),
+            (Some(baud), true) => format!("{port} @ {baud}"),
+            (None, false) => format!("{port} | {extra_info}"),
+            (None, true) => format!("{port}"),
         }
+
+        // if extra_info.is_empty() {
+        //     format!("{}", self.port_name)
+        // } else {
+        //     format!("{} | {extra_info}", self.port_name)
+        // }
     }
 }
 
@@ -88,9 +106,12 @@ impl SerialHandle {
         handle.request_port_scan();
         (handle, worker)
     }
-    pub fn connect(&mut self, port: &SerialPortInfo) {
+    pub fn connect(&mut self, port: &SerialPortInfo, baud_rate: u32) {
         self.command_tx
-            .send(SerialCommand::Connect(port.to_owned()))
+            .send(SerialCommand::Connect {
+                port: port.to_owned(),
+                baud_rate,
+            })
             .unwrap();
     }
     /// Sends the supplied bytes through the connected Serial device.
@@ -142,16 +163,17 @@ pub struct SerialWorker {
     command_rx: Receiver<SerialCommand>,
     event_tx: Sender<Event>,
     port: Option<Box<dyn SerialPort>>,
+    baud_rate: u32,
     scan_snapshot: Vec<SerialPortInfo>,
-    buffer: Vec<u8>,
-    connected_port_info: Arc<ArcSwapOption<SerialPortInfo>>,
+    rx_buffer: Vec<u8>,
+    connected_port_info: Arc<ArcSwapOption<(SerialPortInfo, u32)>>,
 }
 
 impl SerialWorker {
     fn new(
         command_rx: Receiver<SerialCommand>,
         event_tx: Sender<Event>,
-        connected_port_info: Arc<ArcSwapOption<SerialPortInfo>>,
+        connected_port_info: Arc<ArcSwapOption<(SerialPortInfo, u32)>>,
     ) -> Self {
         Self {
             command_rx,
@@ -159,17 +181,29 @@ impl SerialWorker {
             connected_port_info,
             // connected_port_info: None,
             port: None,
+            baud_rate: 0,
             scan_snapshot: vec![],
-            buffer: vec![0; 1024 * 1024],
+            rx_buffer: vec![0; 1024 * 1024],
         }
     }
     fn work_loop(&mut self) -> color_eyre::Result<()> {
         loop {
+            // TODO consider sleeping here for a moment with a read_timeout?
+            // or have some kind of cooldown after a 0-size serial read
+            // (maybe use port.bytes_to_read() ?)
+            // not sure if the barrage is what's causing weird unix issues with the ESP32-S3, need to test further
             match self.command_rx.try_recv() {
                 Ok(cmd) => match cmd {
                     // TODO: Catch failures to connect here instead of propogating to the whole task
-                    SerialCommand::Connect(port) => {
-                        self.connect_to_port(&port)?;
+                    SerialCommand::Connect { port, baud_rate } => {
+                        self.baud_rate = baud_rate;
+                        self.connect_to_port(&port, baud_rate)?;
+                    }
+                    SerialCommand::ChangeBaud(baud_rate) => {
+                        assert!(self.port.is_some());
+                        let port = self.port.as_mut().unwrap();
+                        port.set_baud_rate(baud_rate)?;
+                        self.baud_rate = baud_rate;
                     }
                     SerialCommand::Shutdown(shutdown_tx) => {
                         shutdown_tx
@@ -193,6 +227,7 @@ impl SerialWorker {
                     SerialCommand::Disconnect => {
                         self.connected_port_info.store(None);
                         _ = self.port.take();
+                        self.event_tx.send(SerialEvent::Disconnected.into())?;
                     }
                     // This should maybe reply with a success/fail in case the
                     // port is having an issue, so the user's input buffer isn't consumed visually
@@ -271,9 +306,9 @@ impl SerialWorker {
                 //     port.bytes_to_read().unwrap(),
                 //     port.bytes_to_write().unwrap()
                 // );
-                match port.read(self.buffer.as_mut_slice()) {
+                match port.read(self.rx_buffer.as_mut_slice()) {
                     Ok(t) if t > 0 => {
-                        let cloned_buff = self.buffer[..t].to_owned();
+                        let cloned_buff = self.rx_buffer[..t].to_owned();
                         // info!("{:?}", &serial_buf[..t]);
                         self.event_tx
                             .send(SerialEvent::RxBuffer(cloned_buff).into())?;
@@ -284,6 +319,10 @@ impl SerialWorker {
                     Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => (),
                     Err(e) => {
                         error!("{:?}", e);
+                        // TODO might need to reconsider this
+                        // since this assumes that on error, the port is *gone*
+                        // which *is* possible, but not a guarantee
+                        // (maybe i could manually pop it if it still exists? since i do have connected_port_info as a reference)
                         self.scan_snapshot = self.scan_for_serial_ports().unwrap();
                         _ = self.port.take();
                         // Don't take since we're using it to find the port for reconnections.
@@ -305,17 +344,17 @@ impl SerialWorker {
         }
         let current_ports = self.scan_for_serial_ports()?;
         let port_guard = self.connected_port_info.load();
-        let desired_port = port_guard.as_ref().unwrap();
+        let desired_port = &port_guard.as_ref().unwrap().0;
 
         // Checking for a perfect match
         // TODO look into the USB Interface field for SerialPortInfo, see if we should keep it in mind
         // for the potential extra+less strict check
-        if let Some(port) = current_ports.iter().find(|p| **p == **desired_port) {
+        if let Some(port) = current_ports.iter().find(|p| *p == desired_port) {
             info!("Perfect match found! Reconnecting to: {}", port.port_name);
             // Sleeping to give the device some time to intialize with Windows
             // (Otherwise Access Denied errors can occur from trying to connect too quick)
             std::thread::sleep(Duration::from_secs(1));
-            self.connect_to_port(&port)?;
+            self.connect_to_port(&port, self.baud_rate)?;
             return Ok(());
         };
 
@@ -335,7 +374,7 @@ impl SerialWorker {
                     port.port_name
                 );
                 std::thread::sleep(Duration::from_secs(1));
-                self.connect_to_port(&port)?;
+                self.connect_to_port(&port, self.baud_rate)?;
                 return Ok(());
             };
             if let Some(port) = current_ports
@@ -348,7 +387,7 @@ impl SerialWorker {
                 // Needs a toggle with Strict/Loose options, as the extra behavior isn't always desirable.
                 .find(|p| match &p.port_type {
                     SerialPortType::UsbPort(usb) => {
-                        usb.pid == desired_usb.pid && usb.vid == desired_usb.vid
+                        usb.vid == desired_usb.vid && usb.pid == desired_usb.pid
                     }
                     _ => false,
                 })
@@ -358,7 +397,7 @@ impl SerialWorker {
                     port.port_name
                 );
                 std::thread::sleep(Duration::from_secs(1));
-                self.connect_to_port(&port)?;
+                self.connect_to_port(&port, self.baud_rate)?;
                 return Ok(());
             };
         }
@@ -370,7 +409,7 @@ impl SerialWorker {
         {
             info!("Last ditch connect attempt on: {}", port.port_name);
             std::thread::sleep(Duration::from_secs(1));
-            self.connect_to_port(&port)?;
+            self.connect_to_port(&port, self.baud_rate)?;
             return Ok(());
         }
 
@@ -417,22 +456,26 @@ impl SerialWorker {
         // self.scanned_ports = ports;
         Ok(ports)
     }
-    fn connect_to_port(&mut self, port_info: &SerialPortInfo) -> Result<(), serialport::Error> {
+    fn connect_to_port(
+        &mut self,
+        port_info: &SerialPortInfo,
+        baud_rate: u32,
+    ) -> Result<(), serialport::Error> {
         let port = if port_info.port_name.eq(MOCK_PORT_NAME) {
             let mut virt_port =
-                virtual_serialport::VirtualPort::loopback(115200, MOCK_DATA.len() as u32)?;
+                virtual_serialport::VirtualPort::loopback(baud_rate, MOCK_DATA.len() as u32)?;
             virt_port.write_all(MOCK_DATA.as_bytes())?;
 
             virt_port.into_boxed()
         } else {
-            serialport::new(&port_info.port_name, 115200)
+            serialport::new(&port_info.port_name, baud_rate)
                 // .flow_control(serialport::FlowControl::Software)
                 .open()?
         };
         // let port = serialport::new(port, 115200).open()?;
         self.port = Some(port);
         self.connected_port_info
-            .store(Some(Arc::new(port_info.to_owned())));
+            .store(Some(Arc::new((port_info.to_owned(), baud_rate))));
 
         // Blech, if connecting from current_ports in attempt_reconnect, this may not exist.
         // self.connected_port_info = self
@@ -442,7 +485,11 @@ impl SerialWorker {
         //     .cloned();
 
         // assert!(self.connected_port_info.is_some());
-        info!("Serial worker connected to: {}", port_info.port_name);
+        info!(
+            "Serial worker connected to: {} @ {baud_rate} baud",
+            port_info.port_name
+        );
+        // info!("port.baud_rate {}", self.port.as_ref().unwrap().baud_rate()?);
         self.event_tx.send(SerialEvent::Connected.into()).unwrap();
         Ok(())
     }

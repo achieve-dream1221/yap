@@ -1,10 +1,10 @@
-use std::time::Instant;
+use std::{borrow::Cow, time::Instant};
 
-use color_eyre::owo_colors::OwoColorize;
+use chrono::{DateTime, Local};
 use ratatui::{
     layout::Size,
     style::{Style, Stylize},
-    text::Line,
+    text::{Line, Span, ToSpan},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
@@ -27,17 +27,19 @@ pub struct BufLine {
     style: Option<Style>,
     // Might not be exactly accurate, but would be enough to place user input lines in proper space if needing to
     raw_buffer_index: usize,
-    timestamp: Instant,
+    timestamp: String,
 }
-// Many changes needed, esp. in regards to current app-state things (index, width, color)
+// Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
     fn new(value: String, raw_buffer_index: usize, area_width: u16) -> Self {
+        let time_format = "[%H:%M:%S%.3f] ";
+
         let mut line = Self {
             value,
             raw_buffer_index,
             style: None,
             rendered_line_count: 0,
-            timestamp: Instant::now(),
+            timestamp: Local::now().format(time_format).to_string(),
         };
         line.update_line_count(area_width);
         line.determine_color();
@@ -48,16 +50,22 @@ impl BufLine {
     }
     fn update_line_count(&mut self, area_width: u16) {
         let para = Paragraph::new(self.as_line()).wrap(Wrap { trim: false });
-        // TODO make the sub 1 more sane/clear
+        // TODO make the sub 1 for margin/scrollbar more sane/clear
+        // Paragraph::line_count comes from an unstable ratatui feature (unstable-rendered-line-info)
+        // which may be changed/removed in the future. If so, I'll need to roll my own wrapping/find someone's to steal.
         let height = para.line_count(area_width.saturating_sub(1));
         self.rendered_line_count = height;
         // debug!("{self:?}");
     }
     fn determine_color(&mut self) {
+        // Not sure if this is actually worth keeping, we'll see once I add proper custom rules.
+        if self.style.is_some() {
+            return;
+        }
         // What do I pass into here?
         // The rules? Should it instead be an outside decider that supplies the color?
 
-        if let Some(slice) = first_chars_of_str(&self.value, 5) {
+        if let Some(slice) = self.value.first_chars(5) {
             let mut style = Style::new();
             style = match slice {
                 "USER>" => style.dark_gray(),
@@ -129,6 +137,7 @@ impl Buffer {
         for line in converted.split(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]) {
             // Removing messy-to-render characters, but they should be preserved in the raw_buffer for those who need to see them
             // TODO Replace tab with multiple spaces? (As \t causes smearing with ratatui currently.)
+            // TODO Filter out ASCII control characters (like terminal bell)?
             let s = line.replace(&['\t', '\n', '\r'][..], "");
             // TODO UTF-8 multi byte preservation between \n's?
             // Since if I am getting only one byte per second or read, then `String::from_utf8_lossy` could fail extra for no reason.
@@ -221,18 +230,24 @@ impl Buffer {
 
 // }
 
-fn first_chars_of_str(value: &str, char_count: usize) -> Option<&str> {
-    let value_char_count = value.chars().count();
-    if value_char_count < char_count {
-        None
-    } else if value_char_count == char_count {
-        Some(value)
-    } else {
-        let end = value
-            .char_indices()
-            .nth(char_count)
-            .map(|(i, _)| i)
-            .expect("Not enough chars?");
-        Some(&value[..end])
+trait FirstChars {
+    fn first_chars(&self, char_count: usize) -> Option<&str>;
+}
+
+impl FirstChars for str {
+    fn first_chars(&self, desired: usize) -> Option<&str> {
+        let char_count = self.chars().count();
+        if char_count < desired {
+            None
+        } else if char_count == desired {
+            Some(self)
+        } else {
+            let end = self
+                .char_indices()
+                .nth(desired)
+                .map(|(i, _)| i)
+                .expect("Not enough chars?");
+            Some(&self[..end])
+        }
     }
 }

@@ -8,6 +8,7 @@ use std::{
 
 use arboard::Clipboard;
 use color_eyre::{eyre::Result, owo_colors::OwoColorize};
+use enum_rotate::EnumRotate;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::{Constraint, Layout, Margin, Offset, Rect, Size},
@@ -15,8 +16,8 @@ use ratatui::{
     style::{Style, Stylize},
     text::{Line, Text},
     widgets::{
-        Block, Borders, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
-        Table, TableState, Widget, Wrap,
+        Block, Borders, Clear, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table, TableState, Widget, Wrap,
     },
     Frame, Terminal,
 };
@@ -32,6 +33,7 @@ use crate::{
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     serial::{PrintablePortInfo, SerialEvent, SerialHandle, MOCK_PORT_NAME},
+    tui::single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
 };
 
 #[derive(Clone, Debug)]
@@ -72,11 +74,25 @@ impl From<Tick> for Event {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum Menu {
-    #[default]
-    PortSelection,
+    PortSelection(PortSelectionElement),
     Terminal,
+}
+
+#[derive(Debug, Default, Clone, Copy, EnumRotate)]
+pub enum PortSelectionElement {
+    #[default]
+    Ports,
+    BaudSelection,
+    CustomBaud,
+    MoreOptions,
+}
+
+impl From<PortSelectionElement> for Menu {
+    fn from(value: PortSelectionElement) -> Self {
+        Self::PortSelection(value)
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -104,6 +120,7 @@ pub struct App {
     menu: Menu,
     rx: Receiver<Event>,
     table_state: TableState,
+    single_line_state: SingleLineSelectorState,
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
     serial_thread: Takeable<JoinHandle<()>>,
@@ -137,9 +154,10 @@ impl App {
         event_carousel.add_repeating(Tick::PerSecond.into(), Duration::from_secs(1));
         Self {
             state: RunningState::Running,
-            menu: Menu::PortSelection,
+            menu: Menu::PortSelection(PortSelectionElement::Ports),
             rx,
             table_state: TableState::new().with_selected(Some(0)),
+            single_line_state: SingleLineSelectorState::new().with_selected(COMMON_BAUD_DEFAULT),
             ports: Vec::new(),
 
             carousel: event_carousel,
@@ -221,8 +239,10 @@ impl App {
                 }
                 Event::Serial(SerialEvent::Ports(ports)) => {
                     self.ports = ports;
-                    if self.table_state.selected().is_none() {
-                        self.table_state = TableState::new().with_selected(Some(0));
+                    if let Menu::PortSelection(PortSelectionElement::Ports) = &self.menu {
+                        if self.table_state.selected().is_none() {
+                            self.table_state.select(Some(0));
+                        }
                     }
                 }
                 Event::Tick(Tick::PerSecond) => match self.menu {
@@ -232,7 +252,7 @@ impl App {
                             self.serial.request_reconnect();
                         }
                     }
-                    Menu::PortSelection => {
+                    Menu::PortSelection(_) => {
                         self.serial.request_port_scan();
                     }
                 },
@@ -264,6 +284,7 @@ impl App {
         let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
 
         // let at_port_selection = matches!(self.menu, Menu::PortSelection);
+        // TODO soon, redo this variable's name + use
         let mut at_port_selection = false;
         match self.menu {
             Menu::Terminal => {
@@ -283,7 +304,16 @@ impl App {
                     _ => (),
                 }
             }
-            Menu::PortSelection => at_port_selection = true,
+            Menu::PortSelection(PortSelectionElement::CustomBaud) => {
+                // filtering out letters from being put into the custom baud entry
+                if !matches!(key.code, KeyCode::Char(c) if c.is_alphabetic()) {
+                    self.user_input
+                        .input_box
+                        .handle_event(&ratatui::crossterm::event::Event::Key(key));
+                }
+            }
+            // might replace with PartialEq, Eq on Menu later, not sure
+            Menu::PortSelection(_) => at_port_selection = true,
         }
         match key.code {
             KeyCode::Char(char) => match char {
@@ -296,6 +326,11 @@ impl App {
                     self.buffer_wrapping = !self.buffer_wrapping;
                     self.scroll_buffer(0);
                 }
+                // 't' | 'T' if ctrl_pressed => {
+                //     self.buffer_show_timestamp = !self.buffer_show_timestamp;
+                //     self.buffer.update_line_count(self.buffer_show_timestamp);
+                //     self.scroll_buffer(0);
+                // }
                 _ => {
                     // self.user_input
                     //     .handle_event(&ratatui::crossterm::event::Event::Key(key));
@@ -314,22 +349,95 @@ impl App {
             //     .add_event(Event::TickSecond, Duration::from_secs(3)),
             KeyCode::Up => self.up_pressed(),
             KeyCode::Down => self.down_pressed(),
-            KeyCode::Left | KeyCode::Right => (),
+            KeyCode::Left if at_port_selection && self.single_line_state.active => {
+                if self.single_line_state.current_index == 0 {
+                    self.single_line_state.select(COMMON_BAUD.len() - 1);
+                } else {
+                    self.single_line_state.prev();
+                }
+            }
+            KeyCode::Right if at_port_selection && self.single_line_state.active => {
+                if self.single_line_state.next() >= COMMON_BAUD.len() {
+                    self.single_line_state.select(0);
+                }
+            }
             KeyCode::Enter => self.enter_pressed(),
             KeyCode::Esc => self.state = RunningState::Finished,
             _ => (),
         }
     }
     fn up_pressed(&mut self) {
+        use PortSelectionElement as Pse;
         match self.menu {
-            Menu::PortSelection => self.scroll_menu_up(),
-            Menu::Terminal => self.user_input.scroll(true),
+            Menu::PortSelection(e @ Pse::Ports) => match self.table_state.selected() {
+                Some(0) => self.menu = e.prev().into(),
+                Some(_) => self.scroll_menu_up(),
+                None => (),
+            },
+            Menu::PortSelection(e) => self.menu = e.prev().into(),
+            Menu::Terminal => self.user_input.scroll_history(true),
         }
+        self.post_menu_scroll(true);
     }
     fn down_pressed(&mut self) {
+        use PortSelectionElement as Pse;
         match self.menu {
-            Menu::PortSelection => self.scroll_menu_down(),
-            Menu::Terminal => self.user_input.scroll(false),
+            Menu::PortSelection(e @ Pse::Ports) if self.table_state.on_last(&self.ports) => {
+                // self.table_state.select(None);
+                self.menu = e.next().into();
+            }
+            Menu::PortSelection(Pse::Ports) => {
+                self.scroll_menu_down();
+            }
+            Menu::PortSelection(e) => {
+                self.menu = e.next().into();
+            }
+            // Menu::PortSelection(_) => {
+            //     if self.single_line_state.active {
+            //         ()
+            //         // move down to More Options/Custom baud entry
+            //     } else {
+            //         match self.table_state.selected() {
+            //             None => (),
+            //             Some(index) if self.table_state.on_last(&self.ports) => {
+            //                 self.table_state.select(None);
+            //                 self.single_line_state.active = true;
+            //             }
+            //             Some(_) => self.scroll_menu_down(),
+            //         }
+            //     }
+            // },
+            Menu::Terminal => self.user_input.scroll_history(false),
+        }
+        self.post_menu_scroll(false);
+    }
+    fn post_menu_scroll(&mut self, up: bool) {
+        // Logic for skipping the Custom Baud Entry field if it's not visible
+        let is_custom_visible = self.single_line_state.on_last(COMMON_BAUD);
+        use PortSelectionElement as Pse;
+        match self.menu {
+            Menu::PortSelection(e @ Pse::CustomBaud) if !is_custom_visible => {
+                if up {
+                    self.menu = e.prev().into();
+                } else {
+                    self.menu = e.next().into();
+                }
+            }
+            _ => (),
+        }
+        // Logic for selecting the correct index of port when swapping off/to the table
+        match self.menu {
+            Menu::PortSelection(Pse::Ports) => {
+                // Not using a match guard since it would always set it back to None
+                if self.table_state.selected().is_none() {
+                    if up {
+                        self.table_state.select_last();
+                    } else {
+                        self.table_state.select_first();
+                    }
+                }
+            }
+            _ => self.table_state.select(None),
         }
     }
     // consider making these some kind of trait method?
@@ -343,17 +451,23 @@ impl App {
         self.table_state.scroll_down_by(1);
     }
     fn enter_pressed(&mut self) {
+        debug!("{:?}", self.menu);
+        use PortSelectionElement as Pse;
         match self.menu {
-            Menu::PortSelection => {
+            Menu::PortSelection(Pse::Ports) => {
                 let selected = self.ports.get(self.table_state.selected().unwrap());
                 if let Some(info) = selected {
                     info!("Port {}", info.port_name);
 
-                    self.serial.connect(&info);
+                    self.serial
+                        .connect(&info, COMMON_BAUD[self.single_line_state.current_index]);
 
+                    self.user_input.reset();
                     self.menu = Menu::Terminal;
                 }
             }
+            Menu::PortSelection(Pse::MoreOptions) => todo!(),
+            Menu::PortSelection(_) => (),
             Menu::Terminal => {
                 if self.serial_healthy {
                     let user_input = self.user_input.input_box.value();
@@ -391,7 +505,7 @@ impl App {
         .split(frame.area());
 
         match self.menu {
-            Menu::PortSelection => {
+            Menu::PortSelection(_) => {
                 let big_text = BigText::builder()
                     .pixel_size(PixelSize::Quadrant)
                     .style(Style::new().blue())
@@ -399,13 +513,15 @@ impl App {
                     .lines(vec!["yap".blue().into()])
                     .build();
                 frame.render_widget(big_text, vertical_slices[0]);
+
                 port_selection(
                     &self.ports,
-                    COMMON_BAUD[COMMON_BAUD_DEFAULT],
+                    // COMMON_BAUD[COMMON_BAUD_DEFAULT],
                     frame,
                     vertical_slices[1],
+                    &self.menu,
                     &mut self.table_state,
-                    // &mut self.single_line_state,
+                    &mut self.single_line_state,
                 );
             }
             Menu::Terminal => self.terminal_menu(frame, frame.area()),
@@ -597,11 +713,11 @@ impl App {
             let current_port = self.serial.current_port.load();
             let port_text = match &*current_port {
                 Some(port) => {
-                    let info = port.info_as_string();
                     if self.serial_healthy {
-                        info
+                        port.0.info_as_string(Some(port.1))
                     } else {
                         // Might remove later
+                        let info = port.0.info_as_string(None);
                         format!("[!] {info} [!]")
                     }
                 }
@@ -644,10 +760,11 @@ impl App {
 
 pub fn port_selection(
     ports: &[SerialPortInfo],
-    current_baud: u32,
     frame: &mut Frame,
     given_area: Rect,
-    state: &mut TableState,
+    menu: &Menu,
+    table_state: &mut TableState,
+    baud_state: &mut SingleLineSelectorState,
 ) {
     let area = if frame.area().width < 45 {
         given_area
@@ -670,8 +787,7 @@ pub fn port_selection(
                 // Column 2: Port info
                 match &p.port_type {
                     SerialPortType::UsbPort(usb) => {
-                        let mut text =
-                            format!("[USB] PID: 0x{:04X} VID: 0x{:04X}", usb.pid, usb.vid);
+                        let mut text = format!("[USB] {:04X}:{:04X}", usb.vid, usb.pid);
                         if let Some(serial_number) = &usb.serial_number {
                             text.push_str(" S/N: ");
                             text.push_str(serial_number);
@@ -694,17 +810,56 @@ pub fn port_selection(
 
     let table = Table::new(rows, widths)
         .row_highlight_style(Style::new().reversed())
+        .highlight_spacing(HighlightSpacing::Always)
         .highlight_symbol(">>");
 
-    let [table_area, _filler, baud] = vertical![*=1, ==1, ==1].areas(block.inner(area));
+    let [table_area, mut filler_or_custom_baud_entry, mut baud_text_area, mut baud_selector, more_options] =
+        vertical![*=1, ==1, ==1, ==1, ==1].areas(block.inner(area));
 
-    let static_baud = line![format!("← {current_baud} →")];
+    let custom_selected = baud_state.current_index == COMMON_BAUD.len() - 1;
+    if custom_selected {
+        std::mem::swap(&mut filler_or_custom_baud_entry, &mut baud_text_area);
+        std::mem::swap(&mut filler_or_custom_baud_entry, &mut baud_selector);
+    }
+
+    // let static_baud = line![format!("← {current_baud} →")];
+
+    let baud_text = line!["Baud Rate:"];
+
+    let more_options_button = line![format!("[More options]")];
 
     frame.render_widget(block, area);
 
-    frame.render_stateful_widget(table, table_area, state);
+    frame.render_stateful_widget(table, table_area, table_state);
 
-    frame.render_widget(static_baud.centered(), baud);
+    frame.render_widget(baud_text.centered(), baud_text_area);
+
+    baud_state.active = matches!(
+        menu,
+        Menu::PortSelection(PortSelectionElement::BaudSelection)
+    );
+
+    let selector = SingleLineSelector::new(COMMON_BAUD.iter().map(|&b| {
+        if b == 0 {
+            "Custom".to_string()
+        } else {
+            b.to_string()
+        }
+    }));
+
+    // let mut state = SingleLineSelectorState {
+    //     current_index: COMMON_BAUD_DEFAULT,
+    // };
+
+    frame.render_stateful_widget(selector, baud_selector, baud_state);
+
+    // frame.render_widget(static_baud.centered(), baud_selector);
+
+    if matches!(menu, Menu::PortSelection(PortSelectionElement::MoreOptions)) {
+        frame.render_widget(more_options_button.centered().reversed(), more_options);
+    } else {
+        frame.render_widget(more_options_button.centered(), more_options);
+    }
 }
 
 pub fn repeating_pattern_widget(frame: &mut Frame, area: Rect, swap: bool, healthy: bool) {
