@@ -114,6 +114,9 @@ impl SerialHandle {
             })
             .unwrap();
     }
+    pub fn disconnect(&mut self) {
+        self.command_tx.send(SerialCommand::Disconnect).unwrap();
+    }
     /// Sends the supplied bytes through the connected Serial device.
     /// Newlines are automatically appended by the serial worker.
     pub fn send_bytes(&mut self, input: Vec<u8>) {

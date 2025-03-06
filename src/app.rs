@@ -33,8 +33,11 @@ use crate::{
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     serial::{PrintablePortInfo, SerialEvent, SerialHandle, MOCK_PORT_NAME},
-    tui::single_line_selector::{
-        LastIndex, SingleLineSelector, SingleLineSelectorState, StateBottomed,
+    tui::{
+        prompts::{centered_rect, DisconnectPrompt, PromptTable},
+        single_line_selector::{
+            LastIndex, SingleLineSelector, SingleLineSelectorState, StateBottomed,
+        },
     },
 };
 
@@ -79,7 +82,20 @@ impl From<Tick> for Event {
 #[derive(Debug, Clone, Copy)]
 pub enum Menu {
     PortSelection(PortSelectionElement),
-    Terminal,
+    Terminal(TerminalPrompt),
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalPrompt {
+    #[default]
+    None,
+    DisconnectPrompt,
+}
+
+impl From<TerminalPrompt> for Menu {
+    fn from(value: TerminalPrompt) -> Self {
+        Self::Terminal(value)
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, EnumRotate)]
@@ -190,9 +206,8 @@ impl App {
         while self.is_running() {
             self.draw(&mut terminal)?;
             let msg = self.rx.recv().unwrap();
-            // TODO SecondTick event
             match msg {
-                Event::Quit => self.state = RunningState::Finished,
+                Event::Quit => self.shutdown(),
 
                 Event::Crossterm(CrosstermEvent::Resize) => {
                     terminal.autoresize()?;
@@ -248,12 +263,13 @@ impl App {
                     }
                 }
                 Event::Tick(Tick::PerSecond) => match self.menu {
-                    Menu::Terminal => {
+                    Menu::Terminal(TerminalPrompt::None) => {
                         if !self.serial_healthy {
                             self.repeating_line_flip = !self.repeating_line_flip;
                             self.serial.request_reconnect();
                         }
                     }
+                    Menu::Terminal(TerminalPrompt::DisconnectPrompt) => (),
                     Menu::PortSelection(_) => {
                         self.serial.request_port_scan();
                     }
@@ -281,15 +297,21 @@ impl App {
         }
         Ok(())
     }
+    fn shutdown(&mut self) {
+        self.state = RunningState::Finished;
+    }
     fn handle_key_press(&mut self, key: KeyEvent) {
         let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
 
+        // TODO vim-style hjkl menu scroll behaviors
+
         // let at_port_selection = matches!(self.menu, Menu::PortSelection);
         // TODO soon, redo this variable's name + use
         let mut at_port_selection = false;
+        // Filter for when we decide to handle user *text input*.
         match self.menu {
-            Menu::Terminal => {
+            Menu::Terminal(TerminalPrompt::None) => {
                 match self
                     .user_input
                     .input_box
@@ -306,6 +328,7 @@ impl App {
                     _ => (),
                 }
             }
+            Menu::Terminal(TerminalPrompt::DisconnectPrompt) => (),
             Menu::PortSelection(PortSelectionElement::CustomBaud) => {
                 // filtering out just letters from being put into the custom baud entry
                 // extra checks will be needed at parse stage to ensure non-digit chars arent present
@@ -320,11 +343,15 @@ impl App {
         }
         match key.code {
             KeyCode::Char(char) => match char {
-                'q' | 'Q' if at_port_selection => self.state = RunningState::Finished,
-                'c' | 'C' if ctrl_pressed => {
-                    // TODO Quit prompt when connected?
-                    self.state = RunningState::Finished
-                }
+                'q' | 'Q' if at_port_selection => self.shutdown(),
+                'c' | 'C' if ctrl_pressed && shift_pressed => self.shutdown(),
+                'c' | 'C' if ctrl_pressed => match self.menu {
+                    Menu::Terminal(TerminalPrompt::DisconnectPrompt) => self.shutdown(),
+                    Menu::Terminal(TerminalPrompt::None) => {
+                        self.menu = TerminalPrompt::DisconnectPrompt.into();
+                    }
+                    _ => self.shutdown(),
+                },
                 'w' | 'W' if ctrl_pressed => {
                     self.buffer_wrapping = !self.buffer_wrapping;
                     self.scroll_buffer(0);
@@ -365,7 +392,16 @@ impl App {
                 }
             }
             KeyCode::Enter => self.enter_pressed(),
-            KeyCode::Esc => self.state = RunningState::Finished,
+            KeyCode::Esc => match self.menu {
+                Menu::Terminal(TerminalPrompt::None) => {
+                    self.table_state.select(Some(0));
+                    self.menu = TerminalPrompt::DisconnectPrompt.into();
+                }
+                Menu::Terminal(TerminalPrompt::DisconnectPrompt) => {
+                    self.menu = TerminalPrompt::None.into();
+                }
+                Menu::PortSelection(_) => self.shutdown(),
+            },
             _ => (),
         }
     }
@@ -378,7 +414,8 @@ impl App {
                 None => (),
             },
             Menu::PortSelection(e) => self.menu = e.prev().into(),
-            Menu::Terminal => self.user_input.scroll_history(true),
+            Menu::Terminal(TerminalPrompt::None) => self.user_input.scroll_history(true),
+            Menu::Terminal(TerminalPrompt::DisconnectPrompt) => self.scroll_menu_up(),
         }
         self.post_menu_scroll(true);
     }
@@ -410,7 +447,8 @@ impl App {
             //         }
             //     }
             // },
-            Menu::Terminal => self.user_input.scroll_history(false),
+            Menu::Terminal(TerminalPrompt::None) => self.user_input.scroll_history(false),
+            Menu::Terminal(TerminalPrompt::DisconnectPrompt) => self.scroll_menu_down(),
         }
         self.post_menu_scroll(false);
     }
@@ -440,7 +478,8 @@ impl App {
                     }
                 }
             }
-            _ => self.table_state.select(None),
+            Menu::PortSelection(_) => self.table_state.select(None),
+            _ => (),
         }
     }
     // consider making these some kind of trait method?
@@ -473,12 +512,12 @@ impl App {
                     self.serial.connect(&info, baud_rate);
 
                     self.user_input.reset();
-                    self.menu = Menu::Terminal;
+                    self.menu = Menu::Terminal(TerminalPrompt::None);
                 }
             }
             Menu::PortSelection(Pse::MoreOptions) => todo!(),
             Menu::PortSelection(_) => (),
-            Menu::Terminal => {
+            Menu::Terminal(TerminalPrompt::None) => {
                 if self.serial_healthy {
                     let user_input = self.user_input.input_box.value();
                     self.serial.send_str(user_input);
@@ -496,6 +535,25 @@ impl App {
                     self.carousel
                         .add_oneshot(Tick::Requested.into(), FAILED_SEND_VISUAL_TIME);
                     // Temporarily show text on red background when trying to send while unhealthy
+                }
+            }
+            Menu::Terminal(TerminalPrompt::DisconnectPrompt) => {
+                if self.table_state.selected().is_none() {
+                    return;
+                }
+                match DisconnectPrompt::try_from(self.table_state.selected().unwrap() as u8) {
+                    Ok(DisconnectPrompt::Cancel) => {
+                        self.menu = Menu::Terminal(TerminalPrompt::None)
+                    }
+                    Ok(DisconnectPrompt::Exit) => self.shutdown(),
+                    Ok(DisconnectPrompt::Disconnect) => {
+                        self.serial.disconnect();
+                        self.buffer.clear();
+                        // Clear the input box, but keep the user history!
+                        self.user_input.reset();
+                        self.menu = Menu::PortSelection(Pse::Ports);
+                    }
+                    Err(_) => unreachable!(),
                 }
             }
         }
@@ -526,7 +584,7 @@ impl App {
 
                 self.port_selection(frame, vertical_slices[1]);
             }
-            Menu::Terminal => self.terminal_menu(frame, frame.area()),
+            Menu::Terminal(prompt) => self.terminal_menu(frame, frame.area(), prompt),
         }
     }
 
@@ -623,9 +681,11 @@ impl App {
         &mut self,
         frame: &mut Frame,
         area: Rect,
+        prompt: TerminalPrompt,
         // buffer: impl Iterator<Item = Line<'a>>,
         // state: &mut TableState
     ) {
+        let disconnect_prompt_shown = prompt == TerminalPrompt::DisconnectPrompt;
         let [terminal_area, line_area, input_area] = vertical![*=1, ==1, ==1].areas(area);
 
         // let text = Text::from(buffer);
@@ -750,12 +810,29 @@ impl App {
                 .scroll((0, scroll as u16))
                 .style(style);
             frame.render_widget(input_text, input_area);
-            frame.set_cursor_position((
-                // Put cursor past the end of the input text
-                input_area.x
-                    + ((self.user_input.input_box.visual_cursor()).max(scroll) - scroll) as u16,
-                input_area.y,
-            ));
+            if !disconnect_prompt_shown {
+                frame.set_cursor_position((
+                    // Put cursor past the end of the input text
+                    input_area.x
+                        + ((self.user_input.input_box.visual_cursor()).max(scroll) - scroll) as u16,
+                    input_area.y,
+                ));
+            }
+        }
+
+        if disconnect_prompt_shown {
+            // let area = centered_rect(30, 30, area);
+            // let save_device_prompt =
+            //     DisconnectPrompt::prompt_table_block("Disconnect from port?", Style::new().blue());
+            DisconnectPrompt::render_prompt_block_popup(
+                "Disconnect from port?",
+                Style::new().blue(),
+                frame,
+                area,
+                &mut self.table_state,
+            );
+            // frame.render_widget(Clear, area);
+            // frame.render_stateful_widget(save_device_prompt, area, &mut self.table_state);
         }
     }
 

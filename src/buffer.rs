@@ -222,6 +222,10 @@ impl Buffer {
             para
         }
     }
+    pub fn clear(&mut self) {
+        self.lines.clear();
+        self.raw_buffer.clear();
+    }
 }
 
 // pub fn colored_line<'a, L: Into<Line<'a>>>(text: L) -> Line<'a> {
