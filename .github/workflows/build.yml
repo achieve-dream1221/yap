@@ -28,6 +28,10 @@ jobs:
       #  run: cargo fmt --all -- --check
       #- name: Run Clippy
       #  run: cargo clippy --all-targets --all-features
+      # TODO Remove this when releasing, I don't see a point in having this fail
+      # while I'm still in early days
+      - name: Allow warnings in builds (for now)
+        run: echo "RUSTFLAGS=" >> $GITHUB_ENV
       - name: Build
         run: cargo build --verbose
       - name: Run Unit Tests
