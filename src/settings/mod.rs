@@ -6,3 +6,7 @@ struct SettingsFile {}
 struct Misc {}
 
 pub struct Settings {}
+
+struct Behavior {
+    last_baud: u32,
+}

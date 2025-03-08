@@ -6,23 +6,24 @@ use std::{
 
 use tracing::{error, info};
 
-enum CarouselCommand<T: Clone> {
-    AddEvent(CarouselEvent<T>),
+enum CarouselCommand {
+    AddEvent(CarouselEvent),
     Shutdown(Sender<()>),
 }
 
 // #[derive(Clone)]
-// Could maybe remove Clone (and maybe Send) if I use Box<Fn() -> T> instead
-pub struct CarouselHandle<T: Clone + Send + std::fmt::Debug> {
-    command_tx: Sender<CarouselCommand<T>>,
+pub struct CarouselHandle {
+    command_tx: Sender<CarouselCommand>,
 }
 
-impl<T: Clone + Send + std::fmt::Debug + 'static> CarouselHandle<T> {
-    pub fn new(event_tx: Sender<T>) -> (Self, JoinHandle<()>) {
+type PayloadFn = Box<dyn Fn() -> Result<(), String> + Send + 'static>;
+
+impl CarouselHandle {
+    pub fn new() -> (Self, JoinHandle<()>) {
         let (command_tx, command_rx) = mpsc::channel();
 
         let mut worker = CarouselWorker {
-            event_tx,
+            // event_tx,
             command_rx,
             events: Vec::new(),
             woke_at: Instant::now(),
@@ -36,7 +37,7 @@ impl<T: Clone + Send + std::fmt::Debug + 'static> CarouselHandle<T> {
 
         (Self { command_tx }, worker)
     }
-    pub fn add_repeating(&self, payload: T, interval: Duration) {
+    pub fn add_repeating(&self, payload: PayloadFn, interval: Duration) {
         let event = CarouselEvent {
             payload,
             interval,
@@ -47,7 +48,7 @@ impl<T: Clone + Send + std::fmt::Debug + 'static> CarouselHandle<T> {
             .send(CarouselCommand::AddEvent(event))
             .unwrap();
     }
-    pub fn add_oneshot(&self, payload: T, delay: Duration) {
+    pub fn add_oneshot(&self, payload: PayloadFn, delay: Duration) {
         let event = CarouselEvent {
             payload,
             interval: delay,
@@ -78,10 +79,9 @@ impl<T: Clone + Send + std::fmt::Debug + 'static> CarouselHandle<T> {
     }
 }
 
-struct CarouselEvent<T: Clone> {
+struct CarouselEvent {
     interval: Duration,
-    // Could also be a Box<Fn() -> T> maybe
-    payload: T,
+    payload: PayloadFn,
     last_sent: Instant,
     event_type: EventType,
 }
@@ -93,14 +93,13 @@ enum EventType {
     ExpiredOneshot,
 }
 
-struct CarouselWorker<T: Clone> {
-    event_tx: Sender<T>,
-    command_rx: Receiver<CarouselCommand<T>>,
+struct CarouselWorker {
+    command_rx: Receiver<CarouselCommand>,
     woke_at: Instant,
-    events: Vec<CarouselEvent<T>>,
+    events: Vec<CarouselEvent>,
 }
 
-impl<T: Clone> CarouselWorker<T> {
+impl CarouselWorker {
     fn work_loop(&mut self) -> Result<(), ()> {
         let mut sleep_time = Duration::from_secs(5);
         let mut send_error = false;
@@ -124,27 +123,27 @@ impl<T: Clone> CarouselWorker<T> {
             sleep_time = self
                 .events
                 .iter_mut()
-                .fold(Duration::from_secs(5), |shortest, e| {
-                    let since_last_send = now.duration_since(e.last_sent);
+                .fold(Duration::from_secs(5), |shortest, ev| {
+                    let since_last_send = now.duration_since(ev.last_sent);
 
                     // If we've run longer than the interval
-                    let until_next_send = if since_last_send >= e.interval {
-                        e.last_sent = now;
+                    let until_next_send = if since_last_send >= ev.interval {
+                        ev.last_sent = now;
 
                         // info!("meow! {:?}", e.interval);
-                        let payload = e.payload.clone();
-                        if let Err(e) = self.event_tx.send(payload) {
-                            error!("Failed to send {e:?}, closing carousel thread.");
+                        // let payload = e.payload.clone();
+                        if let Err(err) = (ev.payload)() {
+                            error!("Carousel payload had error `{err}`, closing carousel thread.");
                             send_error = true;
                         }
 
-                        if e.event_type == EventType::Oneshot {
-                            e.event_type = EventType::ExpiredOneshot;
+                        if ev.event_type == EventType::Oneshot {
+                            ev.event_type = EventType::ExpiredOneshot;
                         }
 
-                        e.interval
+                        ev.interval
                     } else {
-                        let remaining = e.interval - since_last_send;
+                        let remaining = ev.interval - since_last_send;
                         remaining
                     };
 

@@ -13,7 +13,7 @@ use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::{Constraint, Layout, Margin, Offset, Rect, Size},
     prelude::Backend,
-    style::{Style, Stylize},
+    style::{Modifier, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Clear, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
@@ -55,7 +55,7 @@ impl From<CrosstermEvent> for Event {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum Event {
     Crossterm(CrosstermEvent),
     Serial(SerialEvent),
@@ -136,6 +136,7 @@ const FAILED_SEND_VISUAL_TIME: Duration = Duration::from_millis(750);
 pub struct App {
     state: RunningState,
     menu: Menu,
+    tx: Sender<Event>,
     rx: Receiver<Event>,
     table_state: TableState,
     single_line_state: SingleLineSelectorState,
@@ -146,8 +147,7 @@ pub struct App {
     // Might be worth an enum instead?
     // Or a SerialStatus struct with current_port_info and health status
     serial_healthy: bool,
-
-    carousel: CarouselHandle<Event>,
+    carousel: CarouselHandle,
     carousel_thread: Takeable<JoinHandle<()>>,
 
     user_input: UserInput,
@@ -166,13 +166,31 @@ pub struct App {
 
 impl App {
     pub fn new(tx: Sender<Event>, rx: Receiver<Event>) -> Self {
-        let (event_carousel, carousel_thread) = CarouselHandle::new(tx.clone());
-        let (serial_handle, serial_thread) = SerialHandle::new(tx);
+        let (event_carousel, carousel_thread) = CarouselHandle::new();
+        let (serial_handle, serial_thread) = SerialHandle::new(tx.clone());
 
-        event_carousel.add_repeating(Tick::PerSecond.into(), Duration::from_secs(1));
+        let tick_tx = tx.clone();
+        event_carousel.add_repeating(
+            Box::new(move || {
+                tick_tx
+                    .send(Tick::PerSecond.into())
+                    .map_err(|e| e.to_string())
+            }),
+            Duration::from_secs(1),
+        );
+
+        let serial_signal_tick_handle = serial_handle.clone();
+        event_carousel.add_repeating(
+            Box::new(move || {
+                serial_signal_tick_handle.read_signals();
+                Ok(())
+            }),
+            Duration::from_millis(100),
+        );
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection(PortSelectionElement::Ports),
+            tx,
             rx,
             table_state: TableState::new().with_selected(Some(0)),
             single_line_state: SingleLineSelectorState::new().with_selected(COMMON_BAUD_DEFAULT),
@@ -184,7 +202,6 @@ impl App {
             serial: serial_handle,
             serial_thread: Takeable::new(serial_thread),
             serial_healthy: false,
-
             user_input: UserInput::default(),
 
             buffer: Buffer::new(),
@@ -355,6 +372,12 @@ impl App {
                 'w' | 'W' if ctrl_pressed => {
                     self.buffer_wrapping = !self.buffer_wrapping;
                     self.scroll_buffer(0);
+                }
+                'r' | 'R' if ctrl_pressed => {
+                    self.serial.toggle_signals(true, false);
+                }
+                't' | 'T' if ctrl_pressed => {
+                    self.serial.toggle_signals(false, true);
                 }
                 // 't' | 'T' if ctrl_pressed => {
                 //     self.buffer_show_timestamp = !self.buffer_show_timestamp;
@@ -532,8 +555,14 @@ impl App {
                     self.scroll_buffer(i32::MIN);
                 } else {
                     self.failed_send_at = Some(Instant::now());
-                    self.carousel
-                        .add_oneshot(Tick::Requested.into(), FAILED_SEND_VISUAL_TIME);
+                    let tx = self.tx.clone();
+                    self.carousel.add_oneshot(
+                        Box::new(move || {
+                            tx.send(Tick::Requested.into()).map_err(|e| e.to_string())
+                        }),
+                        FAILED_SEND_VISUAL_TIME,
+                    );
+
                     // Temporarily show text on red background when trying to send while unhealthy
                 }
             }
@@ -541,19 +570,22 @@ impl App {
                 if self.table_state.selected().is_none() {
                     return;
                 }
-                match DisconnectPrompt::try_from(self.table_state.selected().unwrap() as u8) {
-                    Ok(DisconnectPrompt::Cancel) => {
-                        self.menu = Menu::Terminal(TerminalPrompt::None)
-                    }
-                    Ok(DisconnectPrompt::Exit) => self.shutdown(),
-                    Ok(DisconnectPrompt::Disconnect) => {
+                let index = self.table_state.selected().unwrap() as u8;
+                match DisconnectPrompt::try_from(index).unwrap() {
+                    DisconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
+                    DisconnectPrompt::Exit => self.shutdown(),
+                    DisconnectPrompt::Disconnect => {
                         self.serial.disconnect();
+                        // Refresh port listings
+                        self.ports.clear();
+                        self.serial.request_port_scan();
+
                         self.buffer.clear();
                         // Clear the input box, but keep the user history!
                         self.user_input.reset();
+
                         self.menu = Menu::PortSelection(Pse::Ports);
                     }
-                    Err(_) => unreachable!(),
                 }
             }
         }
@@ -687,6 +719,7 @@ impl App {
     ) {
         let disconnect_prompt_shown = prompt == TerminalPrompt::DisconnectPrompt;
         let [terminal_area, line_area, input_area] = vertical![*=1, ==1, ==1].areas(area);
+        let [input_symbol_area, input_area] = horizontal![==1, *=1].areas(input_area);
 
         // let text = Text::from(buffer);
         // let buffer = self.buffer.lines();
@@ -772,14 +805,14 @@ impl App {
         }
 
         {
-            let current_port = self.serial.current_port.load();
-            let port_text = match &*current_port {
-                Some(port) => {
+            let port_status_guard = self.serial.port_status.load();
+            let port_text = match &port_status_guard.current_port {
+                Some(port_info) => {
                     if self.serial_healthy {
-                        port.0.info_as_string(Some(port.1))
+                        port_info.info_as_string(Some(port_status_guard.baud_rate))
                     } else {
                         // Might remove later
-                        let info = port.0.info_as_string(None);
+                        let info = port_info.info_as_string(None);
                         format!("[!] {info} [!]")
                     }
                 }
@@ -791,24 +824,68 @@ impl App {
 
             let port_name_line = Line::raw(port_text).centered();
             frame.render_widget(port_name_line, line_area);
+
+            let reversed_if_true = |signal: bool| -> Modifier {
+                if signal {
+                    Modifier::REVERSED
+                } else {
+                    Modifier::empty()
+                }
+            };
+
+            let (dtr, rts, cts, dsr, ri, cd) = {
+                let dtr = reversed_if_true(port_status_guard.signals.dtr);
+                let rts = reversed_if_true(port_status_guard.signals.rts);
+
+                let cts = reversed_if_true(port_status_guard.signals.cts);
+                let dsr = reversed_if_true(port_status_guard.signals.dsr);
+                let ri = reversed_if_true(port_status_guard.signals.ri);
+                let cd = reversed_if_true(port_status_guard.signals.cd);
+
+                (dtr, rts, cts, dsr, ri, cd)
+            };
+
+            let signals_spans = vec![
+                span!["["],
+                span![dtr;"DTR"],
+                span![" "],
+                span![rts;"RTS"],
+                span!["|"],
+                span![cts;"CTS"],
+                span![" "],
+                span![dsr;"DSR"],
+                span![" "],
+                span![ri;"RI"],
+                span![" "],
+                span![cd;"CD"],
+                span!["]"],
+            ];
+            let signals_line = Line::from(signals_spans);
+            frame.render_widget(signals_line, line_area.offset(Offset { x: 3, y: 0 }));
         }
 
+        let input_style = match &self.failed_send_at {
+            Some(instant) if instant.elapsed() < FAILED_SEND_VISUAL_TIME => Style::new().on_red(),
+            _ => Style::new(),
+        };
+
+        let input_symbol = Span::raw(">").style(if self.serial_healthy {
+            input_style.green()
+        } else {
+            input_style.red()
+        });
+
+        frame.render_widget(input_symbol, input_symbol_area);
         if self.user_input.input_box.value().is_empty() {
             let input_hint = Line::raw("Input goes here.").dark_gray();
             frame.render_widget(input_hint, input_area.offset(Offset { x: 1, y: 0 }));
             frame.set_cursor_position(input_area.as_position());
         } else {
-            let style = match &self.failed_send_at {
-                Some(instant) if instant.elapsed() < FAILED_SEND_VISUAL_TIME => {
-                    Style::new().on_red()
-                }
-                _ => Style::new(),
-            };
             let width = input_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge
             let scroll = self.user_input.input_box.visual_scroll(width as usize);
             let input_text = Paragraph::new(self.user_input.input_box.value())
                 .scroll((0, scroll as u16))
-                .style(style);
+                .style(input_style);
             frame.render_widget(input_text, input_area);
             if !disconnect_prompt_shown {
                 frame.set_cursor_position((
