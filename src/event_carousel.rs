@@ -131,7 +131,6 @@ impl CarouselWorker {
                         ev.last_sent = now;
 
                         // info!("meow! {:?}", e.interval);
-                        // let payload = e.payload.clone();
                         if let Err(err) = (ev.payload)() {
                             error!("Carousel payload had error `{err}`, closing carousel thread.");
                             send_error = true;

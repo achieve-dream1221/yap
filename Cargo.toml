@@ -11,6 +11,7 @@ chrono = "0.4.39"
 color-eyre = "0.6.3"
 derivative = "2.2.0"
 enum-rotate = "0.1.1"
+espflash = "3.3.0"
 human-panic = "2.0.2"
 int-enum = { git = "https://github.com/nullstalgia/int-enum-rs", branch = "feat/colors-and-discriminators" }
 libc = "0.2.169"

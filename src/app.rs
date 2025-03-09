@@ -122,9 +122,9 @@ pub enum RunningState {
 
 // 0 is for a custom baud rate
 const COMMON_BAUD: &[u32] = &[
-    4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 0,
+    4800, 9600, 19200, 38400, 57600, 74880, 115200, 230400, 460800, 921600, 0,
 ];
-const COMMON_BAUD_DEFAULT: usize = 5;
+const COMMON_BAUD_DEFAULT: usize = 6;
 
 pub const LINE_ENDINGS: &[&str] = &["\n", "\r", "\r\n"];
 pub const LINE_ENDINGS_DEFAULT: usize = 0;
@@ -376,6 +376,18 @@ impl App {
                 'r' | 'R' if ctrl_pressed => {
                     self.serial.toggle_signals(true, false);
                 }
+                'e' | 'E' if ctrl_pressed => {
+                    // self.serial.write_signals(Some(false), Some(false));
+                    // self.serial.write_signals(Some(true), Some(true));
+                    // self.serial.write_signals(Some(false), Some(true));
+                    // std::thread::sleep(Duration::from_millis(100));
+                    // self.serial.write_signals(Some(true), Some(false));
+                    // std::thread::sleep(Duration::from_millis(100));
+                    // self.serial.write_signals(Some(false), Some(false));
+                    self.buffer
+                        .append_user_text("Attempting to put Espressif device into bootloader...");
+                    self.serial.esp_restart(None);
+                }
                 't' | 'T' if ctrl_pressed => {
                     self.serial.toggle_signals(false, true);
                 }
@@ -555,6 +567,7 @@ impl App {
                     self.scroll_buffer(i32::MIN);
                 } else {
                     self.failed_send_at = Some(Instant::now());
+                    // Temporarily show text on red background when trying to send while unhealthy
                     let tx = self.tx.clone();
                     self.carousel.add_oneshot(
                         Box::new(move || {
@@ -562,8 +575,6 @@ impl App {
                         }),
                         FAILED_SEND_VISUAL_TIME,
                     );
-
-                    // Temporarily show text on red background when trying to send while unhealthy
                 }
             }
             Menu::Terminal(TerminalPrompt::DisconnectPrompt) => {

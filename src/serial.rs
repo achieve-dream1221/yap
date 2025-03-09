@@ -1,5 +1,6 @@
 use std::{
-    io::{BufWriter, Write},
+    any::Any,
+    io::{BufWriter, Read, Write},
     sync::{
         mpsc::{self, Receiver, Sender},
         Arc, RwLock,
@@ -10,10 +11,16 @@ use std::{
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use color_eyre::owo_colors::OwoColorize;
-use serialport::{SerialPort, SerialPortInfo, SerialPortType};
+use espflash::connection::reset::ResetStrategy;
+use serialport::{COMPort, SerialPort, SerialPortInfo, SerialPortType};
 use tracing::{debug, error, info};
 
 use crate::app::{Event, Tick};
+
+#[cfg(unix)]
+pub type NativePort = serialport::TTYPort;
+#[cfg(windows)]
+pub type NativePort = serialport::COMPort;
 
 // TODO maybe relegate this to the serial worker thread in case it blocks?
 
@@ -31,6 +38,7 @@ impl From<SerialEvent> for Event {
     }
 }
 
+#[derive(Debug)]
 pub enum SerialCommand {
     RequestPortScan,
     Connect {
@@ -39,6 +47,7 @@ pub enum SerialCommand {
     },
     ChangeBaud(u32),
     TxBuffer(Vec<u8>),
+    EspRestart(Option<u128>),
     WriteSignals {
         dtr: Option<bool>,
         rts: Option<bool>,
@@ -187,7 +196,7 @@ impl SerialHandle {
                 .expect("Serial worker encountered an error!");
         });
 
-        let mut handle = Self {
+        let handle = Self {
             command_tx,
             port_status,
         };
@@ -219,6 +228,16 @@ impl SerialHandle {
     }
     pub fn read_signals(&self) {
         self.command_tx.send(SerialCommand::ReadSignals).unwrap();
+    }
+    pub fn esp_restart(&self, strategy: Option<u128>) {
+        self.command_tx
+            .send(SerialCommand::EspRestart(strategy))
+            .unwrap();
+    }
+    pub fn write_signals(&self, dtr: Option<bool>, rts: Option<bool>) {
+        self.command_tx
+            .send(SerialCommand::WriteSignals { dtr, rts })
+            .unwrap();
     }
     pub fn toggle_signals(&self, dtr: bool, rts: bool) {
         self.command_tx
@@ -263,7 +282,7 @@ impl SerialHandle {
 pub struct SerialWorker {
     command_rx: Receiver<SerialCommand>,
     event_tx: Sender<Event>,
-    port: Option<Box<dyn SerialPort>>,
+    port: Option<NativePort>,
     baud_rate: u32,
     scan_snapshot: Vec<SerialPortInfo>,
     rx_buffer: Vec<u8>,
@@ -295,7 +314,12 @@ impl SerialWorker {
             // or have some kind of cooldown after a 0-size serial read
             // (maybe use port.bytes_to_read() ?)
             // not sure if the barrage is what's causing weird unix issues with the ESP32-S3, need to test further
-            match self.command_rx.try_recv() {
+            let sleep_time = if self.port.is_some() {
+                Duration::from_millis(10)
+            } else {
+                Duration::from_millis(100)
+            };
+            match self.command_rx.recv_timeout(sleep_time) {
                 Ok(cmd) => match cmd {
                     // TODO: Catch failures to connect here instead of propogating to the whole task
                     SerialCommand::Connect { port, baud_rate } => {
@@ -308,10 +332,83 @@ impl SerialWorker {
                         port.set_baud_rate(baud_rate)?;
                         self.baud_rate = baud_rate;
                     }
+                    SerialCommand::EspRestart(_) => {
+                        if let Some(port) = &mut self.port {
+                            let strategy = TestReset::new();
+                            // let strategy = espflash::connection::reset::ClassicReset::new(false);
+                            strategy.reset(port)?;
+                            // let strategy = espflash::connection::reset::ClassicReset::new(true);
+                            // strategy.reset(port)?;
+                        } else {
+                            error!("Requested an ESP restart with no port active!");
+                        }
+                    }
+                    // This actually does work!
+                    // Just needs a helluva lot of logic and polish to work in a presentable manner
+                    // SerialCommand::EspFlashing(_) => {
+                    //     let port_info = {
+                    //         let status_guard = self.shared_port_status.load();
+                    //         match &status_guard.current_port {
+                    //             None => panic!(),
+                    //             Some(info) => match &info.port_type {
+                    //                 SerialPortType::UsbPort(e) => e.clone(),
+                    //                 _ => unreachable!(),
+                    //             },
+                    //         }
+                    //     };
+                    //     let mut flasher = espflash::flasher::Flasher::connect(
+                    //         self.port.take().unwrap(),
+                    //         port_info,
+                    //         Some(921600),
+                    //         true,
+                    //         true,
+                    //         true,
+                    //         None,
+                    //         espflash::connection::reset::ResetAfterOperation::HardReset,
+                    //         espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                    //     )
+                    //     .unwrap();
+                    //     flasher
+                    //         .write_bin_to_flash(
+                    //             0,
+                    //             include_bytes!("../OpenShock_Pishock-2023_1.4.0.bin"),
+                    //             None,
+                    //         )
+                    //         .unwrap();
+                    //     let mut port = flasher.into_serial();
+                    //     port.set_timeout(Duration::from_millis(100))?;
+                    //     port.clear(serialport::ClearBuffer::All)?;
+                    //     port.flush()?;
+                    //     while let Ok(_) = self.command_rx.try_recv() {
+                    //         // draining messages that piled up during send
+                    //         // might need to instead move the flashing to a different thread..?
+                    //         // and return the port afterwards?
+                    //         // might work since i can send progress updates here?
+                    //         // but not sure why i wouldnt just send to main/ui thread
+                    //     }
+                    //     port.set_baud_rate(self.baud_rate)?;
+                    //     self.port = Some(port);
+                    //     info!("Port ownership returned to terminal!");
+                    // },
                     SerialCommand::ReadSignals => self.read_and_share_serial_signals(false)?,
                     SerialCommand::WriteSignals { dtr, rts } => {
                         assert!(dtr.is_some() || rts.is_some());
-                        todo!()
+                        let mut status: SerialStatus =
+                            self.shared_port_status.load().as_ref().clone();
+                        if let Some(dtr) = dtr {
+                            status.signals.dtr = dtr;
+                        }
+                        if let Some(rts) = rts {
+                            status.signals.rts = rts;
+                        }
+                        if let Some(port) = &mut self.port {
+                            // Sending both signals regardless of which one changed
+                            // to keep them in line with the expected state in the struct.
+                            port.write_data_terminal_ready(status.signals.dtr)?;
+                            port.write_request_to_send(status.signals.rts)?;
+                        }
+                        self.shared_port_status.store(Arc::new(status));
+                        self.read_and_share_serial_signals(true)?;
                     }
                     SerialCommand::ToggleSignals { dtr, rts } => {
                         assert!(dtr || rts);
@@ -423,8 +520,11 @@ impl SerialWorker {
                     }
                     SerialCommand::TxBuffer(_) => todo!(), // Tried to send with no port
                 },
-                Err(std::sync::mpsc::TryRecvError::Empty) => (),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // info!("no message");
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     panic!("Worker lost all Handles");
                 }
             }
@@ -455,7 +555,8 @@ impl SerialWorker {
                         // since this assumes that on error, the port is *gone*
                         // which *is* possible, but not a guarantee
                         // (maybe i could manually pop it if it still exists? since i do have connected_port_info as a reference)
-                        self.scan_snapshot = self.scan_for_serial_ports().unwrap();
+                        // TODO Also reconsider error handling, should it take down the task? Or allow failures?
+                        self.scan_snapshot = self.scan_for_serial_ports()?;
                         _ = self.port.take();
                         // Don't take since we're using it to find the port for reconnections.
                         // _ = self.connected_port_info.take();
@@ -600,17 +701,20 @@ impl SerialWorker {
         // TODO Make this a config option since this seems to have different behavior for each device.
         let dtr_on_open = port_status.signals.dtr;
 
-        let mut port = if port_info.port_name.eq(MOCK_PORT_NAME) {
-            let mut virt_port =
-                virtual_serialport::VirtualPort::loopback(baud_rate, MOCK_DATA.len() as u32)?;
-            virt_port.write_all(MOCK_DATA.as_bytes())?;
+        let mut port =
+        //     if port_info.port_name.eq(MOCK_PORT_NAME) {
+        //     let mut virt_port =
+        //         virtual_serialport::VirtualPort::loopback(baud_rate, MOCK_DATA.len() as u32)?;
+        //     virt_port.write_all(MOCK_DATA.as_bytes())?;
 
-            virt_port.into_boxed()
-        } else {
+        //     virt_port.into_boxed()
+        // }
+        //     else
+        {
             serialport::new(&port_info.port_name, baud_rate)
                 .dtr_on_open(dtr_on_open)
                 // .flow_control(serialport::FlowControl::Software)
-                .open()?
+                .open_native()?
         };
 
         port.write_request_to_send(port_status.signals.rts)?;
@@ -623,7 +727,7 @@ impl SerialWorker {
         // );
         port_status.baud_rate = baud_rate;
         port_status.current_port = Some(port_info.to_owned());
-        port_status.signals.update_with_port(port.as_mut())?;
+        port_status.signals.update_with_port(&mut port)?;
         port_status.healthy = true;
         self.port = Some(port);
         self.shared_port_status.store(Arc::new(port_status));
@@ -657,7 +761,7 @@ impl SerialWorker {
                 // debug_assert later?
                 assert!(self.baud_rate == port_status.baud_rate);
 
-                let changed = port_status.signals.update_with_port(port.as_mut())?;
+                let changed = port_status.signals.update_with_port(port)?;
                 // Only update the shared status if there's actually a change
                 if changed {
                     self.shared_port_status.store(Arc::new(port_status));
@@ -668,6 +772,46 @@ impl SerialWorker {
                 }
             }
         }
+
+        Ok(())
+    }
+}
+
+struct TestReset {
+    delay: u64,
+}
+impl TestReset {
+    fn new() -> Self {
+        Self { delay: 50 }
+    }
+}
+impl ResetStrategy for TestReset {
+    fn reset(
+        &self,
+        serial_port: &mut espflash::connection::Port,
+    ) -> Result<(), espflash::error::Error> {
+        debug!(
+            "Using Classic reset strategy with delay of {}ms",
+            self.delay
+        );
+        self.set_dtr(serial_port, false)?;
+        self.set_rts(serial_port, false)?;
+
+        self.set_dtr(serial_port, true)?;
+        self.set_rts(serial_port, true)?;
+
+        self.set_dtr(serial_port, false)?; // IO0 = HIGH
+        self.set_rts(serial_port, true)?; // EN = LOW, chip in reset
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        self.set_dtr(serial_port, true)?; // IO0 = LOW
+        self.set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
+
+        std::thread::sleep(Duration::from_millis(self.delay));
+
+        self.set_dtr(serial_port, false)?; // IO0 = HIGH, done
+        self.set_rts(serial_port, false)?;
 
         Ok(())
     }
