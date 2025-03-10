@@ -1,9 +1,8 @@
 use std::{
-    any::Any,
     io::{BufWriter, Read, Write},
     sync::{
         mpsc::{self, Receiver, Sender},
-        Arc, RwLock,
+        Arc,
     },
     thread::JoinHandle,
     time::Duration,
@@ -14,6 +13,7 @@ use color_eyre::owo_colors::OwoColorize;
 use espflash::connection::reset::ResetStrategy;
 use serialport::{COMPort, SerialPort, SerialPortInfo, SerialPortType};
 use tracing::{debug, error, info};
+use virtual_serialport::VirtualPort;
 
 use crate::app::{Event, Tick};
 
@@ -278,11 +278,65 @@ impl SerialHandle {
         }
     }
 }
+#[derive(Default)]
+enum PortHandle {
+    #[default]
+    None,
+    Borrowed,
+    Native(NativePort),
+    Loopback(VirtualPort),
+}
+
+impl PortHandle {
+    fn is_none(&self) -> bool {
+        matches!(self, PortHandle::None)
+    }
+    fn is_borrowed(&self) -> bool {
+        matches!(self, PortHandle::Borrowed)
+    }
+    fn is_owned(&self) -> bool {
+        matches!(self, PortHandle::Native(_) | PortHandle::Loopback(_))
+    }
+    fn drop(&mut self) {
+        *self = PortHandle::None;
+    }
+    fn take_native(&mut self) -> Option<NativePort> {
+        if let PortHandle::Native(_) = self {
+            if let PortHandle::Native(port) = std::mem::replace(self, PortHandle::Borrowed) {
+                Some(port)
+            } else {
+                unreachable!()
+            }
+        } else {
+            None
+        }
+    }
+    fn return_native(&mut self, port: NativePort) {
+        *self = PortHandle::Native(port);
+    }
+    fn return_loopback(&mut self, port: VirtualPort) {
+        *self = PortHandle::Loopback(port);
+    }
+    fn as_mut_port(&mut self) -> Option<&mut dyn SerialPort> {
+        match self {
+            PortHandle::Native(port) => Some(port),
+            PortHandle::Loopback(port) => Some(port),
+            _ => None,
+        }
+    }
+    fn as_mut_native_port(&mut self) -> Option<&mut NativePort> {
+        if let PortHandle::Native(port) = self {
+            Some(port)
+        } else {
+            None
+        }
+    }
+}
 
 pub struct SerialWorker {
     command_rx: Receiver<SerialCommand>,
     event_tx: Sender<Event>,
-    port: Option<NativePort>,
+    port: PortHandle,
     baud_rate: u32,
     scan_snapshot: Vec<SerialPortInfo>,
     rx_buffer: Vec<u8>,
@@ -302,7 +356,7 @@ impl SerialWorker {
             shared_port_status: port_status,
             // port_status: SerialStatus::idle(),
             // connected_port_info: None,
-            port: None,
+            port: PortHandle::default(),
             baud_rate: 0,
             scan_snapshot: vec![],
             rx_buffer: vec![0; 1024 * 1024],
@@ -314,7 +368,7 @@ impl SerialWorker {
             // or have some kind of cooldown after a 0-size serial read
             // (maybe use port.bytes_to_read() ?)
             // not sure if the barrage is what's causing weird unix issues with the ESP32-S3, need to test further
-            let sleep_time = if self.port.is_some() {
+            let sleep_time = if self.port.is_owned() {
                 Duration::from_millis(10)
             } else {
                 Duration::from_millis(100)
@@ -327,13 +381,13 @@ impl SerialWorker {
                         self.connect_to_port(&port, baud_rate)?;
                     }
                     SerialCommand::ChangeBaud(baud_rate) => {
-                        assert!(self.port.is_some());
-                        let port = self.port.as_mut().unwrap();
+                        assert!(self.port.is_owned());
+                        let port = self.port.as_mut_port().unwrap();
                         port.set_baud_rate(baud_rate)?;
                         self.baud_rate = baud_rate;
                     }
                     SerialCommand::EspRestart(_) => {
-                        if let Some(port) = &mut self.port {
+                        if let Some(port) = self.port.as_mut_native_port() {
                             let strategy = TestReset::new();
                             // let strategy = espflash::connection::reset::ClassicReset::new(false);
                             strategy.reset(port)?;
@@ -401,7 +455,7 @@ impl SerialWorker {
                         if let Some(rts) = rts {
                             status.signals.rts = rts;
                         }
-                        if let Some(port) = &mut self.port {
+                        if let Some(port) = self.port.as_mut_port() {
                             // Sending both signals regardless of which one changed
                             // to keep them in line with the expected state in the struct.
                             port.write_data_terminal_ready(status.signals.dtr)?;
@@ -422,7 +476,7 @@ impl SerialWorker {
                         if rts {
                             status.signals.rts = !status.signals.rts;
                         }
-                        if let Some(port) = &mut self.port {
+                        if let Some(port) = self.port.as_mut_port() {
                             // Sending both signals regardless of which one changed
                             // to keep them in line with the expected state in the struct.
                             port.write_data_terminal_ready(status.signals.dtr)?;
@@ -438,7 +492,7 @@ impl SerialWorker {
 
                         self.shared_port_status
                             .store(Arc::new(SerialStatus::idle()));
-                        _ = self.port.take();
+                        self.port.drop();
                         break;
                     }
                     SerialCommand::RequestPortScan => {
@@ -455,13 +509,13 @@ impl SerialWorker {
                         // self.port_status = SerialStatus::idle();
                         self.shared_port_status
                             .store(Arc::new(SerialStatus::idle()));
-                        _ = self.port.take();
+                        self.port.drop();
                         self.event_tx.send(SerialEvent::Disconnected.into())?;
                     }
                     // This should maybe reply with a success/fail in case the
                     // port is having an issue, so the user's input buffer isn't consumed visually
-                    SerialCommand::TxBuffer(mut data) if self.port.is_some() => {
-                        let port = self.port.as_mut().unwrap();
+                    SerialCommand::TxBuffer(mut data) if self.port.is_owned() => {
+                        let port = self.port.as_mut_port().unwrap();
                         info!(
                             "bytes incoming: {}, bytes outcoming: {}",
                             port.bytes_to_read().unwrap(),
@@ -529,7 +583,7 @@ impl SerialWorker {
                 }
             }
 
-            if let Some(port) = &mut self.port {
+            if let Some(port) = self.port.as_mut_port() {
                 // if port.bytes_to_read().unwrap() == 0 {
                 //     continue;
                 // }
@@ -557,7 +611,7 @@ impl SerialWorker {
                         // (maybe i could manually pop it if it still exists? since i do have connected_port_info as a reference)
                         // TODO Also reconsider error handling, should it take down the task? Or allow failures?
                         self.scan_snapshot = self.scan_for_serial_ports()?;
-                        _ = self.port.take();
+                        self.port.drop();
                         // Don't take since we're using it to find the port for reconnections.
                         // _ = self.connected_port_info.take();
                         self.event_tx.send(SerialEvent::Disconnected.into())?;
@@ -571,7 +625,7 @@ impl SerialWorker {
     fn attempt_reconnect(&mut self) -> Result<(), serialport::Error> {
         // assert!(self.connected_port_info.read().unwrap().is_some());
         // assert!(self.port.is_none());
-        if self.port.is_some() {
+        if self.port.is_owned() || self.port.is_borrowed() {
             error!("Got request to reconnect when already connected to port! Not acting...");
             return Ok(());
         }
@@ -701,21 +755,22 @@ impl SerialWorker {
         // TODO Make this a config option since this seems to have different behavior for each device.
         let dtr_on_open = port_status.signals.dtr;
 
-        let mut port =
-        //     if port_info.port_name.eq(MOCK_PORT_NAME) {
-        //     let mut virt_port =
-        //         virtual_serialport::VirtualPort::loopback(baud_rate, MOCK_DATA.len() as u32)?;
-        //     virt_port.write_all(MOCK_DATA.as_bytes())?;
+        if port_info.port_name.eq(MOCK_PORT_NAME) {
+            let mut virt_port =
+                virtual_serialport::VirtualPort::loopback(baud_rate, MOCK_DATA.len() as u32)?;
+            virt_port.write_all(MOCK_DATA.as_bytes())?;
 
-        //     virt_port.into_boxed()
-        // }
-        //     else
-        {
-            serialport::new(&port_info.port_name, baud_rate)
+            self.port.return_loopback(virt_port);
+        } else {
+            let port = serialport::new(&port_info.port_name, baud_rate)
                 .dtr_on_open(dtr_on_open)
                 // .flow_control(serialport::FlowControl::Software)
-                .open_native()?
+                .open_native()?;
+
+            self.port.return_native(port);
         };
+
+        let port = self.port.as_mut_port().unwrap();
 
         port.write_request_to_send(port_status.signals.rts)?;
 
@@ -727,9 +782,8 @@ impl SerialWorker {
         // );
         port_status.baud_rate = baud_rate;
         port_status.current_port = Some(port_info.to_owned());
-        port_status.signals.update_with_port(&mut port)?;
+        port_status.signals.update_with_port(port)?;
         port_status.healthy = true;
-        self.port = Some(port);
         self.shared_port_status.store(Arc::new(port_status));
 
         // Blech, if connecting from current_ports in attempt_reconnect, this may not exist.
@@ -754,7 +808,7 @@ impl SerialWorker {
     ) -> Result<(), serialport::Error> {
         let mut port_status: SerialStatus = self.shared_port_status.load().as_ref().clone();
 
-        match &mut self.port {
+        match self.port.as_mut_port() {
             // If no port is present, just skip.
             None => return Ok(()),
             Some(port) => {
