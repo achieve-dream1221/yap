@@ -1,0 +1,31 @@
+use ratatui::widgets::{Table, TableState};
+
+pub use struct_table_derive::*;
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum ArrowKey {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl std::fmt::Display for ArrowKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let key = match self {
+            ArrowKey::Up => "Up",
+            ArrowKey::Down => "Down",
+            ArrowKey::Left => "Left",
+            ArrowKey::Right => "Right",
+        };
+        write!(f, "{}", key)
+    }
+}
+
+pub trait StructTable {
+    /// Returns `true` if the input caused a change in the struct
+    ///
+    /// Returns an `Err` if a change was attempted at an invalid field index (>= field amount).
+    fn handle_input(&mut self, input: ArrowKey, table_state: &mut TableState) -> Result<bool, ()>;
+    fn as_table(&self, table_state: &mut TableState) -> Table<'_>;
+}
