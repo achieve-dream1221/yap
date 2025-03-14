@@ -23,6 +23,7 @@ use ratatui::{
 };
 use ratatui_macros::{horizontal, line, span, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
+use struct_table::{ArrowKey, StructTable};
 use takeable::Takeable;
 use tracing::{debug, error, info, instrument};
 use tui_big_text::{BigText, PixelSize};
@@ -32,8 +33,11 @@ use crate::{
     buffer::Buffer,
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
-    serial::{PrintablePortInfo, SerialEvent, SerialHandle, MOCK_PORT_NAME},
+    serial::{
+        PortSettings, PrintablePortInfo, Reconnections, SerialEvent, SerialHandle, MOCK_PORT_NAME,
+    },
     tui::{
+        centered_rect_size,
         prompts::{centered_rect, DisconnectPrompt, PromptTable},
         single_line_selector::{
             LastIndex, SingleLineSelector, SingleLineSelectorState, StateBottomed,
@@ -120,11 +124,22 @@ pub enum RunningState {
     Finished,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Popup {
+    PortSettings,
+}
+
 // 0 is for a custom baud rate
-const COMMON_BAUD: &[u32] = &[
+pub const COMMON_BAUD: &[u32] = &[
     4800, 9600, 19200, 38400, 57600, 74880, 115200, 230400, 460800, 921600, 0,
 ];
 const COMMON_BAUD_DEFAULT: usize = 6;
+
+pub const DEFAULT_BAUD: u32 = {
+    let baud = COMMON_BAUD[COMMON_BAUD_DEFAULT];
+    assert!(baud == 115200);
+    baud
+};
 
 pub const LINE_ENDINGS: &[&str] = &["\n", "\r", "\r\n"];
 pub const LINE_ENDINGS_DEFAULT: usize = 0;
@@ -136,6 +151,7 @@ const FAILED_SEND_VISUAL_TIME: Duration = Duration::from_millis(750);
 pub struct App {
     state: RunningState,
     menu: Menu,
+    popup: Option<Popup>,
     tx: Sender<Event>,
     rx: Receiver<Event>,
     table_state: TableState,
@@ -147,6 +163,7 @@ pub struct App {
     // Might be worth an enum instead?
     // Or a SerialStatus struct with current_port_info and health status
     serial_healthy: bool,
+    scratch_port_settings: PortSettings,
     carousel: CarouselHandle,
     carousel_thread: Takeable<JoinHandle<()>>,
 
@@ -190,6 +207,7 @@ impl App {
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection(PortSelectionElement::Ports),
+            popup: None,
             tx,
             rx,
             table_state: TableState::new().with_selected(Some(0)),
@@ -202,6 +220,7 @@ impl App {
             serial: serial_handle,
             serial_thread: Takeable::new(serial_thread),
             serial_healthy: false,
+            scratch_port_settings: PortSettings::default(),
             user_input: UserInput::default(),
 
             buffer: Buffer::new(),
@@ -223,6 +242,7 @@ impl App {
         while self.is_running() {
             self.draw(&mut terminal)?;
             let msg = self.rx.recv().unwrap();
+            // debug!("{msg:?}");
             match msg {
                 Event::Quit => self.shutdown(),
 
@@ -281,11 +301,15 @@ impl App {
                 }
                 Event::Tick(Tick::PerSecond) => match self.menu {
                     Menu::Terminal(TerminalPrompt::None) => {
-                        if !self.serial_healthy {
+                        let reconnections_allowed =
+                            self.serial.port_status.load().settings.reconnections
+                                != Reconnections::Disabled;
+                        if !self.serial_healthy && reconnections_allowed {
                             self.repeating_line_flip = !self.repeating_line_flip;
                             self.serial.request_reconnect();
                         }
                     }
+                    // If disconnect prompt is open, pause reacting to the ticks
                     Menu::Terminal(TerminalPrompt::DisconnectPrompt) => (),
                     Menu::PortSelection(_) => {
                         self.serial.request_port_scan();
@@ -391,6 +415,10 @@ impl App {
                 't' | 'T' if ctrl_pressed => {
                     self.serial.toggle_signals(false, true);
                 }
+                '.' if ctrl_pressed => {
+                    self.popup = Some(Popup::PortSettings);
+                    self.table_state.select(Some(0));
+                }
                 // 't' | 'T' if ctrl_pressed => {
                 //     self.buffer_show_timestamp = !self.buffer_show_timestamp;
                 //     self.buffer.update_line_count(self.buffer_show_timestamp);
@@ -414,33 +442,50 @@ impl App {
             //     .add_event(Event::TickSecond, Duration::from_secs(3)),
             KeyCode::Up => self.up_pressed(),
             KeyCode::Down => self.down_pressed(),
-            KeyCode::Left if at_port_selection && self.single_line_state.active => {
-                if self.single_line_state.current_index == 0 {
-                    self.single_line_state.select(COMMON_BAUD.last_index());
-                } else {
-                    self.single_line_state.prev();
-                }
-            }
-            KeyCode::Right if at_port_selection && self.single_line_state.active => {
-                if self.single_line_state.next() >= COMMON_BAUD.len() {
-                    self.single_line_state.select(0);
-                }
-            }
+            KeyCode::Left => self.left_pressed(),
+            KeyCode::Right => self.right_pressed(),
             KeyCode::Enter => self.enter_pressed(),
-            KeyCode::Esc => match self.menu {
-                Menu::Terminal(TerminalPrompt::None) => {
-                    self.table_state.select(Some(0));
-                    self.menu = TerminalPrompt::DisconnectPrompt.into();
-                }
-                Menu::Terminal(TerminalPrompt::DisconnectPrompt) => {
-                    self.menu = TerminalPrompt::None.into();
-                }
-                Menu::PortSelection(_) => self.shutdown(),
-            },
+            KeyCode::Esc => self.esc_pressed(),
             _ => (),
         }
     }
+    fn esc_pressed(&mut self) {
+        match self.popup {
+            None => (),
+            Some(Popup::PortSettings) => {
+                _ = self.popup.take();
+                self.table_state.select(None);
+
+                self.scratch_port_settings =
+                    self.serial.port_status.load().as_ref().clone().settings;
+                return;
+            }
+        }
+
+        match self.menu {
+            Menu::Terminal(TerminalPrompt::None) => {
+                self.table_state.select(Some(0));
+                self.menu = TerminalPrompt::DisconnectPrompt.into();
+            }
+            Menu::Terminal(TerminalPrompt::DisconnectPrompt) => {
+                self.menu = TerminalPrompt::None.into();
+            }
+            Menu::PortSelection(_) => self.shutdown(),
+        }
+    }
     fn up_pressed(&mut self) {
+        match self.popup {
+            None => (),
+            Some(Popup::PortSettings) => {
+                self.scratch_port_settings
+                    .handle_input(ArrowKey::Up, &mut self.table_state)
+                    .unwrap();
+            }
+        }
+        if self.popup.is_some() {
+            return;
+        }
+
         use PortSelectionElement as Pse;
         match self.menu {
             Menu::PortSelection(e @ Pse::Ports) => match self.table_state.selected() {
@@ -455,6 +500,18 @@ impl App {
         self.post_menu_scroll(true);
     }
     fn down_pressed(&mut self) {
+        match self.popup {
+            None => (),
+            Some(Popup::PortSettings) => {
+                self.scratch_port_settings
+                    .handle_input(ArrowKey::Down, &mut self.table_state)
+                    .unwrap();
+            }
+        }
+        if self.popup.is_some() {
+            return;
+        }
+
         use PortSelectionElement as Pse;
         match self.menu {
             Menu::PortSelection(e @ Pse::Ports) if self.table_state.on_last(&self.ports) => {
@@ -487,7 +544,55 @@ impl App {
         }
         self.post_menu_scroll(false);
     }
+    fn left_pressed(&mut self) {
+        match self.popup {
+            None => (),
+            Some(Popup::PortSettings) => {
+                self.scratch_port_settings
+                    .handle_input(ArrowKey::Left, &mut self.table_state)
+                    .unwrap();
+            }
+        }
+        if self.popup.is_some() {
+            return;
+        }
+        if matches!(self.menu, Menu::PortSelection(_)) && self.single_line_state.active {
+            if self.single_line_state.current_index == 0 {
+                self.single_line_state.select(COMMON_BAUD.last_index());
+            } else {
+                self.single_line_state.prev();
+            }
+        }
+    }
+    fn right_pressed(&mut self) {
+        // KeyCode::Left if at_port_selection && self.single_line_state.active => {
+        //     if self.single_line_state.current_index == 0 {
+        //         self.single_line_state.select(COMMON_BAUD.last_index());
+        //     } else {
+        //         self.single_line_state.prev();
+        //     }
+        // }
+        match self.popup {
+            None => (),
+            Some(Popup::PortSettings) => {
+                self.scratch_port_settings
+                    .handle_input(ArrowKey::Right, &mut self.table_state)
+                    .unwrap();
+            }
+        }
+        if self.popup.is_some() {
+            return;
+        }
+        if matches!(self.menu, Menu::PortSelection(_)) && self.single_line_state.active {
+            if self.single_line_state.next() >= COMMON_BAUD.len() {
+                self.single_line_state.select(0);
+            }
+        }
+    }
     fn post_menu_scroll(&mut self, up: bool) {
+        if self.popup.is_some() {
+            return;
+        }
         // Logic for skipping the Custom Baud Entry field if it's not visible
         let is_custom_visible = self.single_line_state.on_last(COMMON_BAUD);
         use PortSelectionElement as Pse;
@@ -528,8 +633,19 @@ impl App {
         self.table_state.scroll_down_by(1);
     }
     fn enter_pressed(&mut self) {
-        debug!("{:?}", self.menu);
+        // debug!("{:?}", self.menu);
         use PortSelectionElement as Pse;
+        match self.popup {
+            None => (),
+            Some(Popup::PortSettings) => {
+                _ = self.popup.take();
+                self.table_state.select(None);
+
+                self.serial
+                    .update_settings(self.scratch_port_settings.clone());
+                return;
+            }
+        }
         match self.menu {
             Menu::PortSelection(Pse::Ports) => {
                 let selected = self.ports.get(self.table_state.selected().unwrap());
@@ -544,13 +660,21 @@ impl App {
                             COMMON_BAUD[self.single_line_state.current_index]
                         };
 
-                    self.serial.connect(&info, baud_rate);
+                    self.scratch_port_settings.baud_rate = baud_rate;
+
+                    self.serial
+                        .connect(&info, self.scratch_port_settings.clone());
 
                     self.user_input.reset();
                     self.menu = Menu::Terminal(TerminalPrompt::None);
                 }
             }
-            Menu::PortSelection(Pse::MoreOptions) => todo!(),
+            Menu::PortSelection(Pse::MoreOptions) => {
+                self.scratch_port_settings =
+                    self.serial.port_status.load().as_ref().clone().settings;
+                self.popup = Some(Popup::PortSettings);
+                self.table_state.select(Some(0));
+            }
             Menu::PortSelection(_) => (),
             Menu::Terminal(TerminalPrompt::None) => {
                 if self.serial_healthy {
@@ -628,6 +752,34 @@ impl App {
                 self.port_selection(frame, vertical_slices[1]);
             }
             Menu::Terminal(prompt) => self.terminal_menu(frame, frame.area(), prompt),
+        }
+
+        self.render_popups(frame, frame.area());
+
+        // TODO:
+        // self.render_error_messages(frame, frame.area());
+    }
+
+    fn render_popups(&mut self, frame: &mut Frame, area: Rect) {
+        match self.popup {
+            None => (),
+            Some(Popup::PortSettings) => {
+                let area = centered_rect_size(
+                    Size {
+                        width: 32,
+                        height: 8,
+                    },
+                    area,
+                );
+                frame.render_widget(Clear, area);
+                frame.render_stateful_widget(
+                    self.scratch_port_settings
+                        .as_table(&mut self.table_state)
+                        .block(Block::bordered()),
+                    area,
+                    &mut self.table_state,
+                );
+            }
         }
     }
 
@@ -820,7 +972,7 @@ impl App {
             let port_text = match &port_status_guard.current_port {
                 Some(port_info) => {
                     if self.serial_healthy {
-                        port_info.info_as_string(Some(port_status_guard.baud_rate))
+                        port_info.info_as_string(Some(port_status_guard.settings.baud_rate))
                     } else {
                         // Might remove later
                         let info = port_info.info_as_string(None);
@@ -997,7 +1149,11 @@ impl App {
 
         frame.render_widget(block, area);
 
-        frame.render_stateful_widget(table, table_area, &mut self.table_state);
+        if self.popup.is_none() {
+            frame.render_stateful_widget(table, table_area, &mut self.table_state);
+        } else {
+            frame.render_widget(table, table_area);
+        }
 
         frame.render_widget(baud_text.centered(), baud_text_area);
 

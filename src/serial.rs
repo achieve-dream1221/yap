@@ -9,13 +9,15 @@ use std::{
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use color_eyre::owo_colors::OwoColorize;
 use espflash::connection::reset::ResetStrategy;
-use serialport::{COMPort, SerialPort, SerialPortInfo, SerialPortType};
-use tracing::{debug, error, info};
+use serialport::{
+    DataBits, FlowControl, Parity, SerialPort, SerialPortInfo, SerialPortType, StopBits,
+};
+use struct_table::StructTable;
+use tracing::{debug, error, info, warn};
 use virtual_serialport::VirtualPort;
 
-use crate::app::{Event, Tick};
+use crate::app::{Event, Tick, COMMON_BAUD, DEFAULT_BAUD};
 
 #[cfg(unix)]
 pub type NativePort = serialport::TTYPort;
@@ -38,14 +40,73 @@ impl From<SerialEvent> for Event {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, StructTable)]
+pub struct PortSettings {
+    /// The baud rate in symbols-per-second
+    // #[table(values = COMMON_BAUD)]
+    #[table(skip)]
+    pub baud_rate: u32,
+    /// Number of bits used to represent a character sent on the line
+    #[table(values = [DataBits::Five, DataBits::Six, DataBits::Seven, DataBits::Eight])]
+    pub data_bits: DataBits,
+    /// The type of signalling to use for controlling data transfer
+    #[table(values = [FlowControl::None, FlowControl::Software, FlowControl::Hardware])]
+    pub flow_control: FlowControl,
+    /// The type of parity to use for error checking
+    #[table(values = [Parity::None, Parity::Odd, Parity::Even])]
+    pub parity: Parity,
+    /// Number of bits to use to signal the end of a character
+    #[table(values = [StopBits::One, StopBits::Two])]
+    pub stop_bits: StopBits,
+    /// The state to set DTR to when opening the device
+    #[table(rename = "DTR on open")]
+    pub dtr_on_open: bool,
+    /// Whether or not reconnections to ports are allowed, and how strict the checks are if so.
+    #[table(values = [Reconnections::Disabled, Reconnections::StrictChecks, Reconnections::LooseChecks])]
+    pub reconnections: Reconnections,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Reconnections {
+    Disabled,
+    StrictChecks,
+    LooseChecks,
+}
+
+impl std::fmt::Display for Reconnections {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reconnection_str = match self {
+            Reconnections::Disabled => "Disabled",
+            Reconnections::StrictChecks => "Strict Checks",
+            Reconnections::LooseChecks => "Loose Checks",
+        };
+        write!(f, "{}", reconnection_str)
+    }
+}
+
+impl Default for PortSettings {
+    fn default() -> Self {
+        Self {
+            // baud_rate: DEFAULT_BAUD,
+            baud_rate: 0,
+            data_bits: DataBits::Eight,
+            flow_control: FlowControl::None,
+            parity: Parity::None,
+            stop_bits: StopBits::One,
+            dtr_on_open: true,
+            reconnections: Reconnections::LooseChecks,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum SerialCommand {
     RequestPortScan,
     Connect {
         port: SerialPortInfo,
-        baud_rate: u32,
+        settings: PortSettings,
     },
-    ChangeBaud(u32),
+    PortSettings(PortSettings),
     TxBuffer(Vec<u8>),
     EspRestart(Option<u128>),
     WriteSignals {
@@ -68,25 +129,51 @@ pub enum SerialCommand {
 // maybe something better will come to me.
 
 #[derive(Debug, Clone, Default)]
-pub struct SerialStatus {
+pub struct PortStatus {
     pub healthy: bool,
     pub current_port: Option<SerialPortInfo>,
-    pub baud_rate: u32,
+
     pub signals: SerialSignals,
+    pub settings: PortSettings,
 }
 
-impl SerialStatus {
-    fn idle() -> Self {
-        Self::default()
-    }
-    fn connected(port: SerialPortInfo, baud_rate: u32, signals: SerialSignals) -> Self {
+impl PortStatus {
+    fn new_idle(settings: PortSettings) -> Self {
         Self {
-            healthy: true,
-            current_port: Some(port),
-            baud_rate,
-            signals,
+            signals: SerialSignals {
+                dtr: settings.dtr_on_open,
+                ..Default::default()
+            },
+            settings,
+            ..Default::default()
         }
     }
+    /// Used when a port disconnects without the user's stated intent to do so.
+    fn to_unhealthy(self) -> Self {
+        Self {
+            healthy: false,
+            ..self
+        }
+    }
+    /// Used when the user chooses to disconnect from the serial port
+    fn to_idle(self) -> Self {
+        Self {
+            healthy: false,
+            current_port: None,
+            ..self
+        }
+    }
+
+    // fn to_connected(
+    //     self,
+    //     port: SerialPortInfo, // , baud_rate: u32, signals: SerialSignals
+    // ) -> Self {
+    //     Self {
+    //         healthy: true,
+    //         current_port: Some(port),
+    //         ..self
+    //     }
+    // }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -149,7 +236,7 @@ fn f() {
 #[derive(Clone)]
 pub struct SerialHandle {
     command_tx: Sender<SerialCommand>,
-    pub port_status: Arc<ArcSwap<SerialStatus>>,
+    pub port_status: Arc<ArcSwap<PortStatus>>,
 }
 
 pub trait PrintablePortInfo {
@@ -186,7 +273,9 @@ impl SerialHandle {
     pub fn new(event_tx: Sender<Event>) -> (Self, JoinHandle<()>) {
         let (command_tx, command_rx) = mpsc::channel();
 
-        let port_status = Arc::new(ArcSwap::from_pointee(SerialStatus::idle()));
+        let port_status = Arc::new(ArcSwap::from_pointee(PortStatus::new_idle(
+            PortSettings::default(),
+        )));
 
         let mut worker = SerialWorker::new(command_rx, event_tx, port_status.clone());
 
@@ -203,16 +292,21 @@ impl SerialHandle {
         handle.request_port_scan();
         (handle, worker)
     }
-    pub fn connect(&self, port: &SerialPortInfo, baud_rate: u32) {
+    pub fn connect(&self, port: &SerialPortInfo, settings: PortSettings) {
         self.command_tx
             .send(SerialCommand::Connect {
                 port: port.to_owned(),
-                baud_rate,
+                settings,
             })
             .unwrap();
     }
     pub fn disconnect(&self) {
         self.command_tx.send(SerialCommand::Disconnect).unwrap();
+    }
+    pub fn update_settings(&self, settings: PortSettings) {
+        self.command_tx
+            .send(SerialCommand::PortSettings(settings))
+            .unwrap();
     }
     /// Sends the supplied bytes through the connected Serial device.
     /// Newlines are automatically appended by the serial worker.
@@ -337,10 +431,10 @@ pub struct SerialWorker {
     command_rx: Receiver<SerialCommand>,
     event_tx: Sender<Event>,
     port: PortHandle,
-    baud_rate: u32,
+    // settings: PortSettings,
     scan_snapshot: Vec<SerialPortInfo>,
     rx_buffer: Vec<u8>,
-    shared_port_status: Arc<ArcSwap<SerialStatus>>,
+    shared_port_status: Arc<ArcSwap<PortStatus>>,
     // port_status: SerialStatus,
 }
 
@@ -348,7 +442,7 @@ impl SerialWorker {
     fn new(
         command_rx: Receiver<SerialCommand>,
         event_tx: Sender<Event>,
-        port_status: Arc<ArcSwap<SerialStatus>>,
+        port_status: Arc<ArcSwap<PortStatus>>,
     ) -> Self {
         Self {
             command_rx,
@@ -357,7 +451,7 @@ impl SerialWorker {
             // port_status: SerialStatus::idle(),
             // connected_port_info: None,
             port: PortHandle::default(),
-            baud_rate: 0,
+            // settings: PortSettings::default(),
             scan_snapshot: vec![],
             rx_buffer: vec![0; 1024 * 1024],
         }
@@ -376,16 +470,12 @@ impl SerialWorker {
             match self.command_rx.recv_timeout(sleep_time) {
                 Ok(cmd) => match cmd {
                     // TODO: Catch failures to connect here instead of propogating to the whole task
-                    SerialCommand::Connect { port, baud_rate } => {
-                        self.baud_rate = baud_rate;
-                        self.connect_to_port(&port, baud_rate)?;
+                    SerialCommand::Connect { port, settings } => {
+                        // self.settings.baud_rate = baud_rate;
+                        self.update_settings(settings)?;
+                        self.connect_to_port(&port)?;
                     }
-                    SerialCommand::ChangeBaud(baud_rate) => {
-                        assert!(self.port.is_owned());
-                        let port = self.port.as_mut_port().unwrap();
-                        port.set_baud_rate(baud_rate)?;
-                        self.baud_rate = baud_rate;
-                    }
+                    SerialCommand::PortSettings(settings) => self.update_settings(settings)?,
                     SerialCommand::EspRestart(_) => {
                         if let Some(port) = self.port.as_mut_native_port() {
                             let strategy = TestReset::new();
@@ -447,7 +537,7 @@ impl SerialWorker {
                     SerialCommand::ReadSignals => self.read_and_share_serial_signals(false)?,
                     SerialCommand::WriteSignals { dtr, rts } => {
                         assert!(dtr.is_some() || rts.is_some());
-                        let mut status: SerialStatus =
+                        let mut status: PortStatus =
                             self.shared_port_status.load().as_ref().clone();
                         if let Some(dtr) = dtr {
                             status.signals.dtr = dtr;
@@ -467,7 +557,7 @@ impl SerialWorker {
                     SerialCommand::ToggleSignals { dtr, rts } => {
                         assert!(dtr || rts);
 
-                        let mut status: SerialStatus =
+                        let mut status: PortStatus =
                             self.shared_port_status.load().as_ref().clone();
 
                         if dtr {
@@ -491,7 +581,7 @@ impl SerialWorker {
                             .expect("Failed to reply to shutdown request");
 
                         self.shared_port_status
-                            .store(Arc::new(SerialStatus::idle()));
+                            .store(Arc::new(PortStatus::new_idle(PortSettings::default())));
                         self.port.drop();
                         break;
                     }
@@ -507,8 +597,11 @@ impl SerialWorker {
                     }
                     SerialCommand::Disconnect => {
                         // self.port_status = SerialStatus::idle();
+
+                        let previous_status = { self.shared_port_status.load().as_ref().clone() };
+
                         self.shared_port_status
-                            .store(Arc::new(SerialStatus::idle()));
+                            .store(Arc::new(previous_status.to_idle()));
                         self.port.drop();
                         self.event_tx.send(SerialEvent::Disconnected.into())?;
                     }
@@ -611,15 +704,47 @@ impl SerialWorker {
                         // (maybe i could manually pop it if it still exists? since i do have connected_port_info as a reference)
                         // TODO Also reconsider error handling, should it take down the task? Or allow failures?
                         self.scan_snapshot = self.scan_for_serial_ports()?;
+
                         self.port.drop();
-                        // Don't take since we're using it to find the port for reconnections.
-                        // _ = self.connected_port_info.take();
+                        let disconnected_status = {
+                            self.shared_port_status
+                                .load()
+                                .as_ref()
+                                .clone()
+                                // Ensure we keep around the old SerialPortInfo to use
+                                // as a reference for reconnections!
+                                .to_unhealthy()
+                        };
+                        self.shared_port_status.store(Arc::new(disconnected_status));
+
                         self.event_tx.send(SerialEvent::Disconnected.into())?;
                     }
                 }
             }
         }
 
+        Ok(())
+    }
+    fn update_settings(&mut self, settings: PortSettings) -> Result<(), serialport::Error> {
+        let status = {
+            let status_guard = self.shared_port_status.load();
+            let mut status: PortStatus = status_guard.as_ref().clone();
+            status.settings = settings;
+            status
+        };
+        if let Some(port) = self.port.as_mut_port() {
+            port.set_baud_rate(status.settings.baud_rate)?;
+            port.set_parity(status.settings.parity)?;
+            port.set_stop_bits(status.settings.stop_bits)?;
+            port.set_data_bits(status.settings.data_bits)?;
+            port.set_flow_control(status.settings.flow_control)?;
+
+            port.write_data_terminal_ready(status.signals.dtr)?;
+            port.write_request_to_send(status.signals.rts)?;
+        } else {
+            warn!("Received port settings when no port connected!");
+        }
+        self.shared_port_status.store(Arc::new(status));
         Ok(())
     }
     fn attempt_reconnect(&mut self) -> Result<(), serialport::Error> {
@@ -629,6 +754,20 @@ impl SerialWorker {
             error!("Got request to reconnect when already connected to port! Not acting...");
             return Ok(());
         }
+
+        let reconnections = {
+            self.shared_port_status
+                .load()
+                .settings
+                .reconnections
+                .clone()
+        };
+
+        if reconnections == Reconnections::Disabled {
+            error!("Got request to reconnect when reconnections are disabled!");
+            return Ok(());
+        }
+
         let current_ports = self.scan_for_serial_ports()?;
         let port_guard = self.shared_port_status.load();
         let desired_port = port_guard
@@ -644,12 +783,13 @@ impl SerialWorker {
             // Sleeping to give the device some time to intialize with Windows
             // (Otherwise Access Denied errors can occur from trying to connect too quick)
             std::thread::sleep(Duration::from_secs(1));
-            self.connect_to_port(&port, self.baud_rate)?;
+            self.connect_to_port(&port)?;
             return Ok(());
         };
 
+        // Fuzzy USB searches
         if let SerialPortType::UsbPort(desired_usb) = &desired_port.port_type {
-            // Try to find a *new* port that has all the same USB characteristics
+            // Strict check, trying to find a *new* port that has all the same USB characteristics
             if let Some(port) = current_ports
                 .iter()
                 // Only searching for USB Serial port devices
@@ -664,43 +804,50 @@ impl SerialWorker {
                     port.port_name
                 );
                 std::thread::sleep(Duration::from_secs(1));
-                self.connect_to_port(&port, self.baud_rate)?;
+                self.connect_to_port(&port)?;
                 return Ok(());
             };
-            if let Some(port) = current_ports
-                .iter()
-                // Filtering out ports that didn't change across scans
-                .filter(|p| !self.scan_snapshot.contains(p))
-                // Trying to find another USB device with *just* matching USB PID & VID
-                // Use cases: Some devices seem to change their Serial # arbitrarily?
-                //          - And for interfacing with several identical devices (one at a time) without reconnecting via TUI
-                // Needs a toggle with Strict/Loose options, as the extra behavior isn't always desirable.
-                .find(|p| match &p.port_type {
-                    SerialPortType::UsbPort(usb) => {
-                        usb.vid == desired_usb.vid && usb.pid == desired_usb.pid
-                    }
-                    _ => false,
-                })
-            {
-                info!(
-                    "[NON-STRICT] Connecting to similar USB device with port: {}",
-                    port.port_name
-                );
-                std::thread::sleep(Duration::from_secs(1));
-                self.connect_to_port(&port, self.baud_rate)?;
-                return Ok(());
-            };
+
+            // Loose check
+            if reconnections == Reconnections::LooseChecks {
+                if let Some(port) = current_ports
+                    .iter()
+                    // Filtering out ports that didn't change across scans
+                    .filter(|p| !self.scan_snapshot.contains(p))
+                    // Trying to find another USB device with *just* matching USB PID & VID
+                    // Use cases: Some devices seem to change their Serial # arbitrarily?
+                    //          - And for interfacing with several identical devices (one at a time) without reconnecting via TUI
+                    // Needs a toggle with Strict/Loose options, as the extra behavior isn't always desirable.
+                    .find(|p| match &p.port_type {
+                        SerialPortType::UsbPort(usb) => {
+                            usb.vid == desired_usb.vid && usb.pid == desired_usb.pid
+                        }
+                        _ => false,
+                    })
+                {
+                    info!(
+                        "[NON-STRICT] Connecting to similar USB device with port: {}",
+                        port.port_name
+                    );
+                    std::thread::sleep(Duration::from_secs(1));
+                    self.connect_to_port(&port)?;
+                    return Ok(());
+                };
+            }
         }
 
-        // Last ditch effort, just try to connect to the same port_name if it's present.
-        if let Some(port) = current_ports
-            .iter()
-            .find(|p| *p.port_name == desired_port.port_name)
-        {
-            info!("Last ditch connect attempt on: {}", port.port_name);
-            std::thread::sleep(Duration::from_secs(1));
-            self.connect_to_port(&port, self.baud_rate)?;
-            return Ok(());
+        // Loose check
+        if reconnections == Reconnections::LooseChecks {
+            // Last ditch effort, just try to connect to the same port_name if it's present.
+            if let Some(port) = current_ports
+                .iter()
+                .find(|p| *p.port_name == desired_port.port_name)
+            {
+                info!("Last ditch connect attempt on: {}", port.port_name);
+                std::thread::sleep(Duration::from_secs(1));
+                self.connect_to_port(&port)?;
+                return Ok(());
+            }
         }
 
         // {}
@@ -742,18 +889,16 @@ impl SerialWorker {
             !(port.port_type == SerialPortType::Unknown && !port.port_name.eq(MOCK_PORT_NAME))
         });
 
-        info!("Serial port scanning found {} ports", ports.len());
+        // info!("Serial port scanning found {} ports", ports.len());
         // self.scanned_ports = ports;
         Ok(ports)
     }
-    fn connect_to_port(
-        &mut self,
-        port_info: &SerialPortInfo,
-        baud_rate: u32,
-    ) -> Result<(), serialport::Error> {
-        let mut port_status: SerialStatus = self.shared_port_status.load().as_ref().clone();
+    fn connect_to_port(&mut self, port_info: &SerialPortInfo) -> Result<(), serialport::Error> {
+        let mut port_status: PortStatus = self.shared_port_status.load().as_ref().clone();
+        let settings = &port_status.settings;
+        let baud_rate = settings.baud_rate;
         // TODO Make this a config option since this seems to have different behavior for each device.
-        let dtr_on_open = port_status.signals.dtr;
+        // let dtr_on_open;
 
         if port_info.port_name.eq(MOCK_PORT_NAME) {
             let mut virt_port =
@@ -763,8 +908,11 @@ impl SerialWorker {
             self.port.return_loopback(virt_port);
         } else {
             let port = serialport::new(&port_info.port_name, baud_rate)
-                .dtr_on_open(dtr_on_open)
-                // .flow_control(serialport::FlowControl::Software)
+                .data_bits(settings.data_bits)
+                .flow_control(settings.flow_control)
+                .parity(settings.parity)
+                .stop_bits(settings.stop_bits)
+                .dtr_on_open(settings.dtr_on_open)
                 .open_native()?;
 
             self.port.return_native(port);
@@ -780,9 +928,8 @@ impl SerialWorker {
         //     baud_rate,
         //     SerialSignals::new_from_port(port.as_mut())?,
         // );
-        port_status.baud_rate = baud_rate;
-        port_status.current_port = Some(port_info.to_owned());
         port_status.signals.update_with_port(port)?;
+        port_status.current_port = Some(port_info.to_owned());
         port_status.healthy = true;
         self.shared_port_status.store(Arc::new(port_status));
 
@@ -806,14 +953,14 @@ impl SerialWorker {
         &mut self,
         force_share: bool,
     ) -> Result<(), serialport::Error> {
-        let mut port_status: SerialStatus = self.shared_port_status.load().as_ref().clone();
+        let mut port_status: PortStatus = self.shared_port_status.load().as_ref().clone();
 
         match self.port.as_mut_port() {
             // If no port is present, just skip.
             None => return Ok(()),
             Some(port) => {
                 // debug_assert later?
-                assert!(self.baud_rate == port_status.baud_rate);
+                // assert!(self.baud_rate == port_status.baud_rate);
 
                 let changed = port_status.signals.update_with_port(port)?;
                 // Only update the shared status if there's actually a change

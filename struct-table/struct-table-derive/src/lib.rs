@@ -1,3 +1,4 @@
+use deluxe::ParseMetaItem;
 use heck::ToTitleCase;
 use proc_macro2_diagnostics::SpanDiagnosticExt;
 use quote::quote;
@@ -15,6 +16,8 @@ pub fn struct_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_macro2::TokenStream> {
     let mut ast: DeriveInput = syn::parse2(input)?;
+
+    // panic!("{ast:#?}");
 
     // Extracting the 'struct-global' attributes
     let struct_attrs: StructTableAttributes = deluxe::extract_attributes(&mut ast)?;
@@ -50,10 +53,21 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                 if f.is_bool {
                     quote! {
                         {
-                            let variant_label_overrides: &[&'static str] = #overrides.as_ref();
+                            let variant_label_overrides: &[&'static str] = const {
+                                let overrides = #overrides;
+                                // These extra assertions are for when a user passes in an Expr/Ident
+                                // instead of an array directly.
+                                // I still want to make sure at compile-time that the lengths
+                                // of the arrays are what I expect even if I can't check the
+                                // given array myself.
+                                assert!(overrides.len() == 2,
+                                "bool variant labels should have exactly two labels");
+                                overrides
+                            };
+
                             let label_index: usize = if self.#ident { 1 } else { 0 };
 
-                            variant_label_overrides[current_position]
+                            variant_label_overrides[label_index]
                         }
                     }
                 } else {
@@ -61,8 +75,16 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                     let variants = f.values_to_cycle.as_ref().expect("expected list of values to cycle through");
                     quote! {
                         {
-                            let variant_label_overrides: &[&'static str] = #overrides.as_ref();
-                            let variants: &[_] = #variants.as_ref();
+                            let (variant_label_overrides: &[&'static str],
+                                variants: &[_],
+                            ) = const {
+                                let variant_label_overrides = #overrides;
+                                let variants = #variants;
+                                assert!(variant_label_overrides.len() == variants.len(),
+                                "variant labels length should match cycled values length");
+                                (variant_label_overrides, variants)
+                            }
+
                             let current_position: usize = variants.iter().position(|v: &_| v == &self.#ident ).expect("current variant not in given list");
 
                             variant_label_overrides[current_position]
@@ -321,11 +343,20 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
                 display,
                 no_wrap: no_inner_wrap,
                 rename,
+                skip,
             } = deluxe::extract_attributes(field)?;
+
+            if skip {
+                continue;
+            }
 
             let is_bool = is_bool_field(field);
 
             if !is_bool && values.is_none() {}
+
+            // Some of these checks we can only do if the user
+            // supplied an array directly.
+            // Extra checks are added in const {} contexts to ensure correctness.
 
             // Verifying validity of values_to_cycle values
             match (is_bool, &values) {
@@ -335,7 +366,7 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
                         .error("expected #[table(values = [])] with array of values")
                         .into());
                 }
-                (false, Some(values)) if values.elems.is_empty() => {
+                (false, Some(ArrayOrConst::Array(values))) if values.elems.is_empty() => {
                     return Err(ident
                         .span()
                         .error("table values array cannot be empty")
@@ -351,7 +382,10 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
                 (true, _) => (),
             }
 
-            if let Some(values) = &values {
+            // This is one check that I haven't thought of a way to reproduce
+            // in a const {} context, since iterators/new collections aren't allowed
+            // in const {}s.
+            if let Some(ArrayOrConst::Array(values)) = &values {
                 let value_elems = &values.elems;
                 let unique_count: usize = value_elems
                     .iter()
@@ -367,19 +401,21 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
 
             // Verifying validity of display_override values
             match (is_bool, &display, &values) {
-                (true, Some(labels), _) if labels.elems.len() != 2 => {
+                (true, Some(ArrayOrConst::Array(labels)), _) if labels.elems.len() != 2 => {
                     return Err(ident
                         .span()
                         .error("bools require exactly 2 labels: [true, false]")
                         .into());
                 }
-                (false, Some(labels), Some(values)) if labels.elems.len() != values.elems.len() => {
+                (false, Some(ArrayOrConst::Array(labels)), Some(ArrayOrConst::Array(values)))
+                    if labels.elems.len() != values.elems.len() =>
+                {
                     return Err(ident
                         .span()
                         .error("display overrides and cycled values must have equal number of elements")
                         .into());
                 }
-                (_, Some(labels), _) if labels.elems.is_empty() => {
+                (_, Some(ArrayOrConst::Array(labels)), _) if labels.elems.is_empty() => {
                     return Err(ident
                         .span()
                         .error("display overrides array cannot be empty")
@@ -388,7 +424,7 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
                 (_, _, _) => (),
             }
 
-            let processed_fields = StructField {
+            let processed_field = StructField {
                 ident,
                 values_to_cycle: values,
                 display_override: display,
@@ -396,17 +432,48 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
                 no_inner_wrap,
                 rename,
             };
-            field_attrs.push(processed_fields);
+            field_attrs.push(processed_field);
         }
     }
 
     Ok(field_attrs)
 }
 
+enum ArrayOrConst {
+    Array(syn::ExprArray),
+    Expr(syn::Expr),
+}
+
+impl deluxe::ParseMetaItem for ArrayOrConst {
+    fn parse_meta_item(
+        input: syn::parse::ParseStream,
+        _mode: deluxe::ParseMode,
+    ) -> deluxe::Result<Self> {
+        // If it starts with `[`, assume it's an array
+        if input.peek(syn::token::Bracket) {
+            let expr_array: syn::ExprArray = input.parse()?;
+            Ok(ArrayOrConst::Array(expr_array))
+        } else {
+            // Otherwise assume it's an ident/expr.
+            let ident: syn::Expr = input.parse()?;
+            Ok(ArrayOrConst::Expr(ident))
+        }
+    }
+}
+
+impl quote::ToTokens for ArrayOrConst {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        match self {
+            ArrayOrConst::Array(expr_array) => expr_array.to_tokens(tokens),
+            ArrayOrConst::Expr(ident) => ident.to_tokens(tokens),
+        }
+    }
+}
+
 struct StructField {
     ident: syn::Ident,
-    values_to_cycle: Option<syn::ExprArray>,
-    display_override: Option<syn::ExprArray>,
+    values_to_cycle: Option<ArrayOrConst>,
+    display_override: Option<ArrayOrConst>,
     is_bool: bool,
     no_inner_wrap: bool,
     rename: Option<String>,
@@ -415,14 +482,22 @@ struct StructField {
 #[derive(deluxe::ExtractAttributes)]
 #[deluxe(attributes(table))]
 struct StructFieldAttributes {
+    /// The values this field will cycle through
     #[deluxe(default)]
-    values: Option<syn::ExprArray>,
+    values: Option<ArrayOrConst>,
+    /// Override for to_string() for each of the cycled values
     #[deluxe(default)]
-    display: Option<syn::ExprArray>,
+    display: Option<ArrayOrConst>,
+    /// Don't wrap around when at the end/start of the field's cycled values
     #[deluxe(default)]
     no_wrap: bool,
+    /// Override the displayed name for the field, otherwise
+    /// is the field's name converted to `Title Case`
     #[deluxe(default)]
     rename: Option<String>,
+    /// Don't use this field in the StructTable impls.
+    #[deluxe(default)]
+    skip: bool,
 }
 
 #[derive(deluxe::ExtractAttributes)]
