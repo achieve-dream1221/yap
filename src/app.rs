@@ -171,10 +171,10 @@ pub struct App {
 
     buffer: Buffer,
     // Tempted to move these into Buffer, or a new BufferState
-    buffer_scroll: usize,
-    buffer_scroll_state: ScrollbarState,
-    buffer_stick_to_bottom: bool,
-    buffer_wrapping: bool,
+    // buffer_scroll: usize,
+    // buffer_scroll_state: ScrollbarState,
+    // buffer_stick_to_bottom: bool,
+    // buffer_wrapping: bool,
     // Filled in while drawing UI
     // buffer_rendered_lines: usize,
     repeating_line_flip: bool,
@@ -224,12 +224,11 @@ impl App {
             user_input: UserInput::default(),
 
             buffer: Buffer::new(),
-            buffer_scroll: 0,
-            buffer_scroll_state: ScrollbarState::default(),
-            buffer_stick_to_bottom: true,
-            // buffer_rendered_lines: 0,
-            buffer_wrapping: true,
-
+            // buffer_scroll: 0,
+            // buffer_scroll_state: ScrollbarState::default(),
+            // buffer_stick_to_bottom: true,
+            // // buffer_rendered_lines: 0,
+            // buffer_wrapping: false,
             repeating_line_flip: false,
             failed_send_at: None,
             // failed_send_at: Instant::now(),
@@ -249,17 +248,17 @@ impl App {
                 Event::Crossterm(CrosstermEvent::Resize) => {
                     terminal.autoresize()?;
                     if let Ok(size) = terminal.size() {
-                        self.buffer.last_terminal_size = size;
+                        self.buffer.update_terminal_size(size);
                     } else {
                         error!("Failed to query terminal size!");
                     }
-                    self.buffer.update_line_count();
-                    self.scroll_buffer(0);
+                    self.buffer.update_wrapped_line_count();
+                    self.buffer.scroll_by(0);
                 }
                 Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
                 Event::Crossterm(CrosstermEvent::MouseScroll { up }) => {
                     let amount = if up { 1 } else { -1 };
-                    self.scroll_buffer(amount);
+                    self.buffer.scroll_by(amount);
                 }
 
                 Event::Crossterm(CrosstermEvent::RightClick) => {
@@ -278,7 +277,7 @@ impl App {
 
                 Event::Serial(SerialEvent::Connected) => {
                     info!("Connected!");
-                    self.scroll_buffer(0);
+                    self.buffer.scroll_by(0);
                     self.serial_healthy = true;
                 }
                 Event::Serial(SerialEvent::Disconnected) => {
@@ -287,7 +286,7 @@ impl App {
                 }
                 Event::Serial(SerialEvent::RxBuffer(mut data)) => {
                     self.buffer.append_bytes(&mut data);
-                    self.scroll_buffer(0);
+                    self.buffer.scroll_by(0);
 
                     self.repeating_line_flip = !self.repeating_line_flip;
                 }
@@ -394,11 +393,11 @@ impl App {
                     _ => self.shutdown(),
                 },
                 'w' | 'W' if ctrl_pressed => {
-                    self.buffer_wrapping = !self.buffer_wrapping;
-                    self.scroll_buffer(0);
+                    self.buffer.state.text_wrapping = !self.buffer.state.text_wrapping;
+                    self.buffer.scroll_by(0);
                 }
                 'r' | 'R' if ctrl_pressed => {
-                    self.serial.toggle_signals(true, false);
+                    // self.serial.toggle_signals(true, false);
                 }
                 'e' | 'E' if ctrl_pressed => {
                     // self.serial.write_signals(Some(false), Some(false));
@@ -408,12 +407,18 @@ impl App {
                     // self.serial.write_signals(Some(true), Some(false));
                     // std::thread::sleep(Duration::from_millis(100));
                     // self.serial.write_signals(Some(false), Some(false));
-                    self.buffer
-                        .append_user_text("Attempting to put Espressif device into bootloader...");
-                    self.serial.esp_restart(None);
+
+                    // self.buffer
+                    //     .append_user_text("Attempting to put Espressif device into bootloader...");
+                    // self.serial.esp_restart(None);
                 }
+                // 't' | 'T' if ctrl_pressed => {
+                //     self.serial.toggle_signals(false, true);
+                // }
                 't' | 'T' if ctrl_pressed => {
-                    self.serial.toggle_signals(false, true);
+                    self.buffer.state.timestamps_visible = !self.buffer.state.timestamps_visible;
+                    self.buffer.update_wrapped_line_count();
+                    self.buffer.scroll_by(0);
                 }
                 '.' if ctrl_pressed => {
                     self.popup = Some(Popup::PortSettings);
@@ -429,14 +434,14 @@ impl App {
                     //     .handle_event(&ratatui::crossterm::event::Event::Key(key));
                 }
             },
-            KeyCode::PageUp if ctrl_pressed || shift_pressed => self.scroll_buffer(i32::MAX),
-            KeyCode::PageDown if ctrl_pressed || shift_pressed => self.scroll_buffer(i32::MIN),
+            KeyCode::PageUp if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MAX),
+            KeyCode::PageDown if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MIN),
             KeyCode::Delete if ctrl_pressed && shift_pressed => {
                 self.user_input.reset();
             }
             // TODO reactive page up/down amounts based on last_size
-            KeyCode::PageUp => self.scroll_buffer(10),
-            KeyCode::PageDown => self.scroll_buffer(-10),
+            KeyCode::PageUp => self.buffer.scroll_page_up(),
+            KeyCode::PageDown => self.buffer.scroll_page_down(),
             // KeyCode::End => self
             //     .event_carousel
             //     .add_event(Event::TickSecond, Duration::from_secs(3)),
@@ -688,7 +693,7 @@ impl App {
                     self.repeating_line_flip = !self.repeating_line_flip;
                     // Scroll all the way down
                     // TODO: Make this behavior a toggle
-                    self.scroll_buffer(i32::MIN);
+                    self.buffer.scroll_by(i32::MIN);
                 } else {
                     self.failed_send_at = Some(Instant::now());
                     // Temporarily show text on red background when trying to send while unhealthy
@@ -730,7 +735,7 @@ impl App {
         Ok(())
     }
     fn render_app(&mut self, frame: &mut Frame) {
-        self.buffer.last_terminal_size = frame.area().as_size();
+        // self.buffer.update_terminal_size(frame.area().as_size());
         // TODO, make more reactive based on frame size :)
         let vertical_slices = Layout::vertical([
             Constraint::Fill(1),
@@ -784,85 +789,6 @@ impl App {
     }
 
     // #[instrument(skip(self))]
-    fn scroll_buffer(&mut self, up: i32) {
-        match up {
-            0 => (), // Used to trigger scroll update actions from non-user scrolling events.
-            // TODO do this proper when wrapping is toggleable
-            // Scroll all the way up
-            i32::MAX => {
-                self.buffer_scroll = 0;
-                self.buffer_stick_to_bottom = false;
-            }
-            // Scroll all the way down
-            i32::MIN => self.buffer_scroll = self.line_count(),
-
-            // Scroll up
-            x if up > 0 => {
-                self.buffer_scroll = self.buffer_scroll.saturating_sub(x as usize);
-            }
-            // Scroll down
-            x if up < 0 => {
-                self.buffer_scroll = self.buffer_scroll.saturating_add(x.abs() as usize);
-            }
-            _ => unreachable!(),
-        }
-
-        let last_size = {
-            let mut size = self.buffer.last_terminal_size;
-            // "2" is the lines from the repeating_pattern_widget and the input buffer.
-            // Might need to make more dynamic later?
-            size.height = size.height.saturating_sub(2);
-            size
-        };
-        let total_lines = self.line_count();
-        let more_lines_than_height = total_lines > last_size.height as usize;
-
-        if up > 0 && more_lines_than_height {
-            self.buffer_stick_to_bottom = false;
-        } else if self.buffer_scroll + last_size.height as usize >= self.line_count() {
-            self.buffer_scroll = self.line_count();
-            self.buffer_stick_to_bottom = true;
-        }
-
-        if self.buffer_stick_to_bottom {
-            let new_pos = total_lines.saturating_sub(last_size.height as usize);
-            self.buffer_scroll = new_pos;
-
-            // if more_lines_than_height {
-            // }
-
-            // let last_size = self.last_terminal_size;
-
-            // info!(
-            //     "total rendered lines: {total_lines}, line vec count: {}",
-            //     self.buffer.strings.len()
-            // );
-
-            // info!("{}", total_lines);
-
-            // if self.buffer_stick_to_bottom {
-            // }
-
-            // TODO Maybe update buffer_scroll_state.content_length in here?
-            // But that would require using Paragraph::line_count outside of rendering...
-            // if let Some(true) = amount {
-
-            // self.buffer_stick_to_bottom = false;
-            // }
-        }
-        self.buffer_scroll_state = self
-            .buffer_scroll_state
-            .position(self.buffer_scroll)
-            .content_length(self.line_count().saturating_sub(last_size.height as usize));
-    }
-
-    fn line_count(&self) -> usize {
-        if self.buffer_wrapping {
-            self.buffer.line_count()
-        } else {
-            self.buffer.lines.len()
-        }
-    }
 
     // fn update_line_count(&mut self) -> usize {
     //     if self.buffer_wrapping {
@@ -888,11 +814,13 @@ impl App {
         // let buffer = self.buffer.lines();
         // let lines: Vec<_> = buffer.collect();
 
-        let vert_scroll = self.buffer_scroll as u16;
-
         // let text = Paragraph::new(buffer.to_owned());
 
-        let para = self.buffer.terminal_paragraph(self.buffer_wrapping);
+        // let vert_scroll = self.buffer_scroll as u16;
+        // let para = self.buffer.terminal_paragraph(self.buffer_wrapping);
+        // let para = para.scroll((vert_scroll, 0));
+        // frame.render_widget(para, terminal_area);
+        frame.render_widget(&mut self.buffer, terminal_area);
 
         // let total_lines = para.line_count(terminal_area.width.saturating_sub(1));
 
@@ -915,34 +843,12 @@ impl App {
         //     self.last_terminal_size.height
         // );
 
-        let para = para.scroll((vert_scroll, 0));
-
         // frame.render_widget(Clear, terminal);
-        frame.render_widget(para, terminal_area);
 
         // self.buffer_scroll_state = self.buffer_scroll_state.content_length(total_lines);
         // self.buffer_rendered_lines = total_lines;
         // maybe debug_assert this when we roll our own line-counting?
 
-        if !self.buffer_stick_to_bottom {
-            let scroll_notice = Line::raw("More... Shift+PgDn to jump to newest").dark_gray();
-            let notice_area = {
-                let mut rect = terminal_area.clone();
-                rect.y = rect.bottom().saturating_sub(1);
-                rect.height = 1;
-                rect
-            };
-            frame.render_widget(Clear, notice_area);
-            frame.render_widget(scroll_notice, notice_area);
-        }
-
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(Some("↑"))
-                .end_symbol(Some("↓")),
-            terminal_area,
-            &mut self.buffer_scroll_state,
-        );
         repeating_pattern_widget(
             frame,
             line_area,

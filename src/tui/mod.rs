@@ -16,7 +16,7 @@ pub fn centered_rect_ratio(percent_x: u16, percent_y: u16, parent: Rect) -> Rect
     }
 }
 
-/// Returns a `Rect` with the provided percentage of the parent `Rect` and centered.
+/// Returns a centered `Rect` with the provided size inside of the parent `Rect`.
 pub fn centered_rect_size(size: Size, parent: Rect) -> Rect {
     Rect {
         width: size.width,

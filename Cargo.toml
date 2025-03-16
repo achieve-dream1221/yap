@@ -9,6 +9,7 @@ default = []
 espflash = []
 
 [dependencies]
+ansi-to-tui = "7.0.0"
 arboard = "3.4.1"
 arc-swap = "1.7.1"
 better-panic = "0.3.0"
