@@ -11,7 +11,7 @@ use ratatui::{
 use ratatui_macros::{line, span};
 use tracing::debug;
 
-use crate::app::{LINE_ENDINGS, LINE_ENDINGS_DEFAULT};
+// use crate::app::{LINE_ENDINGS, LINE_ENDINGS_DEFAULT};
 
 pub struct BufferState {
     pub text_wrapping: bool,
@@ -25,9 +25,7 @@ pub struct BufferState {
 pub struct Buffer {
     raw_buffer: Vec<u8>,
     pub lines: Vec<BufLine>,
-    // This technically *works* but I have issues with it
-    // Namely that this is the size of the terminal
-    // and not the actual buffer render area.
+    /// The last-known size of the area given to render the buffer in
     last_terminal_size: Size,
     // pub color_rules
     pub state: BufferState,
@@ -140,9 +138,8 @@ impl Buffer {
     // }
 
     // TODO also do append_user_bytes
-    pub fn append_user_text(&mut self, text: &str) {
-        // TODO dont use \n
-        let value: String = format!("USER> {}\n", text.escape_debug());
+    pub fn append_user_text(&mut self, text: &str, line_ending: &str) {
+        let value: String = format!("USER> {}{line_ending}", text.escape_debug());
         let line = BufLine::new(
             value,
             self.raw_buffer.len().saturating_sub(1),
@@ -153,7 +150,7 @@ impl Buffer {
     }
 
     // Forced to use Vec<u8> for now
-    pub fn append_bytes(&mut self, bytes: &mut Vec<u8>) {
+    pub fn append_bytes(&mut self, bytes: &mut Vec<u8>, line_ending: &str) {
         let converted = String::from_utf8_lossy(&bytes).to_string();
         // TODO maybe do line ending splits at this level, so raw_buffer_index can be more accurate
         self.raw_buffer.append(bytes);
@@ -161,13 +158,13 @@ impl Buffer {
         let mut appending_to_last = self
             .lines
             .last()
-            .map(|l| !l.completed(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]))
+            .map(|l| !l.completed(line_ending))
             .unwrap_or(false);
         // self.strings.iter_mut().for_each(|s| {
         // });
 
         // split_inclusive() or split()?
-        for line in converted.split(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]) {
+        for line in converted.split(line_ending) {
             // Removing messy-to-render characters, but they should be preserved in the raw_buffer for those who need to see them
 
             // TODO Replace tab with multiple spaces? (As \t causes smearing with ratatui currently.)

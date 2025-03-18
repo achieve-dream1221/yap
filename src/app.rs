@@ -141,9 +141,6 @@ pub const DEFAULT_BAUD: u32 = {
     baud
 };
 
-pub const LINE_ENDINGS: &[&str] = &["\n", "\r", "\r\n"];
-pub const LINE_ENDINGS_DEFAULT: usize = 0;
-
 const FAILED_SEND_VISUAL_TIME: Duration = Duration::from_millis(750);
 
 // Maybe have the buffer in the TUI struct?
@@ -285,7 +282,8 @@ impl App {
                     self.serial_healthy = false;
                 }
                 Event::Serial(SerialEvent::RxBuffer(mut data)) => {
-                    self.buffer.append_bytes(&mut data);
+                    let line_ending = &self.serial.port_settings.load().line_ending;
+                    self.buffer.append_bytes(&mut data, line_ending);
                     self.buffer.scroll_by(0);
 
                     self.repeating_line_flip = !self.repeating_line_flip;
@@ -300,9 +298,8 @@ impl App {
                 }
                 Event::Tick(Tick::PerSecond) => match self.menu {
                     Menu::Terminal(TerminalPrompt::None) => {
-                        let reconnections_allowed =
-                            self.serial.port_status.load().settings.reconnections
-                                != Reconnections::Disabled;
+                        let reconnections_allowed = self.serial.port_settings.load().reconnections
+                            != Reconnections::Disabled;
                         if !self.serial_healthy && reconnections_allowed {
                             self.repeating_line_flip = !self.repeating_line_flip;
                             self.serial.request_reconnect();
@@ -323,12 +320,14 @@ impl App {
             }
         }
         // Shutting down worker threads, with timeouts
+        debug!("Shutting down Serial worker");
         if self.serial.shutdown().is_ok() {
             let serial_thread = self.serial_thread.take();
             if let Err(_) = serial_thread.join() {
                 error!("Serial thread closed with an error!");
             }
         }
+        debug!("Shutting down event carousel");
         if self.carousel.shutdown().is_ok() {
             let carousel = self.carousel_thread.take();
             if let Err(_) = carousel.join() {
@@ -436,10 +435,9 @@ impl App {
             },
             KeyCode::PageUp if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MAX),
             KeyCode::PageDown if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MIN),
-            KeyCode::Delete if ctrl_pressed && shift_pressed => {
+            KeyCode::Delete | KeyCode::Backspace if ctrl_pressed && shift_pressed => {
                 self.user_input.reset();
             }
-            // TODO reactive page up/down amounts based on last_size
             KeyCode::PageUp => self.buffer.scroll_page_up(),
             KeyCode::PageDown => self.buffer.scroll_page_down(),
             // KeyCode::End => self
@@ -461,8 +459,7 @@ impl App {
                 _ = self.popup.take();
                 self.table_state.select(None);
 
-                self.scratch_port_settings =
-                    self.serial.port_status.load().as_ref().clone().settings;
+                self.scratch_port_settings = self.serial.port_settings.load().as_ref().clone();
                 return;
             }
         }
@@ -675,8 +672,7 @@ impl App {
                 }
             }
             Menu::PortSelection(Pse::MoreOptions) => {
-                self.scratch_port_settings =
-                    self.serial.port_status.load().as_ref().clone().settings;
+                self.scratch_port_settings = self.serial.port_settings.load().as_ref().clone();
                 self.popup = Some(Popup::PortSettings);
                 self.table_state.select(Some(0));
             }
@@ -684,8 +680,9 @@ impl App {
             Menu::Terminal(TerminalPrompt::None) => {
                 if self.serial_healthy {
                     let user_input = self.user_input.input_box.value();
-                    self.serial.send_str(user_input);
-                    self.buffer.append_user_text(user_input);
+                    let line_ending = &self.serial.port_settings.load().line_ending;
+                    self.serial.send_str(user_input, line_ending);
+                    self.buffer.append_user_text(user_input, line_ending);
                     self.user_input.history.push(user_input);
                     self.user_input.history.clear_selection();
                     self.user_input.reset();
@@ -772,7 +769,7 @@ impl App {
                 let area = centered_rect_size(
                     Size {
                         width: 32,
-                        height: 8,
+                        height: 9,
                     },
                     area,
                 );
@@ -780,7 +777,12 @@ impl App {
                 frame.render_stateful_widget(
                     self.scratch_port_settings
                         .as_table(&mut self.table_state)
-                        .block(Block::bordered()),
+                        .block(
+                            Block::bordered()
+                                .title_top("Port Settings")
+                                .title_bottom("Esc: Cancel | Enter: Confirm")
+                                .title_alignment(ratatui::layout::Alignment::Center), // .title_style(Style::new()),
+                        ),
                     area,
                     &mut self.table_state,
                 );
@@ -878,7 +880,8 @@ impl App {
             let port_text = match &port_status_guard.current_port {
                 Some(port_info) => {
                     if self.serial_healthy {
-                        port_info.info_as_string(Some(port_status_guard.settings.baud_rate))
+                        let baud_rate = self.serial.port_settings.load().baud_rate;
+                        port_info.info_as_string(Some(baud_rate))
                     } else {
                         // Might remove later
                         let info = port_info.info_as_string(None);
@@ -946,8 +949,12 @@ impl App {
 
         frame.render_widget(input_symbol, input_symbol_area);
         if self.user_input.input_box.value().is_empty() {
-            let input_hint = Line::raw("Input goes here.").dark_gray();
-            frame.render_widget(input_hint, input_area.offset(Offset { x: 1, y: 0 }));
+            // Leading space leaves room for full-width cursors.
+            let input_hint = Line::raw(" Input goes here. `Ctrl + .` for port settings.")
+                .style(input_style)
+                .dark_gray()
+                .italic();
+            frame.render_widget(input_hint, input_area);
             frame.set_cursor_position(input_area.as_position());
         } else {
             let width = input_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge

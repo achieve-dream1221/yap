@@ -58,6 +58,9 @@ pub struct PortSettings {
     /// Number of bits to use to signal the end of a character
     #[table(values = [StopBits::One, StopBits::Two])]
     pub stop_bits: StopBits,
+    #[table(display = ["None", "\\n", "\\r", "\\r\\n"])]
+    #[table(values = ["", "\n", "\r", "\r\n"])]
+    pub line_ending: String,
     /// The state to set DTR to when opening the device
     #[table(rename = "DTR on open")]
     pub dtr_on_open: bool,
@@ -93,6 +96,7 @@ impl Default for PortSettings {
             flow_control: FlowControl::None,
             parity: Parity::None,
             stop_bits: StopBits::One,
+            line_ending: "\n".into(),
             dtr_on_open: true,
             reconnections: Reconnections::LooseChecks,
         }
@@ -134,17 +138,15 @@ pub struct PortStatus {
     pub current_port: Option<SerialPortInfo>,
 
     pub signals: SerialSignals,
-    pub settings: PortSettings,
 }
 
 impl PortStatus {
-    fn new_idle(settings: PortSettings) -> Self {
+    fn new_idle(settings: &PortSettings) -> Self {
         Self {
             signals: SerialSignals {
                 dtr: settings.dtr_on_open,
                 ..Default::default()
             },
-            settings,
             ..Default::default()
         }
     }
@@ -156,10 +158,14 @@ impl PortStatus {
         }
     }
     /// Used when the user chooses to disconnect from the serial port
-    fn to_idle(self) -> Self {
+    fn to_idle(self, settings: &PortSettings) -> Self {
         Self {
             healthy: false,
             current_port: None,
+            signals: SerialSignals {
+                dtr: settings.dtr_on_open,
+                ..Default::default()
+            },
             ..self
         }
     }
@@ -179,9 +185,11 @@ impl PortStatus {
 #[derive(Debug, Clone, Default)]
 pub struct SerialSignals {
     // Host-controlled
+    /// RTS (Request To Send)
     pub rts: bool,
+    /// DTR (Data Terminal Ready)
     pub dtr: bool,
-    // Slave-controlled
+    // Slave-controlled, polled periodically
     /// CTS (Clear To Send)
     pub cts: bool,
     /// DSR (Data Set Ready)
@@ -237,6 +245,7 @@ fn f() {
 pub struct SerialHandle {
     command_tx: Sender<SerialCommand>,
     pub port_status: Arc<ArcSwap<PortStatus>>,
+    pub port_settings: Arc<ArcSwap<PortSettings>>,
 }
 
 pub trait PrintablePortInfo {
@@ -273,11 +282,19 @@ impl SerialHandle {
     pub fn new(event_tx: Sender<Event>) -> (Self, JoinHandle<()>) {
         let (command_tx, command_rx) = mpsc::channel();
 
-        let port_status = Arc::new(ArcSwap::from_pointee(PortStatus::new_idle(
-            PortSettings::default(),
-        )));
+        // TODO fill this in with incoming settings loaded from disk
+        let port_settings = PortSettings::default();
 
-        let mut worker = SerialWorker::new(command_rx, event_tx, port_status.clone());
+        let port_status = Arc::new(ArcSwap::from_pointee(PortStatus::new_idle(&port_settings)));
+
+        let port_settings = Arc::new(ArcSwap::from_pointee(port_settings));
+
+        let mut worker = SerialWorker::new(
+            command_rx,
+            event_tx,
+            port_status.clone(),
+            port_settings.clone(),
+        );
 
         let worker = std::thread::spawn(move || {
             worker
@@ -288,6 +305,7 @@ impl SerialHandle {
         let handle = Self {
             command_tx,
             port_status,
+            port_settings,
         };
         handle.request_port_scan();
         (handle, worker)
@@ -309,16 +327,18 @@ impl SerialHandle {
             .unwrap();
     }
     /// Sends the supplied bytes through the connected Serial device.
-    /// Newlines are automatically appended by the serial worker.
-    pub fn send_bytes(&self, input: Vec<u8>) {
+    pub fn send_bytes(&self, mut input: Vec<u8>, line_ending: Option<&str>) {
+        if let Some(ending) = line_ending.map(str::as_bytes) {
+            input.extend(ending.iter());
+        }
         self.command_tx
             .send(SerialCommand::TxBuffer(input))
             .unwrap();
     }
-    pub fn send_str(&self, input: &str) {
+    pub fn send_str(&self, input: &str, line_ending: &str) {
         // debug!("Outputting to serial: {input}");
         let buffer = input.as_bytes().to_owned();
-        self.send_bytes(buffer);
+        self.send_bytes(buffer, Some(line_ending));
     }
     pub fn read_signals(&self) {
         self.command_tx.send(SerialCommand::ReadSignals).unwrap();
@@ -434,7 +454,8 @@ pub struct SerialWorker {
     // settings: PortSettings,
     scan_snapshot: Vec<SerialPortInfo>,
     rx_buffer: Vec<u8>,
-    shared_port_status: Arc<ArcSwap<PortStatus>>,
+    shared_status: Arc<ArcSwap<PortStatus>>,
+    shared_settings: Arc<ArcSwap<PortSettings>>,
     // port_status: SerialStatus,
 }
 
@@ -443,11 +464,13 @@ impl SerialWorker {
         command_rx: Receiver<SerialCommand>,
         event_tx: Sender<Event>,
         port_status: Arc<ArcSwap<PortStatus>>,
+        port_settings: Arc<ArcSwap<PortSettings>>,
     ) -> Self {
         Self {
             command_rx,
             event_tx,
-            shared_port_status: port_status,
+            shared_status: port_status,
+            shared_settings: port_settings,
             // port_status: SerialStatus::idle(),
             // connected_port_info: None,
             port: PortHandle::default(),
@@ -537,8 +560,7 @@ impl SerialWorker {
                     SerialCommand::ReadSignals => self.read_and_share_serial_signals(false)?,
                     SerialCommand::WriteSignals { dtr, rts } => {
                         assert!(dtr.is_some() || rts.is_some());
-                        let mut status: PortStatus =
-                            self.shared_port_status.load().as_ref().clone();
+                        let mut status: PortStatus = self.shared_status.load().as_ref().clone();
                         if let Some(dtr) = dtr {
                             status.signals.dtr = dtr;
                         }
@@ -551,14 +573,13 @@ impl SerialWorker {
                             port.write_data_terminal_ready(status.signals.dtr)?;
                             port.write_request_to_send(status.signals.rts)?;
                         }
-                        self.shared_port_status.store(Arc::new(status));
+                        self.shared_status.store(Arc::new(status));
                         self.read_and_share_serial_signals(true)?;
                     }
                     SerialCommand::ToggleSignals { dtr, rts } => {
                         assert!(dtr || rts);
 
-                        let mut status: PortStatus =
-                            self.shared_port_status.load().as_ref().clone();
+                        let mut status: PortStatus = self.shared_status.load().as_ref().clone();
 
                         if dtr {
                             status.signals.dtr = !status.signals.dtr;
@@ -572,7 +593,7 @@ impl SerialWorker {
                             port.write_data_terminal_ready(status.signals.dtr)?;
                             port.write_request_to_send(status.signals.rts)?;
                         }
-                        self.shared_port_status.store(Arc::new(status));
+                        self.shared_status.store(Arc::new(status));
                         self.read_and_share_serial_signals(true)?;
                     }
                     SerialCommand::Shutdown(shutdown_tx) => {
@@ -580,8 +601,8 @@ impl SerialWorker {
                             .send(())
                             .expect("Failed to reply to shutdown request");
 
-                        self.shared_port_status
-                            .store(Arc::new(PortStatus::new_idle(PortSettings::default())));
+                        self.shared_status
+                            .store(Arc::new(PortStatus::new_idle(&PortSettings::default())));
                         self.port.drop();
                         break;
                     }
@@ -598,10 +619,12 @@ impl SerialWorker {
                     SerialCommand::Disconnect => {
                         // self.port_status = SerialStatus::idle();
 
-                        let previous_status = { self.shared_port_status.load().as_ref().clone() };
+                        let settings = self.shared_settings.load();
 
-                        self.shared_port_status
-                            .store(Arc::new(previous_status.to_idle()));
+                        let previous_status = { self.shared_status.load().as_ref().clone() };
+
+                        self.shared_status
+                            .store(Arc::new(previous_status.to_idle(&*settings)));
                         self.port.drop();
                         self.event_tx.send(SerialEvent::Disconnected.into())?;
                     }
@@ -614,9 +637,6 @@ impl SerialWorker {
                             port.bytes_to_read().unwrap(),
                             port.bytes_to_write().unwrap()
                         );
-
-                        // TODO use user-specified line-ending
-                        data.push(b'\n');
 
                         let mut buf = &data[..];
 
@@ -707,7 +727,7 @@ impl SerialWorker {
 
                         self.port.drop();
                         let disconnected_status = {
-                            self.shared_port_status
+                            self.shared_status
                                 .load()
                                 .as_ref()
                                 .clone()
@@ -715,7 +735,7 @@ impl SerialWorker {
                                 // as a reference for reconnections!
                                 .to_unhealthy()
                         };
-                        self.shared_port_status.store(Arc::new(disconnected_status));
+                        self.shared_status.store(Arc::new(disconnected_status));
 
                         self.event_tx.send(SerialEvent::Disconnected.into())?;
                     }
@@ -726,25 +746,21 @@ impl SerialWorker {
         Ok(())
     }
     fn update_settings(&mut self, settings: PortSettings) -> Result<(), serialport::Error> {
-        let status = {
-            let status_guard = self.shared_port_status.load();
-            let mut status: PortStatus = status_guard.as_ref().clone();
-            status.settings = settings;
-            status
-        };
+        let status = { self.shared_status.load().as_ref().clone() };
         if let Some(port) = self.port.as_mut_port() {
-            port.set_baud_rate(status.settings.baud_rate)?;
-            port.set_parity(status.settings.parity)?;
-            port.set_stop_bits(status.settings.stop_bits)?;
-            port.set_data_bits(status.settings.data_bits)?;
-            port.set_flow_control(status.settings.flow_control)?;
+            port.set_baud_rate(settings.baud_rate)?;
+            port.set_parity(settings.parity)?;
+            port.set_stop_bits(settings.stop_bits)?;
+            port.set_data_bits(settings.data_bits)?;
+            port.set_flow_control(settings.flow_control)?;
 
             port.write_data_terminal_ready(status.signals.dtr)?;
             port.write_request_to_send(status.signals.rts)?;
         } else {
-            warn!("Received port settings when no port connected!");
+            warn!("Received new port settings when no port connected!");
         }
-        self.shared_port_status.store(Arc::new(status));
+        self.shared_status.store(Arc::new(status));
+        self.shared_settings.store(Arc::new(settings));
         Ok(())
     }
     fn attempt_reconnect(&mut self) -> Result<(), serialport::Error> {
@@ -755,13 +771,7 @@ impl SerialWorker {
             return Ok(());
         }
 
-        let reconnections = {
-            self.shared_port_status
-                .load()
-                .settings
-                .reconnections
-                .clone()
-        };
+        let reconnections = { self.shared_settings.load().reconnections.clone() };
 
         if reconnections == Reconnections::Disabled {
             error!("Got request to reconnect when reconnections are disabled!");
@@ -769,7 +779,7 @@ impl SerialWorker {
         }
 
         let current_ports = self.scan_for_serial_ports()?;
-        let port_guard = self.shared_port_status.load();
+        let port_guard = self.shared_status.load();
         let desired_port = port_guard
             .current_port
             .as_ref()
@@ -894,11 +904,12 @@ impl SerialWorker {
         Ok(ports)
     }
     fn connect_to_port(&mut self, port_info: &SerialPortInfo) -> Result<(), serialport::Error> {
-        let mut port_status: PortStatus = self.shared_port_status.load().as_ref().clone();
-        let settings = &port_status.settings;
+        let mut port_status: PortStatus = self.shared_status.load().as_ref().clone();
+        // If this is a normal connection, then this should be set to settings.dtr_on_open
+        // otherwise, if we're reconnecting, then this should match the state of DTR at the time of disconnection
+        let dtr_on_open = port_status.signals.dtr;
+        let settings = self.shared_settings.load();
         let baud_rate = settings.baud_rate;
-        // TODO Make this a config option since this seems to have different behavior for each device.
-        // let dtr_on_open;
 
         if port_info.port_name.eq(MOCK_PORT_NAME) {
             let mut virt_port =
@@ -912,7 +923,7 @@ impl SerialWorker {
                 .flow_control(settings.flow_control)
                 .parity(settings.parity)
                 .stop_bits(settings.stop_bits)
-                .dtr_on_open(settings.dtr_on_open)
+                .dtr_on_open(dtr_on_open)
                 .open_native()?;
 
             self.port.return_native(port);
@@ -931,7 +942,7 @@ impl SerialWorker {
         port_status.signals.update_with_port(port)?;
         port_status.current_port = Some(port_info.to_owned());
         port_status.healthy = true;
-        self.shared_port_status.store(Arc::new(port_status));
+        self.shared_status.store(Arc::new(port_status));
 
         // Blech, if connecting from current_ports in attempt_reconnect, this may not exist.
         // self.connected_port_info = self
@@ -953,7 +964,7 @@ impl SerialWorker {
         &mut self,
         force_share: bool,
     ) -> Result<(), serialport::Error> {
-        let mut port_status: PortStatus = self.shared_port_status.load().as_ref().clone();
+        let mut port_status: PortStatus = self.shared_status.load().as_ref().clone();
 
         match self.port.as_mut_port() {
             // If no port is present, just skip.
@@ -965,7 +976,7 @@ impl SerialWorker {
                 let changed = port_status.signals.update_with_port(port)?;
                 // Only update the shared status if there's actually a change
                 if changed {
-                    self.shared_port_status.store(Arc::new(port_status));
+                    self.shared_status.store(Arc::new(port_status));
                 }
                 // But always send the UI update tick if a DTR/RTS change requested it
                 if changed || force_share {

@@ -53,7 +53,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                 if f.is_bool {
                     quote! {
                         {
-                            let variant_label_overrides: &[&'static str] = const {
+                            let overrides = const {
                                 let overrides = #overrides;
                                 // These extra assertions are for when a user passes in an Expr/Ident
                                 // instead of an array directly.
@@ -64,30 +64,37 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                                 "bool variant labels should have exactly two labels");
                                 overrides
                             };
+                            // To avoid having #overrides placed in more than once, we do the
+                            // length assertion without confirming the type, and then
+                            // we coerce the [&str; len] to a &[&str] here.
+                            let overrides_ref: &[&'static str] = overrides.as_ref();
+
 
                             let label_index: usize = if self.#ident { 1 } else { 0 };
 
-                            variant_label_overrides[label_index]
+                            overrides_ref[label_index]
                         }
                     }
                 } else {
                     // Getting the overridden label with the same index of the field's value
-                    let variants = f.values_to_cycle.as_ref().expect("expected list of values to cycle through");
+                    let variants = f
+                        .values_to_cycle
+                        .as_ref()
+                        .expect("expected list of values to cycle through");
                     quote! {
                         {
-                            let (variant_label_overrides: &[&'static str],
-                                variants: &[_],
-                            ) = const {
-                                let variant_label_overrides = #overrides;
+                            let (overrides, variants) = const {
+                                let overrides = #overrides;
                                 let variants = #variants;
-                                assert!(variant_label_overrides.len() == variants.len(),
+                                assert!(overrides.len() == variants.len(),
                                 "variant labels length should match cycled values length");
-                                (variant_label_overrides, variants)
-                            }
+                                (overrides, variants)
+                            };
+                            let overrides_ref: &[&'static str] = overrides.as_ref();
 
                             let current_position: usize = variants.iter().position(|v: &_| v == &self.#ident ).expect("current variant not in given list");
 
-                            variant_label_overrides[current_position]
+                            overrides_ref[current_position]
                         }
                     }
                 }
@@ -98,9 +105,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                 }
             };
 
-            quote! {
-                #field_to_string
-            }
+            field_to_string
         })
         .collect();
 
@@ -174,7 +179,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
 
                     #inner_wrap_logic
 
-                    self.#ident = variants[new_index].clone();
+                    self.#ident = variants[new_index].clone().into();
                 }
             }
         })
