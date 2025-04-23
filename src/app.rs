@@ -30,18 +30,17 @@ use tui_big_text::{BigText, PixelSize};
 use tui_input::{backend::crossterm::EventHandler, Input, StateChanged};
 
 use crate::{
-    buffer::Buffer,
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     serial::{
         PortSettings, PrintablePortInfo, Reconnections, SerialEvent, SerialHandle, MOCK_PORT_NAME,
     },
+    traits::LastIndex,
     tui::{
+        buffer::Buffer,
         centered_rect_size,
         prompts::{centered_rect, DisconnectPrompt, PromptTable},
-        single_line_selector::{
-            LastIndex, SingleLineSelector, SingleLineSelectorState, StateBottomed,
-        },
+        single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
 };
 
@@ -201,6 +200,8 @@ impl App {
             }),
             Duration::from_millis(100),
         );
+        // TODO load from config
+        let line_ending = PortSettings::default().line_ending;
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection(PortSelectionElement::Ports),
@@ -220,7 +221,7 @@ impl App {
             scratch_port_settings: PortSettings::default(),
             user_input: UserInput::default(),
 
-            buffer: Buffer::new(),
+            buffer: Buffer::new(&line_ending),
             // buffer_scroll: 0,
             // buffer_scroll_state: ScrollbarState::default(),
             // buffer_stick_to_bottom: true,
@@ -246,11 +247,11 @@ impl App {
                     terminal.autoresize()?;
                     if let Ok(size) = terminal.size() {
                         self.buffer.update_terminal_size(size);
+                        // self.buffer.update_wrapped_line_count();
+                        // self.buffer.scroll_by(0);
                     } else {
                         error!("Failed to query terminal size!");
                     }
-                    self.buffer.update_wrapped_line_count();
-                    self.buffer.scroll_by(0);
                 }
                 Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
                 Event::Crossterm(CrosstermEvent::MouseScroll { up }) => {
@@ -282,8 +283,7 @@ impl App {
                     self.serial_healthy = false;
                 }
                 Event::Serial(SerialEvent::RxBuffer(mut data)) => {
-                    let line_ending = &self.serial.port_settings.load().line_ending;
-                    self.buffer.append_bytes(&mut data, line_ending);
+                    self.buffer.append_rx_bytes(&mut data);
                     self.buffer.scroll_by(0);
 
                     self.repeating_line_flip = !self.repeating_line_flip;
@@ -395,8 +395,11 @@ impl App {
                     self.buffer.state.text_wrapping = !self.buffer.state.text_wrapping;
                     self.buffer.scroll_by(0);
                 }
-                'r' | 'R' if ctrl_pressed => {
-                    // self.serial.toggle_signals(true, false);
+                'o' | 'O' if ctrl_pressed => {
+                    self.serial.toggle_signals(true, false);
+                }
+                'p' | 'P' if ctrl_pressed => {
+                    self.serial.toggle_signals(false, true);
                 }
                 'e' | 'E' if ctrl_pressed => {
                     // self.serial.write_signals(Some(false), Some(false));
@@ -411,12 +414,9 @@ impl App {
                     //     .append_user_text("Attempting to put Espressif device into bootloader...");
                     // self.serial.esp_restart(None);
                 }
-                // 't' | 'T' if ctrl_pressed => {
-                //     self.serial.toggle_signals(false, true);
-                // }
                 't' | 'T' if ctrl_pressed => {
                     self.buffer.state.timestamps_visible = !self.buffer.state.timestamps_visible;
-                    self.buffer.update_wrapped_line_count();
+                    self.buffer.update_wrapped_line_heights();
                     self.buffer.scroll_by(0);
                 }
                 '.' if ctrl_pressed => {
@@ -433,6 +433,7 @@ impl App {
                     //     .handle_event(&ratatui::crossterm::event::Event::Key(key));
                 }
             },
+            // TODO Ctrl+A -> Backspace | Delete to clear input buffer
             KeyCode::PageUp if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MAX),
             KeyCode::PageDown if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MIN),
             KeyCode::Delete | KeyCode::Backspace if ctrl_pressed && shift_pressed => {
@@ -680,9 +681,8 @@ impl App {
             Menu::Terminal(TerminalPrompt::None) => {
                 if self.serial_healthy {
                     let user_input = self.user_input.input_box.value();
-                    let line_ending = &self.serial.port_settings.load().line_ending;
-                    self.serial.send_str(user_input, line_ending);
-                    self.buffer.append_user_text(user_input, line_ending);
+                    self.serial.send_str(user_input, self.buffer.line_ending());
+                    self.buffer.append_user_text(user_input);
                     self.user_input.history.push(user_input);
                     self.user_input.history.clear_selection();
                     self.user_input.reset();

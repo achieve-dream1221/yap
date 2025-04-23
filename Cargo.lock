@@ -4138,6 +4138,7 @@ dependencies = [
  "human-panic",
  "int-enum",
  "libc",
+ "memchr",
  "ratatui",
  "ratatui-macros",
  "rolling-file",

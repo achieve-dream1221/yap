@@ -9,7 +9,6 @@ use std::{
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use espflash::connection::reset::ResetStrategy;
 use serialport::{
     DataBits, FlowControl, Parity, SerialPort, SerialPortInfo, SerialPortType, StopBits,
 };
@@ -18,6 +17,9 @@ use tracing::{debug, error, info, warn};
 use virtual_serialport::VirtualPort;
 
 use crate::app::{Event, Tick, COMMON_BAUD, DEFAULT_BAUD};
+
+#[cfg(feature = "espflash")]
+use espflash::connection::reset::ResetStrategy;
 
 #[cfg(unix)]
 pub type NativePort = serialport::TTYPort;
@@ -112,6 +114,7 @@ pub enum SerialCommand {
     },
     PortSettings(PortSettings),
     TxBuffer(Vec<u8>),
+    #[cfg(feature = "espflash")]
     EspRestart(Option<u128>),
     WriteSignals {
         dtr: Option<bool>,
@@ -343,6 +346,7 @@ impl SerialHandle {
     pub fn read_signals(&self) {
         self.command_tx.send(SerialCommand::ReadSignals).unwrap();
     }
+    #[cfg(feature = "espflash")]
     pub fn esp_restart(&self, strategy: Option<u128>) {
         self.command_tx
             .send(SerialCommand::EspRestart(strategy))
@@ -499,6 +503,7 @@ impl SerialWorker {
                         self.connect_to_port(&port)?;
                     }
                     SerialCommand::PortSettings(settings) => self.update_settings(settings)?,
+                    #[cfg(feature = "espflash")]
                     SerialCommand::EspRestart(_) => {
                         if let Some(port) = self.port.as_mut_native_port() {
                             let strategy = TestReset::new();
@@ -989,49 +994,53 @@ impl SerialWorker {
     }
 }
 
-struct TestReset {
-    delay: u64,
-}
-impl TestReset {
-    fn new() -> Self {
-        Self { delay: 50 }
+#[cfg(feature = "espflash")]
+mod espflash {
+    struct TestReset {
+        delay: u64,
     }
-}
-impl ResetStrategy for TestReset {
-    fn reset(
-        &self,
-        serial_port: &mut espflash::connection::Port,
-    ) -> Result<(), espflash::error::Error> {
-        debug!(
-            "Using Classic reset strategy with delay of {}ms",
-            self.delay
-        );
-        self.set_dtr(serial_port, false)?;
-        self.set_rts(serial_port, false)?;
+    impl TestReset {
+        fn new() -> Self {
+            Self { delay: 50 }
+        }
+    }
+    impl ResetStrategy for TestReset {
+        fn reset(
+            &self,
+            serial_port: &mut espflash::connection::Port,
+        ) -> Result<(), espflash::error::Error> {
+            debug!(
+                "Using Classic reset strategy with delay of {}ms",
+                self.delay
+            );
+            self.set_dtr(serial_port, false)?;
+            self.set_rts(serial_port, false)?;
 
-        self.set_dtr(serial_port, true)?;
-        self.set_rts(serial_port, true)?;
+            self.set_dtr(serial_port, true)?;
+            self.set_rts(serial_port, true)?;
 
-        self.set_dtr(serial_port, false)?; // IO0 = HIGH
-        self.set_rts(serial_port, true)?; // EN = LOW, chip in reset
+            self.set_dtr(serial_port, false)?; // IO0 = HIGH
+            self.set_rts(serial_port, true)?; // EN = LOW, chip in reset
 
-        std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(100));
 
-        self.set_dtr(serial_port, true)?; // IO0 = LOW
-        self.set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
+            self.set_dtr(serial_port, true)?; // IO0 = LOW
+            self.set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
 
-        std::thread::sleep(Duration::from_millis(self.delay));
+            std::thread::sleep(Duration::from_millis(self.delay));
 
-        self.set_dtr(serial_port, false)?; // IO0 = HIGH, done
-        self.set_rts(serial_port, false)?;
+            self.set_dtr(serial_port, false)?; // IO0 = HIGH, done
+            self.set_rts(serial_port, false)?;
 
-        Ok(())
+            Ok(())
+        }
     }
 }
 
 pub const MOCK_PORT_NAME: &str = "lorem-ipsum";
 
-const MOCK_DATA: &str = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Duis porta volutpat magna non suscipit. Fusce rhoncus placerat metus, in posuere elit porta eget. Praesent ut nulla euismod, pulvinar tellus a, interdum ipsum. Integer in risus vulputate, finibus sem a, mattis ipsum. Aenean nec hendrerit tellus. Fusce risus dolor, sagittis non libero tristique, mattis vulputate libero. Proin ultrices luctus malesuada. Vestibulum non condimentum augue. Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia curae; Vestibulum ultricies quis neque non pharetra. Nam fringilla nisl at tortor malesuada cursus. Nulla dictum, sem ac dignissim ullamcorper, est purus interdum tellus, at sagittis arcu risus suscipit neque. Mauris varius mauris vitae mi sollicitudin eleifend.
+const MOCK_DATA: &str = "Lorem
+ipsum dolor sit amet, consectetur adipiscing elit. Duis porta volutpat magna non suscipit. Fusce rhoncus placerat metus, in posuere elit porta eget. Praesent ut nulla euismod, pulvinar tellus a, interdum ipsum. Integer in risus vulputate, finibus sem a, mattis ipsum. Aenean nec hendrerit tellus. Fusce risus dolor, sagittis non libero tristique, mattis vulputate libero. Proin ultrices luctus malesuada. Vestibulum non condimentum augue. Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia curae; Vestibulum ultricies quis neque non pharetra. Nam fringilla nisl at tortor malesuada cursus. Nulla dictum, sem ac dignissim ullamcorper, est purus interdum tellus, at sagittis arcu risus suscipit neque. Mauris varius mauris vitae mi sollicitudin eleifend.
 
 Donec feugiat, arcu sit amet ullamcorper consequat, nibh dolor laoreet risus, ut tincidunt tortor felis sed lacus. Aenean facilisis, mi nec feugiat rhoncus, dui urna malesuada erat, id mollis ipsum lectus ut ex. Curabitur semper vel tortor in finibus. Maecenas elit dui, cursus condimentum venenatis nec, cursus eget nisl. Proin consequat rhoncus tempor. Etiam dictum purus erat, sed aliquam mauris euismod vitae. Vivamus ut eros varius, posuere dolor eget, pretium tellus. Nam non lorem quis massa luctus hendrerit. Phasellus lobortis sodales quam in scelerisque. Morbi euismod et enim id dignissim. Sed commodo purus non est pellentesque euismod. Donec tincidunt dolor a ante aliquam auctor. Nam eget blandit felis.
 

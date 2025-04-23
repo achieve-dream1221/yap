@@ -1,7 +1,7 @@
 use arboard::Clipboard;
 use tui_input::Input;
 
-use crate::tui::single_line_selector::LastIndex;
+use crate::traits::LastIndex as _;
 
 #[derive(Debug, Default)]
 pub struct History {

@@ -8,6 +8,8 @@ use ratatui::{
 use ratatui_macros::line;
 use tracing::debug;
 
+use crate::traits::LastIndex;
+
 pub struct SingleLineSelector<'a> {
     items: Vec<Line<'a>>,
     max_line_chars: usize,
@@ -184,55 +186,6 @@ impl SingleLineSelectorState {
 
 fn line_chars(l: &Line<'_>) -> usize {
     l.iter().map(|s| s.content.chars().count()).sum()
-}
-
-pub trait LastIndex {
-    /// Returns `true` if the given index matches the index of the last element in the collection.
-    ///
-    /// Returns `false` if the index doesn't match, or if the collection is empty.
-    fn last_index_eq(&self, index: usize) -> bool;
-    /// Returns `true` if the given index matches or is greater than the index of the last element in the collection.
-    ///
-    /// Returns `false` if the index doesn't fit either condition, or if the collection is empty.
-    fn last_index_eq_or_greater(&self, index: usize) -> bool;
-    /// Returns the index of the last element in the collection.
-    ///
-    /// Returns `0` if the collection is empty.
-    fn last_index(&self) -> usize {
-        self.last_index_checked().unwrap_or(0)
-    }
-    /// Returns the index of the last element in the collection.
-    ///
-    /// Returns `None` if the collection is empty.
-    fn last_index_checked(&self) -> Option<usize>;
-}
-
-impl<T> LastIndex for [T] {
-    fn last_index_eq(&self, index: usize) -> bool {
-        if self.is_empty() {
-            false
-        } else if index == self.len() - 1 {
-            true
-        } else {
-            false
-        }
-    }
-    fn last_index_eq_or_greater(&self, index: usize) -> bool {
-        if self.is_empty() {
-            false
-        } else if index >= self.len() - 1 {
-            true
-        } else {
-            false
-        }
-    }
-    fn last_index_checked(&self) -> Option<usize> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self.len() - 1)
-        }
-    }
 }
 
 pub trait StateBottomed<T> {

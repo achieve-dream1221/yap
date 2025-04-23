@@ -23,6 +23,7 @@ mod history;
 mod panic_handler;
 mod serial;
 mod settings;
+mod traits;
 mod tui;
 
 /// Wrapper runner so any fatal errors get properly logged.
