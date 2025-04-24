@@ -1,11 +1,13 @@
+use std::borrow::Cow;
+
 use ansi_to_tui::IntoText;
 use buf_line::BufLine;
 use chrono::{DateTime, Local};
 use memchr::memmem::Finder;
 use ratatui::{
     layout::Size,
-    style::{palette::material::PINK, Style, Stylize},
-    text::{Line, Span, Text},
+    style::{palette::material::PINK, Color, Style, Stylize},
+    text::{Line, Span, Text, ToText},
     widgets::{
         Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
         StatefulWidget, Widget, Wrap,
@@ -75,15 +77,31 @@ impl Buffer {
 
     // TODO also do append_user_bytes
     pub fn append_user_text(&mut self, text: &str) {
-        // let value: String = format!("USER> {}", text.escape_debug());
-        // // TODO HANDLE MULTI-LINE USER INPUT AAAA
-        // let line = BufLine::new(
-        //     value.as_bytes(),
-        //     self.raw_buffer.len().saturating_sub(1),
-        //     self.last_terminal_size.width,
-        //     self.state.timestamps_visible,
-        // );
-        // self.lines.push(line);
+        let mm = text.escape_debug().to_string();
+        let lines: Vec<_> = match line_ending_iter(mm.as_bytes(), &self.line_ending) {
+            Some(iter) => iter.collect(),
+            None => vec![(mm.as_bytes(), mm.as_bytes())],
+        };
+
+        let user_span = span!(Color::DarkGray;"USER> ");
+        // let Text { lines, .. } = text;
+        // TODO HANDLE MULTI-LINE USER INPUT AAAA
+        for (trunc, orig) in lines {
+            let mut line = match trunc.into_text_lossy() {
+                Ok(text) => extract_line(text).unwrap_or(Line::default()),
+                Err(_) => Line::from(String::from_utf8_lossy(trunc).to_string()),
+            };
+            line.spans.insert(0, user_span.clone());
+            for span in line.spans.iter_mut() {
+                span.style = Color::DarkGray.into();
+            }
+            self.lines.push(BufLine::new_with_line(
+                line,
+                0,
+                self.last_terminal_size.width,
+                self.state.timestamps_visible,
+            ));
+        }
         self.last_line_completed = true;
     }
 
@@ -202,7 +220,6 @@ impl Buffer {
                     Err(_) => Line::from(String::from_utf8_lossy(trunc).to_string()),
                 };
 
-                line.remove_unsavory_chars();
                 // if is_line_styled(&line) == false {
                 //     line.style = Style::new().red().slow_blink();
                 // }

@@ -13,7 +13,7 @@ use ratatui::{
 use ratatui_macros::{line, span};
 use tracing::debug;
 
-use crate::traits::ByteSuffixCheck;
+use crate::traits::{ByteSuffixCheck, RemoveUnsavory};
 
 #[derive(Debug)]
 pub struct BufLine {
@@ -30,7 +30,7 @@ pub struct BufLine {
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
     pub fn new_with_line(
-        line: Line<'static>,
+        mut line: Line<'static>,
         // raw_value: &[u8],
         raw_buffer_index: usize,
         area_width: u16,
@@ -38,7 +38,9 @@ impl BufLine {
     ) -> Self {
         let time_format = "[%H:%M:%S%.3f] ";
 
-        let mut line = Self {
+        line.remove_unsavory_chars();
+
+        let mut bufline = Self {
             value: line,
             // raw_value: raw_value.to_owned(),
             raw_buffer_index,
@@ -46,8 +48,8 @@ impl BufLine {
             rendered_line_height: 0,
             timestamp: Local::now().format(time_format).to_string(),
         };
-        line.update_line_height(area_width, with_timestamp);
-        line
+        bufline.update_line_height(area_width, with_timestamp);
+        bufline
     }
     // pub fn new(
     //     raw_value: &[u8],

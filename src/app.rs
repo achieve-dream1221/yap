@@ -683,12 +683,19 @@ impl App {
             Menu::Terminal(TerminalPrompt::None) => {
                 if self.serial_healthy {
                     let user_input = self.user_input.input_box.value();
-                    self.serial
-                        .send_str(user_input, self.buffer.line_ending.as_str());
-                    self.buffer.append_user_text(user_input);
-                    self.user_input.history.push(user_input);
-                    self.user_input.history.clear_selection();
-                    self.user_input.reset();
+
+                    let fake_shell_mode = true;
+                    if fake_shell_mode {
+                        self.serial
+                            .send_str(user_input, self.buffer.line_ending.as_str());
+                        self.buffer.append_user_text(user_input);
+                        self.user_input.history.push(user_input);
+                        self.user_input.history.clear_selection();
+                        self.user_input.reset();
+                    } else {
+                        self.serial.send_str(user_input, "");
+                        // self.buffer.append_user_text(user_input);
+                    }
 
                     self.repeating_line_flip = !self.repeating_line_flip;
                     // Scroll all the way down
