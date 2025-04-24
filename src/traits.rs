@@ -1,5 +1,7 @@
 //! Module for the more generic helper traits I've needed while working on this project
 
+use ratatui::{style::Stylize, text::Line};
+
 /// Trait that provides simple methods to get the last valid index of a collection or slice.
 pub trait LastIndex {
     /// Returns `true` if the given index matches the index of the last element in the collection.
@@ -53,7 +55,7 @@ impl<T> LastIndex for [T] {
 pub trait ByteSuffixCheck {
     /// Returns `true` if the collection ends with the supplied byte slice.
     ///
-    /// Returns `false` if there's any mismatch, or if the checked collection is shorter than the suffix
+    /// Returns `false` if there's any mismatch, or if the checked collection is shorter than the suffix.
     fn has_byte_suffix(&self, expected: &[u8]) -> bool;
 }
 impl ByteSuffixCheck for [u8] {
@@ -89,5 +91,23 @@ impl FirstChars for str {
                 .expect("Not enough chars?");
             Some(&self[..end])
         }
+    }
+}
+
+pub trait RemoveUnsavory {
+    fn remove_unsavory_chars(&mut self);
+}
+
+impl RemoveUnsavory for Line<'_> {
+    fn remove_unsavory_chars(&mut self) {
+        self.spans.iter_mut().for_each(|s| {
+            // let std::borrow::Cow::Owned(_) = &s.content else {
+            //     panic!()
+            // };
+
+            let mut new_string = s.content.replace(&['\t', '\n', '\r'][..], "");
+            new_string.retain(|c| !c.is_control() && !c.is_ascii_control());
+            s.content = std::borrow::Cow::Owned(new_string);
+        });
     }
 }

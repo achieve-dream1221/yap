@@ -4,19 +4,20 @@ use chrono::{DateTime, Local};
 use memchr::memmem::Finder;
 use ratatui::{
     layout::Size,
-    style::{Style, Stylize},
-    text::{Line, Span},
+    style::{palette::material::PINK, Style, Stylize},
+    text::{Line, Span, Text},
     widgets::{
         Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
         StatefulWidget, Widget, Wrap,
     },
 };
 use ratatui_macros::{line, span};
-use tracing::debug;
+use tracing::{debug, info};
 
-use crate::traits::ByteSuffixCheck;
+use crate::traits::{ByteSuffixCheck, RemoveUnsavory};
 
 mod buf_line;
+mod wrap;
 
 // use crate::app::{LINE_ENDINGS, LINE_ENDINGS_DEFAULT};
 
@@ -42,7 +43,7 @@ pub struct Buffer {
     pub state: BufferState,
 
     // TODO separate line ending for TX'd text?
-    line_ending: String,
+    pub line_ending: String,
     // line_ending_finder: Finder<'static>,
 }
 
@@ -88,17 +89,137 @@ impl Buffer {
 
     // Forced to use Vec<u8> for now
     pub fn append_rx_bytes(&mut self, bytes: &mut Vec<u8>) {
+        let buffer_len: usize = self.raw_buffer.len();
+
+        // self.raw_buffer.append(bytes);
+
         // self.append_
 
         // let converted = String::from_utf8_lossy(&bytes).to_string();
+
+        // TODO handle re-doing utf8 parsing and such for the most recent line
+        let mut append_to_last = !self.last_line_completed;
+
+        let lines: Vec<_> = match line_ending_iter(bytes, &self.line_ending) {
+            Some(iter) => iter.collect(),
+            None => vec![(bytes, bytes)],
+        };
+
+        // debug!("{lines:?}");
+        // debug!("{:#?}", self.lines);
+
+        for (trunc, orig) in lines {
+            if orig.is_empty() {
+                debug!("empty orig!");
+                continue;
+            }
+
+            let index = self.raw_buffer.len();
+            self.raw_buffer.extend(orig);
+
+            if append_to_last {
+                append_to_last = false;
+                let last_line = self.lines.last_mut().expect("can't append to nothing");
+                let last_index = last_line.index_in_buffer();
+
+                let slice = &self.raw_buffer[last_index..index + trunc.len()];
+                info!("AAAFG: {:?}", slice);
+                // let mut line = {
+                //     let text = slice.into_text_lossy().unwrap();
+                //     let Text { mut lines, .. } = text;
+                //     assert!(lines.len() <= 2);
+
+                //     if lines.len() == 1 {
+                //         lines.remove(0)
+                //     } else if lines.len() == 2 {
+                //         let empty_line = lines.remove(0);
+                //         assert_eq!(empty_line, Line::default());
+
+                //         let new_line = lines.remove(0);
+                //         assert_ne!(new_line, Line::default());
+
+                //         new_line
+                //     } else {
+                //         panic!();
+                //     }
+                // };
+                let mut line = match slice.into_text_lossy() {
+                    Ok(text) => {
+                        let Some(line) = extract_line(text) else {
+                            panic!("spanless line!");
+                        };
+                        line
+                    }
+                    Err(_) => Line::from(String::from_utf8_lossy(slice).to_string()),
+                };
+
+                line.remove_unsavory_chars();
+
+                // if is_line_styled(&line) == false {
+                //     line.style = Style::new().red().slow_blink();
+                // }
+                last_line.value = line;
+                last_line.update_line_height(
+                    self.last_terminal_size.width,
+                    self.state.timestamps_visible,
+                );
+            } else {
+                // let mut line = {
+                //     let text = trunc.into_text().unwrap();
+                //     let Text { mut lines, .. } = text;
+                //     lines.remove(0)
+                // };
+
+                // let mut line = {
+                //     let text = trunc.into_text_lossy().unwrap();
+                //     assert_ne!(trunc[0], 10);
+                //     let Text { mut lines, .. } = text;
+                //     assert!(lines.len() <= 2);
+
+                //     if lines.len() == 1 {
+                //         lines.remove(0)
+                //     } else if lines.len() == 2 {
+                //         let empty_line = lines.remove(0);
+                //         assert_eq!(empty_line, Line::default());
+
+                //         let new_line = lines.remove(0);
+                //         assert_ne!(new_line, Line::default());
+
+                //         new_line
+                //     } else {
+                //         panic!();
+                //     }
+                // };
+                let mut line = match trunc.into_text_lossy() {
+                    Ok(text) => {
+                        // let Some(line) = extract_line(text) else {
+                        //     debug!("spanless line!");
+                        //     continue;
+                        // };
+                        // line
+                        extract_line(text).unwrap_or(Line::default())
+                    }
+                    Err(_) => Line::from(String::from_utf8_lossy(trunc).to_string()),
+                };
+
+                line.remove_unsavory_chars();
+                // if is_line_styled(&line) == false {
+                //     line.style = Style::new().red().slow_blink();
+                // }
+                self.lines.push(BufLine::new_with_line(
+                    line,
+                    index,
+                    self.last_terminal_size.width,
+                    self.state.timestamps_visible,
+                ));
+            };
+        }
 
         self.last_line_completed = {
             // let last_line = self.lines.last().expect("expected at least one line");
             let expected_ending = self.line_ending.as_bytes();
             bytes.has_byte_suffix(expected_ending)
         };
-
-        // self.raw_buffer.append(bytes);
 
         // let mut appending_to_last = !self.last_line_completed;
         // self.strings.iter_mut().for_each(|s| {
@@ -296,6 +417,7 @@ impl Buffer {
     pub fn clear(&mut self) {
         self.lines.clear();
         self.raw_buffer.clear();
+        self.last_line_completed = true;
     }
 
     pub fn scroll_page_up(&mut self) {
@@ -378,19 +500,23 @@ impl Buffer {
         self.scroll_by(0);
     }
 
-    pub fn line_ending(&self) -> &str {
-        &self.line_ending
-    }
+    // pub fn line_ending(&self) -> &str {
+    //     &self.line_ending
+    // }
 }
+
+// TODO make tests for this idiot thing
 
 /// Returns an iterator over the given byte slice, seperated by (and excluding) the given line ending `&str`
 ///
+/// String slice tuple is in order of `(exclusive, inclusive/original)`.
+///
 /// Returns `None` if there were no matching line endings found.
-fn line_ending_iter<'a>(
+pub fn line_ending_iter<'a>(
     bytes: &'a [u8],
     line_ending: &'a str,
-) -> Option<impl Iterator<Item = &'a [u8]>> {
-    assert!(!line_ending.is_empty());
+) -> Option<impl Iterator<Item = (&'a [u8], &'a [u8])>> {
+    assert!(!line_ending.is_empty(), "line_ending can't be empty");
     // TODO maybe do line ending splits at this level, so raw_buffer_index can be more accurate
     // https://docs.rs/memchr/latest/memchr/memmem/index.html
 
@@ -415,7 +541,10 @@ fn line_ending_iter<'a>(
 
     let slices_iter = line_ending_pos_iter.map(move |(line_ending_index, is_final_entry)| {
         if is_final_entry {
-            &bytes[last_index..bytes.len()]
+            (
+                &bytes[last_index..bytes.len()],
+                &bytes[last_index..bytes.len()],
+            )
         } else {
             // Copy of `last_index` since we're about to modify it,
             // but we want to use the unmodified value.
@@ -423,7 +552,10 @@ fn line_ending_iter<'a>(
             // Adding the length of the line ending to exclude it's presence
             // from the next line.
             last_index = line_ending_index + line_ending.len();
-            &bytes[index_copy..line_ending_index]
+            (
+                &bytes[index_copy..line_ending_index],
+                &bytes[index_copy..line_ending_index + line_ending.len()],
+            )
         }
     });
 
@@ -519,4 +651,26 @@ impl Widget for &mut Buffer {
             .end_symbol(Some("↓"));
         scrollbar.render(area, buf, &mut self.state.scrollbar_state);
     }
+}
+
+fn is_line_styled(line: &Line<'_>) -> bool {
+    if line.style != Style::default() {
+        debug!("line style was: {:?}", &line.style);
+        return true;
+    }
+    for span in &line.spans {
+        if span.style != Style::default() {
+            debug!("span style was: {:?}", &span.style);
+            return true;
+        }
+    }
+    false
+}
+
+fn extract_line(text: Text<'_>) -> Option<Line<'_>> {
+    if text.lines.is_empty() {
+        return None;
+    }
+    let Text { lines, .. } = text;
+    lines.into_iter().find(|l| !l.spans.is_empty())
 }

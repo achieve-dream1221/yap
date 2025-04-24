@@ -82,8 +82,6 @@ dependencies = [
 [[package]]
 name = "ansi-to-tui"
 version = "7.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67555e1f1ece39d737e28c8a017721287753af3f93225e4a445b29ccb0f5912c"
 dependencies = [
  "nom",
  "ratatui",
@@ -2986,6 +2984,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
 
 [[package]]
+name = "smawk"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7c388c1b5e93756d0c740965c41e8822f866621d41acbdf6336a6a168f8840c"
+
+[[package]]
 name = "socket2"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3204,6 +3208,7 @@ version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c13547615a44dc9c452a8a534638acdf07120d4b6847c8178705da06306a3057"
 dependencies = [
+ "smawk",
  "unicode-linebreak",
  "unicode-width 0.2.0",
 ]
@@ -4137,6 +4142,7 @@ dependencies = [
  "espflash",
  "human-panic",
  "int-enum",
+ "itertools 0.14.0",
  "libc",
  "memchr",
  "ratatui",
@@ -4148,11 +4154,13 @@ dependencies = [
  "struct-table",
  "strum 0.27.1",
  "takeable",
+ "textwrap",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
  "tui-big-text",
  "tui-input",
+ "unicode-width 0.2.0",
  "virtual-serialport",
 ]
 

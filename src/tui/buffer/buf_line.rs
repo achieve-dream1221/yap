@@ -17,32 +17,31 @@ use crate::traits::ByteSuffixCheck;
 
 #[derive(Debug)]
 pub struct BufLine {
-    value: Line<'static>,
+    pub value: Line<'static>,
     // maybe? depends on whats easier to chain bytes from, for the hex view later
-    raw_value: Vec<u8>,
+    // raw_value: Vec<u8>,
     /// How many vertical lines are needed in the terminal to fully show this line.
     rendered_line_height: usize,
     // Might not be exactly accurate, but would be enough to place user input lines in proper space if needing to
-    // raw_buffer_index: usize,
+    raw_buffer_index: usize,
     timestamp: String,
 }
 
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
-    pub fn new(
-        raw_value: &[u8],
+    pub fn new_with_line(
+        line: Line<'static>,
+        // raw_value: &[u8],
         raw_buffer_index: usize,
         area_width: u16,
         with_timestamp: bool,
     ) -> Self {
         let time_format = "[%H:%M:%S%.3f] ";
 
-        let value = determine_color(raw_value);
-
         let mut line = Self {
-            value,
-            raw_value: raw_value.to_owned(),
-            // raw_buffer_index,
+            value: line,
+            // raw_value: raw_value.to_owned(),
+            raw_buffer_index,
             // style: None,
             rendered_line_height: 0,
             timestamp: Local::now().format(time_format).to_string(),
@@ -50,6 +49,27 @@ impl BufLine {
         line.update_line_height(area_width, with_timestamp);
         line
     }
+    // pub fn new(
+    //     raw_value: &[u8],
+    //     raw_buffer_index: usize,
+    //     area_width: u16,
+    //     with_timestamp: bool,
+    // ) -> Self {
+    //     let time_format = "[%H:%M:%S%.3f] ";
+
+    //     let value = determine_color(raw_value);
+
+    //     let mut line = Self {
+    //         value,
+    //         // raw_value: raw_value.to_owned(),
+    //         // raw_buffer_index,
+    //         // style: None,
+    //         rendered_line_height: 0,
+    //         timestamp: Local::now().format(time_format).to_string(),
+    //     };
+    //     line.update_line_height(area_width, with_timestamp);
+    //     line
+    // }
 
     // pub fn new_user_line(raw)
 
@@ -71,10 +91,10 @@ impl BufLine {
         self.rendered_line_height
     }
 
-    pub fn append_bytes(&mut self, bytes: &[u8]) {
-        self.raw_value.extend(bytes.iter());
-        self.value = determine_color(&self.raw_value);
-    }
+    // pub fn append_bytes(&mut self, bytes: &[u8]) {
+    //     self.raw_value.extend(bytes.iter());
+    //     self.value = determine_color(&self.raw_value);
+    // }
 
     pub fn as_line(&self, with_timestamp: bool) -> Line {
         let mut spans = self.value.clone().spans;
@@ -97,6 +117,14 @@ impl BufLine {
         //     (None, false) => Line::raw(&self.value),
         // }
     }
+
+    pub fn index_in_buffer(&self) -> usize {
+        self.raw_buffer_index
+    }
+
+    // pub fn bytes(&self) -> &[u8] {
+    //     self.raw_value.as_slice()
+    // }
 }
 
 fn determine_color(bytes: &[u8]) -> Line<'static> {

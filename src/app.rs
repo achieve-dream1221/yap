@@ -644,6 +644,8 @@ impl App {
                 _ = self.popup.take();
                 self.table_state.select(None);
 
+                self.buffer.line_ending = self.scratch_port_settings.line_ending.clone();
+
                 self.serial
                     .update_settings(self.scratch_port_settings.clone());
                 return;
@@ -681,7 +683,8 @@ impl App {
             Menu::Terminal(TerminalPrompt::None) => {
                 if self.serial_healthy {
                     let user_input = self.user_input.input_box.value();
-                    self.serial.send_str(user_input, self.buffer.line_ending());
+                    self.serial
+                        .send_str(user_input, self.buffer.line_ending.as_str());
                     self.buffer.append_user_text(user_input);
                     self.user_input.history.push(user_input);
                     self.user_input.history.clear_selection();
