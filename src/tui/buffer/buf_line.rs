@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ansi_to_tui::IntoText;
 use chrono::{DateTime, Local};
 use memchr::memmem::Finder;
@@ -99,25 +101,19 @@ impl BufLine {
     // }
 
     pub fn as_line(&self, with_timestamp: bool) -> Line {
-        let mut spans = self.value.clone().spans;
+        let borrowed_spans = self
+            .value
+            .spans
+            .iter()
+            .map(|s| Span::styled(Cow::Borrowed(s.content.as_ref()), s.style));
+        let spans = std::iter::once(Span::styled(
+            Cow::Borrowed(self.timestamp.as_ref()),
+            Style::new().dark_gray(),
+        ))
+        .filter(|_| with_timestamp)
+        .chain(borrowed_spans);
 
-        if with_timestamp {
-            spans.insert(0, span![Style::new().dark_gray(); &self.timestamp]);
-        }
-        spans.into()
-        // match (self.style, with_timestamp) {
-        //     (Some(style), true) => line![
-        //         span![Style::new().dark_gray(); &self.timestamp],
-        //         span![style; &self.value]
-        //     ],
-        //     (None, true) => line![
-        //         ,
-        //         &self.value
-        //     ],
-
-        //     (Some(style), false) => Line::styled(&self.value, style),
-        //     (None, false) => Line::raw(&self.value),
-        // }
+        Line::from_iter(spans)
     }
 
     pub fn index_in_buffer(&self) -> usize {
@@ -129,38 +125,40 @@ impl BufLine {
     // }
 }
 
-fn determine_color(bytes: &[u8]) -> Line<'static> {
-    let ratatui::text::Text {
-        alignment: _alignment,
-        style,
-        mut lines,
-    } = bytes.into_text().unwrap();
-    debug!("{:?}", style);
-    assert_eq!(lines.len(), 1);
+// fn determine_color(bytes: &[u8]) -> Line<'static> {
+//     // let ratatui::text::Text {
+//     //     alignment: _alignment,
+//     //     style,
+//     //     mut lines,
+//     // } = bytes.into_line(Style::new(), None).unwrap();
+//     // debug!("{:?}", style);
+//     // assert_eq!(lines.len(), 1);
 
-    lines.pop().unwrap()
+//     // lines.pop().unwrap()
 
-    // // Not sure if this is actually worth keeping, we'll see once I add proper custom rules.
-    // if self.style.is_some() {
-    //     return;
-    // }
-    // What do I pass into here?
-    // The rules? Should it instead be an outside decider that supplies the color?
+//     bytes.into_line(None, Style::new()).unwrap()
 
-    // if let Some(slice) = self.value.first_chars(5) {
-    //     let mut style = Style::new();
-    //     style = match slice {
-    //         "USER>" => style.dark_gray(),
-    //         "Got m" => style.blue(),
-    //         "ID:0x" => style.green(),
-    //         "Chan." => style.dark_gray(),
-    //         "Mode:" => style.yellow(),
-    //         "Power" => style.red(),
-    //         _ => style,
-    //     };
+//     // // Not sure if this is actually worth keeping, we'll see once I add proper custom rules.
+//     // if self.style.is_some() {
+//     //     return;
+//     // }
+//     // What do I pass into here?
+//     // The rules? Should it instead be an outside decider that supplies the color?
 
-    //     if style != Style::new() {
-    //         self.style = Some(style);
-    //     }
-    // }
-}
+//     // if let Some(slice) = self.value.first_chars(5) {
+//     //     let mut style = Style::new();
+//     //     style = match slice {
+//     //         "USER>" => style.dark_gray(),
+//     //         "Got m" => style.blue(),
+//     //         "ID:0x" => style.green(),
+//     //         "Chan." => style.dark_gray(),
+//     //         "Mode:" => style.yellow(),
+//     //         "Power" => style.red(),
+//     //         _ => style,
+//     //     };
+
+//     //     if style != Style::new() {
+//     //         self.style = Some(style);
+//     //     }
+//     // }
+// }
