@@ -16,7 +16,7 @@ use ratatui::{
 use ratatui_macros::{line, span};
 use tracing::{debug, error, info};
 
-use crate::traits::{ByteSuffixCheck, RemoveUnsavory};
+use crate::traits::{ByteSuffixCheck, LineHelpers};
 
 mod buf_line;
 mod wrap;
@@ -96,9 +96,7 @@ impl Buffer {
             };
 
             line.spans.insert(0, user_span.clone());
-            for span in line.spans.iter_mut() {
-                span.style = Color::DarkGray.into();
-            }
+            line.style_all_spans(Color::DarkGray.into());
             self.lines.push(BufLine::new_with_line(
                 line,
                 0,
@@ -137,7 +135,7 @@ impl Buffer {
 
                 let slice = &self.raw_buffer[last_index..index + trunc.len()];
                 // info!("AAAFG: {:?}", slice);
-                let mut line = match slice.into_line_lossy(None, Style::new()) {
+                let line = match slice.into_line_lossy(None, Style::new()) {
                     Ok(line) => line,
                     Err(_) => {
                         error!("ansi-to-tui failed to parse input! Using unstyled text.");
@@ -145,14 +143,8 @@ impl Buffer {
                     }
                 };
 
-                line.remove_unsavory_chars();
-
-                // if is_line_styled(&line) {
-                //     debug!("is styled!");
-                //     // line.style = Style::new().red().slow_blink();
-                // }
-                last_line.value = line;
-                last_line.update_line_height(
+                last_line.update_line(
+                    line,
                     self.last_terminal_size.width,
                     self.state.timestamps_visible,
                 );
@@ -164,6 +156,10 @@ impl Buffer {
                         Line::from(String::from_utf8_lossy(trunc).to_string())
                     }
                 };
+
+                // if !line.is_styled() {
+                //     assert!(line.spans.len() <= 1);
+                // }
 
                 // if is_line_styled(&line) {
                 //     debug!("is styled!");
@@ -614,20 +610,6 @@ impl Widget for &mut Buffer {
             .end_symbol(Some("↓"));
         scrollbar.render(area, buf, &mut self.state.scrollbar_state);
     }
-}
-
-fn is_line_styled(line: &Line<'_>) -> bool {
-    if line.style != Style::default() {
-        debug!("line style was: {:?}", &line.style);
-        return true;
-    }
-    for span in &line.spans {
-        if span.style != Style::default() {
-            debug!("span style was: {:?}", &span.style);
-            return true;
-        }
-    }
-    false
 }
 
 fn extract_line(text: Text<'_>) -> Option<Line<'_>> {

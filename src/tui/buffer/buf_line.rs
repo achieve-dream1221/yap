@@ -15,11 +15,11 @@ use ratatui::{
 use ratatui_macros::{line, span};
 use tracing::debug;
 
-use crate::traits::{ByteSuffixCheck, RemoveUnsavory};
+use crate::traits::{ByteSuffixCheck, FirstChars, LineHelpers};
 
 #[derive(Debug)]
 pub struct BufLine {
-    pub value: Line<'static>,
+    value: Line<'static>,
     // maybe? depends on whats easier to chain bytes from, for the hex view later
     // raw_value: Vec<u8>,
     /// How many vertical lines are needed in the terminal to fully show this line.
@@ -42,6 +42,11 @@ impl BufLine {
 
         line.remove_unsavory_chars();
 
+        if !line.is_styled() && !line.is_empty() {
+            assert!(line.spans.len() <= 1);
+            determine_color(&mut line, &[]);
+        }
+
         let mut bufline = Self {
             value: line,
             // raw_value: raw_value.to_owned(),
@@ -52,6 +57,16 @@ impl BufLine {
         };
         bufline.update_line_height(area_width, with_timestamp);
         bufline
+    }
+    pub fn update_line(&mut self, mut line: Line<'static>, area_width: u16, with_timestamp: bool) {
+        if !line.is_styled() && !line.is_empty() {
+            assert!(line.spans.len() <= 1);
+            determine_color(&mut line, &[]);
+        }
+
+        self.value = line;
+        self.value.remove_unsavory_chars();
+        self.update_line_height(area_width, with_timestamp);
     }
     // pub fn new(
     //     raw_value: &[u8],
@@ -123,6 +138,28 @@ impl BufLine {
     // pub fn bytes(&self) -> &[u8] {
     //     self.raw_value.as_slice()
     // }
+}
+
+fn determine_color(line: &mut Line, rules: &[u8]) {
+    assert_eq!(line.spans.len(), 1);
+    if let Some(slice) = line.spans[0].content.first_chars(5) {
+        let mut style = Style::new();
+        style = match slice {
+            // "USER>" => style.dark_gray(),
+            "Got m" => style.blue(),
+            "ID:0x" => style.green(),
+            "Chan." => style.dark_gray(),
+            "Mode:" => style.yellow(),
+            "Power" => style.red(),
+            // "keepa" => style.red(),
+            _ => style,
+        };
+
+        if style != Style::new() {
+            line.style = style;
+            line.style_all_spans(style);
+        }
+    }
 }
 
 // fn determine_color(bytes: &[u8]) -> Line<'static> {

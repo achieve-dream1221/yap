@@ -1,6 +1,9 @@
 //! Module for the more generic helper traits I've needed while working on this project
 
-use ratatui::{style::Stylize, text::Line};
+use ratatui::{
+    style::{Style, Stylize},
+    text::Line,
+};
 
 /// Trait that provides simple methods to get the last valid index of a collection or slice.
 pub trait LastIndex {
@@ -71,7 +74,7 @@ impl ByteSuffixCheck for [u8] {
 }
 
 /// Trait that provides a single method to get the first `N` "Unicode Scalar Values" from a string slice.
-trait FirstChars {
+pub trait FirstChars {
     /// Return the first `N` "Unicode Scalar Values" from a string slice.
     fn first_chars(&self, char_count: usize) -> Option<&str>;
 }
@@ -94,11 +97,14 @@ impl FirstChars for str {
     }
 }
 
-pub trait RemoveUnsavory {
+pub trait LineHelpers {
     fn remove_unsavory_chars(&mut self);
+    fn is_styled(&self) -> bool;
+    fn is_empty(&self) -> bool;
+    fn style_all_spans(&mut self, new_style: Style);
 }
 
-impl RemoveUnsavory for Line<'_> {
+impl LineHelpers for Line<'_> {
     fn remove_unsavory_chars(&mut self) {
         self.spans.iter_mut().for_each(|s| {
             // let std::borrow::Cow::Owned(_) = &s.content else {
@@ -109,5 +115,32 @@ impl RemoveUnsavory for Line<'_> {
             new_string.retain(|c| !c.is_control() && !c.is_ascii_control());
             s.content = std::borrow::Cow::Owned(new_string);
         });
+    }
+    fn is_styled(&self) -> bool {
+        if self.style != Style::default() {
+            return true;
+        }
+        for span in &self.spans {
+            if span.style != Style::default() {
+                return true;
+            }
+        }
+        false
+    }
+    fn is_empty(&self) -> bool {
+        if self.spans.is_empty() {
+            return true;
+        }
+        for span in &self.spans {
+            if !span.content.is_empty() {
+                return false;
+            }
+        }
+        true
+    }
+    fn style_all_spans(&mut self, new_style: Style) {
+        for span in self.spans.iter_mut() {
+            span.style = new_style;
+        }
     }
 }
