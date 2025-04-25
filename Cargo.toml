@@ -9,7 +9,8 @@ default = []
 espflash = ["dep:espflash"]
 
 [dependencies]
-ansi-to-tui = { path = "../ansi-to-tui" }
+ansi-to-tui = { git = "https://github.com/nullstalgia/ansi-to-tui", branch = "lossy_and_line_endings" }
+# ansi-to-tui = { path = "../ansi-to-tui" }
 # ansi-to-tui = "7.0.0"
 arboard = "3.4.1"
 arc-swap = "1.7.1"
