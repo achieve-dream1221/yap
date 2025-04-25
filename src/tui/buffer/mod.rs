@@ -14,7 +14,7 @@ use ratatui::{
     },
 };
 use ratatui_macros::{line, span};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::traits::{ByteSuffixCheck, RemoveUnsavory};
 
@@ -87,10 +87,14 @@ impl Buffer {
         // let Text { lines, .. } = text;
         // TODO HANDLE MULTI-LINE USER INPUT AAAA
         for (trunc, orig) in lines {
-            let mut line = match trunc.into_text_lossy() {
-                Ok(text) => extract_line(text).unwrap_or(Line::default()),
-                Err(_) => Line::from(String::from_utf8_lossy(trunc).to_string()),
+            let mut line = match trunc.into_line_lossy(None, Style::new()) {
+                Ok(line) => line,
+                Err(_) => {
+                    error!("ansi-to-tui failed to parse input! Using unstyled text.");
+                    Line::from(String::from_utf8_lossy(trunc).to_string())
+                }
             };
+
             line.spans.insert(0, user_span.clone());
             for span in line.spans.iter_mut() {
                 span.style = Color::DarkGray.into();
@@ -107,15 +111,6 @@ impl Buffer {
 
     // Forced to use Vec<u8> for now
     pub fn append_rx_bytes(&mut self, bytes: &mut Vec<u8>) {
-        let buffer_len: usize = self.raw_buffer.len();
-
-        // self.raw_buffer.append(bytes);
-
-        // self.append_
-
-        // let converted = String::from_utf8_lossy(&bytes).to_string();
-
-        // TODO handle re-doing utf8 parsing and such for the most recent line
         let mut append_to_last = !self.last_line_completed;
 
         let lines: Vec<_> = match line_ending_iter(bytes, &self.line_ending) {
@@ -141,40 +136,20 @@ impl Buffer {
                 let last_index = last_line.index_in_buffer();
 
                 let slice = &self.raw_buffer[last_index..index + trunc.len()];
-                info!("AAAFG: {:?}", slice);
-                // let mut line = {
-                //     let text = slice.into_text_lossy().unwrap();
-                //     let Text { mut lines, .. } = text;
-                //     assert!(lines.len() <= 2);
-
-                //     if lines.len() == 1 {
-                //         lines.remove(0)
-                //     } else if lines.len() == 2 {
-                //         let empty_line = lines.remove(0);
-                //         assert_eq!(empty_line, Line::default());
-
-                //         let new_line = lines.remove(0);
-                //         assert_ne!(new_line, Line::default());
-
-                //         new_line
-                //     } else {
-                //         panic!();
-                //     }
-                // };
-                let mut line = match slice.into_text_lossy() {
-                    Ok(text) => {
-                        let Some(line) = extract_line(text) else {
-                            panic!("spanless line!");
-                        };
-                        line
+                // info!("AAAFG: {:?}", slice);
+                let mut line = match slice.into_line_lossy(None, Style::new()) {
+                    Ok(line) => line,
+                    Err(_) => {
+                        error!("ansi-to-tui failed to parse input! Using unstyled text.");
+                        Line::from(String::from_utf8_lossy(slice).to_string())
                     }
-                    Err(_) => Line::from(String::from_utf8_lossy(slice).to_string()),
                 };
 
                 line.remove_unsavory_chars();
 
-                // if is_line_styled(&line) == false {
-                //     line.style = Style::new().red().slow_blink();
+                // if is_line_styled(&line) {
+                //     debug!("is styled!");
+                //     // line.style = Style::new().red().slow_blink();
                 // }
                 last_line.value = line;
                 last_line.update_line_height(
@@ -182,46 +157,17 @@ impl Buffer {
                     self.state.timestamps_visible,
                 );
             } else {
-                // let mut line = {
-                //     let text = trunc.into_text().unwrap();
-                //     let Text { mut lines, .. } = text;
-                //     lines.remove(0)
-                // };
-
-                // let mut line = {
-                //     let text = trunc.into_text_lossy().unwrap();
-                //     assert_ne!(trunc[0], 10);
-                //     let Text { mut lines, .. } = text;
-                //     assert!(lines.len() <= 2);
-
-                //     if lines.len() == 1 {
-                //         lines.remove(0)
-                //     } else if lines.len() == 2 {
-                //         let empty_line = lines.remove(0);
-                //         assert_eq!(empty_line, Line::default());
-
-                //         let new_line = lines.remove(0);
-                //         assert_ne!(new_line, Line::default());
-
-                //         new_line
-                //     } else {
-                //         panic!();
-                //     }
-                // };
-                let mut line = match trunc.into_text_lossy() {
-                    Ok(text) => {
-                        // let Some(line) = extract_line(text) else {
-                        //     debug!("spanless line!");
-                        //     continue;
-                        // };
-                        // line
-                        extract_line(text).unwrap_or(Line::default())
+                let line = match trunc.into_line_lossy(None, Style::new()) {
+                    Ok(line) => line,
+                    Err(_) => {
+                        error!("ansi-to-tui failed to parse input! Using unstyled text.");
+                        Line::from(String::from_utf8_lossy(trunc).to_string())
                     }
-                    Err(_) => Line::from(String::from_utf8_lossy(trunc).to_string()),
                 };
 
-                // if is_line_styled(&line) == false {
-                //     line.style = Style::new().red().slow_blink();
+                // if is_line_styled(&line) {
+                //     debug!("is styled!");
+                //     // line.style = Style::new().red().slow_blink();
                 // }
                 self.lines.push(BufLine::new_with_line(
                     line,
