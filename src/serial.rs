@@ -44,29 +44,30 @@ impl From<SerialEvent> for Event {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, StructTable)]
 pub struct PortSettings {
-    /// The baud rate in symbols-per-second
+    /// The baud rate in symbols-per-second.
     // #[table(values = COMMON_BAUD)]
     #[table(skip)]
     pub baud_rate: u32,
-    /// Number of bits used to represent a character sent on the line
+    /// Number of bits per character.
     #[table(values = [DataBits::Five, DataBits::Six, DataBits::Seven, DataBits::Eight])]
     pub data_bits: DataBits,
-    /// The type of signalling to use for controlling data transfer
+    /// Flow control modes.
     #[table(values = [FlowControl::None, FlowControl::Software, FlowControl::Hardware])]
     pub flow_control: FlowControl,
-    /// The type of parity to use for error checking
+    /// Parity bit modes.
     #[table(values = [Parity::None, Parity::Odd, Parity::Even])]
-    pub parity: Parity,
-    /// Number of bits to use to signal the end of a character
+    pub parity_bits: Parity,
+    /// Number of stop bits.
     #[table(values = [StopBits::One, StopBits::Two])]
     pub stop_bits: StopBits,
     #[table(display = ["None", "\\n", "\\r", "\\r\\n"])]
     #[table(values = ["", "\n", "\r", "\r\n"])]
+    /// Line endings for RX and TX.
     pub line_ending: String,
-    /// The state to set DTR to when opening the device
+    /// Assert DTR to this state on port (re)connect.
     #[table(rename = "DTR on open")]
     pub dtr_on_open: bool,
-    /// Whether or not reconnections to ports are allowed, and how strict the checks are if so.
+    /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB/COM device.
     #[table(values = [Reconnections::Disabled, Reconnections::StrictChecks, Reconnections::LooseChecks])]
     pub reconnections: Reconnections,
 }
@@ -96,7 +97,7 @@ impl Default for PortSettings {
             baud_rate: 0,
             data_bits: DataBits::Eight,
             flow_control: FlowControl::None,
-            parity: Parity::None,
+            parity_bits: Parity::None,
             stop_bits: StopBits::One,
             line_ending: "\n".into(),
             dtr_on_open: true,
@@ -754,7 +755,7 @@ impl SerialWorker {
         let status = { self.shared_status.load().as_ref().clone() };
         if let Some(port) = self.port.as_mut_port() {
             port.set_baud_rate(settings.baud_rate)?;
-            port.set_parity(settings.parity)?;
+            port.set_parity(settings.parity_bits)?;
             port.set_stop_bits(settings.stop_bits)?;
             port.set_data_bits(settings.data_bits)?;
             port.set_flow_control(settings.flow_control)?;
@@ -926,7 +927,7 @@ impl SerialWorker {
             let port = serialport::new(&port_info.port_name, baud_rate)
                 .data_bits(settings.data_bits)
                 .flow_control(settings.flow_control)
-                .parity(settings.parity)
+                .parity(settings.parity_bits)
                 .stop_bits(settings.stop_bits)
                 .dtr_on_open(dtr_on_open)
                 .open_native()?;

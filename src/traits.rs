@@ -1,9 +1,6 @@
 //! Module for the more generic helper traits I've needed while working on this project
 
-use ratatui::{
-    style::{Style, Stylize},
-    text::Line,
-};
+use ratatui::{style::Style, text::Line};
 
 /// Trait that provides simple methods to get the last valid index of a collection or slice.
 pub trait LastIndex {

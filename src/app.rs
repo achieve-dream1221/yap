@@ -28,6 +28,7 @@ use takeable::Takeable;
 use tracing::{debug, error, info, instrument};
 use tui_big_text::{BigText, PixelSize};
 use tui_input::{backend::crossterm::EventHandler, Input, StateChanged};
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     event_carousel::{self, CarouselHandle},
@@ -68,12 +69,14 @@ pub enum Event {
 
 #[derive(Clone, Debug)]
 pub enum Tick {
-    // Sent every second
+    /// Sent every second
     PerSecond,
-    // When just trying to update the UI a little early
+    /// When just trying to update the UI a little early
     Requested,
-    // Used to twiddle repeating_line_flip for each transmission
+    /// Used to twiddle repeating_line_flip for each transmission
     Tx,
+    /// Used to periodically scroll long text for UIs
+    Scroll,
 }
 
 impl From<Tick> for Event {
@@ -148,6 +151,7 @@ pub struct App {
     state: RunningState,
     menu: Menu,
     popup: Option<Popup>,
+    popup_desc_scroll: i16,
     tx: Sender<Event>,
     rx: Receiver<Event>,
     table_state: TableState,
@@ -192,6 +196,16 @@ impl App {
             Duration::from_secs(1),
         );
 
+        let scroll_tick_tx = tx.clone();
+        event_carousel.add_repeating(
+            Box::new(move || {
+                scroll_tick_tx
+                    .send(Tick::Scroll.into())
+                    .map_err(|e| e.to_string())
+            }),
+            Duration::from_millis(250),
+        );
+
         let serial_signal_tick_handle = serial_handle.clone();
         event_carousel.add_repeating(
             Box::new(move || {
@@ -206,6 +220,7 @@ impl App {
             state: RunningState::Running,
             menu: Menu::PortSelection(PortSelectionElement::Ports),
             popup: None,
+            popup_desc_scroll: -2,
             tx,
             rx,
             table_state: TableState::new().with_selected(Some(0)),
@@ -311,6 +326,7 @@ impl App {
                         self.serial.request_port_scan();
                     }
                 },
+                Event::Tick(Tick::Scroll) => self.popup_desc_scroll += 1,
                 Event::Tick(Tick::Requested) => {
                     debug!("Requested tick recieved.");
                     self.failed_send_at
@@ -421,6 +437,7 @@ impl App {
                 }
                 '.' if ctrl_pressed => {
                     self.popup = Some(Popup::PortSettings);
+                    self.popup_desc_scroll = -2;
                     self.table_state.select(Some(0));
                 }
                 // 't' | 'T' if ctrl_pressed => {
@@ -480,6 +497,7 @@ impl App {
         match self.popup {
             None => (),
             Some(Popup::PortSettings) => {
+                self.popup_desc_scroll = -2;
                 self.scratch_port_settings
                     .handle_input(ArrowKey::Up, &mut self.table_state)
                     .unwrap();
@@ -506,6 +524,7 @@ impl App {
         match self.popup {
             None => (),
             Some(Popup::PortSettings) => {
+                self.popup_desc_scroll = -2;
                 self.scratch_port_settings
                     .handle_input(ArrowKey::Down, &mut self.table_state)
                     .unwrap();
@@ -779,7 +798,7 @@ impl App {
                 let area = centered_rect_size(
                     Size {
                         width: 32,
-                        height: 9,
+                        height: 11,
                     },
                     area,
                 );
@@ -795,6 +814,66 @@ impl App {
                         ),
                     area,
                     &mut self.table_state,
+                );
+                let mut meow = area.clone();
+                meow.y = meow.bottom().saturating_sub(3);
+                meow.x += 1;
+                meow.height = 1;
+                meow.width = meow.width.saturating_sub(2);
+                frame.render_widget(Block::new().borders(Borders::BOTTOM | Borders::TOP), meow);
+                // debug!("{:#?}", PortSettings::DOCSTRINGS);
+                let selected = self.table_state.selected().unwrap_or_default();
+                let text: &str = PortSettings::DOCSTRINGS
+                    .get(selected)
+                    .unwrap_or(&"")
+                    .as_ref();
+                let (scroll_x, offset_x): (u16, u16) = {
+                    let text_width: u16 = text.width() as u16;
+                    if text_width <= meow.width {
+                        (0, 0)
+                    } else {
+                        let scroll = self.popup_desc_scroll;
+                        match scroll {
+                            pause if scroll <= 0 => (0, 0),
+                            left if scroll <= text.width() as i16 => (left as u16, 0),
+
+                            right if scroll < (text_width + meow.width) as i16 => {
+                                (0, (right as u16 - text_width))
+                            }
+                            reset if scroll >= (text_width + meow.width) as i16 => {
+                                self.popup_desc_scroll = -2;
+                                (0, 0)
+                            }
+                            _ => (0, 0),
+                        }
+                    }
+                };
+                debug!("scroll_x: {scroll_x}, offset_x: {offset_x}");
+                let para =
+                    Paragraph::new(Span::styled(Cow::Borrowed(text), Style::new())).scroll((
+                        0,
+                        if offset_x > 0 {
+                            // u16::min(meow.width.saturating_sub(offset_x), meow.width)
+                            // text.width() as u16 - offset_x
+                            0
+                        } else {
+                            scroll_x as u16
+                        },
+                    ));
+                if offset_x > 0 {
+                    // meow.width = meow.width.saturating_sub(text.width() as u16 - offset_x);
+                    meow.width = u16::min(offset_x, meow.width);
+                }
+                frame.render_widget(
+                    para,
+                    meow.offset(Offset {
+                        x: if offset_x > 0 {
+                            area.width.saturating_sub(2).saturating_sub(offset_x).into()
+                        } else {
+                            0
+                        },
+                        y: 1,
+                    }),
                 );
             }
         }

@@ -116,6 +116,8 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
 
     // }
 
+    let docstrings: Vec<_> = field_attrs.iter().map(|a| a.doc.clone()).collect();
+
     let inner_wrap = |no_wrap: bool| -> proc_macro2::TokenStream {
         if !no_wrap {
             quote! {
@@ -305,6 +307,8 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
 
                 option_table
             }
+
+            const DOCSTRINGS: &'static [&'static str] = &[ #(#docstrings),* ];
         }
     })
 }
@@ -354,6 +358,9 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
             if skip {
                 continue;
             }
+
+            let doc = get_first_doc_comment(&field.attrs).unwrap_or_default();
+            // let doc = "".to_string();
 
             let is_bool = is_bool_field(field);
 
@@ -431,6 +438,7 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
 
             let processed_field = StructField {
                 ident,
+                doc,
                 values_to_cycle: values,
                 display_override: display,
                 is_bool,
@@ -442,6 +450,38 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
     }
 
     Ok(field_attrs)
+}
+
+fn get_first_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
+    for attr in attrs {
+        if attr.path().is_ident("doc") {
+            if let syn::Meta::NameValue(meta_name_value) = &attr.meta {
+                // Uhhhh, this can probably be done better
+                if let syn::Meta::NameValue(meta_name_value) = &attr.meta {
+                    if let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(ref lit_str),
+                        ..
+                    }) = meta_name_value.value
+                    {
+                        // let comment: String = format!("\"{}\"", lit_str.value().trim());
+                        let comment: String = lit_str.value().trim().to_owned();
+                        return Some(comment);
+                    }
+                }
+
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(ref lit_str),
+                    ..
+                }) = meta_name_value.value
+                {
+                    // let comment: String = format!("\"{}\"", lit_str.value().trim());
+                    let comment: String = lit_str.value().trim().to_owned();
+                    return Some(comment);
+                }
+            }
+        }
+    }
+    None
 }
 
 enum ArrayOrConst {
@@ -477,6 +517,7 @@ impl quote::ToTokens for ArrayOrConst {
 
 struct StructField {
     ident: syn::Ident,
+    doc: String,
     values_to_cycle: Option<ArrayOrConst>,
     display_override: Option<ArrayOrConst>,
     is_bool: bool,
