@@ -110,17 +110,9 @@ impl BufLine {
         self.rendered_line_height
     }
 
-    // pub fn append_bytes(&mut self, bytes: &[u8]) {
-    //     self.raw_value.extend(bytes.iter());
-    //     self.value = determine_color(&self.raw_value);
-    // }
-
+    /// Returns an owned `Line` that borrows from the current line's spans.
     pub fn as_line(&self, with_timestamp: bool) -> Line {
-        let borrowed_spans = self
-            .value
-            .spans
-            .iter()
-            .map(|s| Span::styled(Cow::Borrowed(s.content.as_ref()), s.style));
+        let borrowed_spans = self.value.borrowed_spans_iter();
         let spans = std::iter::once(Span::styled(
             Cow::Borrowed(self.timestamp.as_ref()),
             Style::new().dark_gray(),

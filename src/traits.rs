@@ -1,6 +1,11 @@
 //! Module for the more generic helper traits I've needed while working on this project
 
-use ratatui::{style::Style, text::Line};
+use std::borrow::Cow;
+
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+};
 
 /// Trait that provides simple methods to get the last valid index of a collection or slice.
 pub trait LastIndex {
@@ -95,22 +100,30 @@ impl FirstChars for str {
 }
 
 pub trait LineHelpers {
+    /// Removes all tabs, carriage returns, newlines, and control characters from all spans in the line.
+    ///
+    /// Any changed spans become owned if they weren't already. Unchanged spans are untouched. (Subject to change.)
     fn remove_unsavory_chars(&mut self);
+    /// Returns `true` if either the `Line` or any of it's `Spans` are styled.
     fn is_styled(&self) -> bool;
+    /// Returns `true` if no `Spans` exist, or if all `Spans` are also empty.
     fn is_empty(&self) -> bool;
+    /// Iterates through all Spans and sets the given style to all.
     fn style_all_spans(&mut self, new_style: Style);
+    /// Returns an owned `Line` that borrows from the current line's spans.
+    fn new_borrowing<'a>(&'a self) -> Line<'a>;
+    /// Generates an iterator that creates owned `Span` objects whose content borrows from the original line's spans..
+    fn borrowed_spans_iter<'a>(&'a self) -> impl DoubleEndedIterator<Item = Span<'a>>;
 }
 
 impl LineHelpers for Line<'_> {
     fn remove_unsavory_chars(&mut self) {
         self.spans.iter_mut().for_each(|s| {
-            // let std::borrow::Cow::Owned(_) = &s.content else {
-            //     panic!()
-            // };
-
             let mut new_string = s.content.replace(&['\t', '\n', '\r'][..], "");
             new_string.retain(|c| !c.is_control() && !c.is_ascii_control());
-            s.content = std::borrow::Cow::Owned(new_string);
+            if s.content != new_string {
+                s.content = Cow::Owned(new_string);
+            }
         });
     }
     fn is_styled(&self) -> bool {
@@ -139,5 +152,17 @@ impl LineHelpers for Line<'_> {
         for span in self.spans.iter_mut() {
             span.style = new_style;
         }
+    }
+    fn borrowed_spans_iter<'a>(&'a self) -> impl DoubleEndedIterator<Item = Span<'a>> {
+        self.spans
+            .iter()
+            .map(|s| Span::styled(Cow::Borrowed(s.content.as_ref()), self.style))
+    }
+    fn new_borrowing<'a>(&'a self) -> Line<'a> {
+        let mut line = Line::from_iter(self.borrowed_spans_iter());
+        if self.alignment.is_some() {
+            line.alignment = self.alignment;
+        }
+        line
     }
 }

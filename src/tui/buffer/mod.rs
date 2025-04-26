@@ -33,6 +33,8 @@ pub struct BufferState {
     stuck_to_bottom: bool,
 }
 
+// TODO have separate vector for user lines, and re-render the raw buffer when turning user lines on and off?
+
 pub struct Buffer {
     raw_buffer: Vec<u8>,
     pub lines: Vec<BufLine>,
@@ -78,15 +80,11 @@ impl Buffer {
     // TODO also do append_user_bytes
     pub fn append_user_text(&mut self, text: &str) {
         let mm = text.escape_debug().to_string();
-        let lines: Vec<_> = match line_ending_iter(mm.as_bytes(), &self.line_ending) {
-            Some(iter) => iter.collect(),
-            None => vec![(mm.as_bytes(), mm.as_bytes())],
-        };
 
         let user_span = span!(Color::DarkGray;"USER> ");
         // let Text { lines, .. } = text;
         // TODO HANDLE MULTI-LINE USER INPUT AAAA
-        for (trunc, orig) in lines {
+        for (trunc, orig) in line_ending_iter(mm.as_bytes(), &self.line_ending) {
             let mut line = match trunc.into_line_lossy(None, Style::new()) {
                 Ok(line) => line,
                 Err(_) => {
@@ -111,15 +109,10 @@ impl Buffer {
     pub fn append_rx_bytes(&mut self, bytes: &mut Vec<u8>) {
         let mut append_to_last = !self.last_line_completed;
 
-        let lines: Vec<_> = match line_ending_iter(bytes, &self.line_ending) {
-            Some(iter) => iter.collect(),
-            None => vec![(bytes, bytes)],
-        };
-
         // debug!("{lines:?}");
         // debug!("{:#?}", self.lines);
 
-        for (trunc, orig) in lines {
+        for (trunc, orig) in line_ending_iter(bytes, &self.line_ending) {
             if orig.is_empty() {
                 debug!("empty orig!");
                 continue;
@@ -161,10 +154,6 @@ impl Buffer {
                 //     assert!(line.spans.len() <= 1);
                 // }
 
-                // if is_line_styled(&line) {
-                //     debug!("is styled!");
-                //     // line.style = Style::new().red().slow_blink();
-                // }
                 self.lines.push(BufLine::new_with_line(
                     line,
                     index,
@@ -179,61 +168,6 @@ impl Buffer {
             let expected_ending = self.line_ending.as_bytes();
             bytes.has_byte_suffix(expected_ending)
         };
-
-        // let mut appending_to_last = !self.last_line_completed;
-        // self.strings.iter_mut().for_each(|s| {
-        // });
-
-        // split_inclusive() or split()?
-
-        // for line in converted.split(&self.line_ending) {
-        //     // Removing messy-to-render characters, but they should be preserved in the raw_buffer for those who need to see them
-
-        //     // TODO Replace tab with multiple spaces? (As \t causes smearing with ratatui currently.)
-        //     let mut s = line.replace(&['\t', '\n', '\r'][..], "");
-
-        //     // TODO ansi_to_tui lines??
-        //     // Make sure to reuse raw buffer for when appending to a line
-        //     // but might need to do line ending splits pre-string-conversion..?
-
-        //     // TODO Filter out ASCII control characters (like terminal bell)?
-        //     s.retain(|c| !c.is_control() && !c.is_ascii_control());
-
-        //     // TODO UTF-8 multi byte preservation between \n's?
-        //     // Since if I am getting only one byte per second or read, then `String::from_utf8_lossy` could fail extra for no reason.
-
-        //     if appending_to_last {
-        //         let line = self.lines.last_mut().expect("Promised line to append to");
-        //         line.value.push_str(&s);
-        //         line.redetermine_color();
-        //         line.update_line_count(
-        //             self.last_terminal_size.width,
-        //             self.state.timestamps_visible,
-        //         );
-        //         appending_to_last = false;
-        //     } else {
-        //         self.lines.push(BufLine::new(
-        //             s,
-        //             self.raw_buffer.len().saturating_sub(1),
-        //             self.last_terminal_size.width,
-        //             self.state.timestamps_visible,
-        //         ));
-        //         // self.lines.push(Line::raw(line.to_owned()));
-        //     }
-        // }
-
-        // if let Some(line) = self.lines.last() {
-        //     self.last_line_finished = line.ends_with(LINE_ENDINGS[LINE_ENDINGS_DEFAULT]);
-        // }
-
-        // let _: Vec<_> = self
-        //     .strings
-        //     .iter()
-        //     .map(|s| {
-        //         debug!("{s:?}");
-        //         s
-        //     })
-        //     .collect();
     }
     /// Updates each BufLine's render height with the new terminal width, returning the sum total at the end
     pub fn update_wrapped_line_heights(&mut self) -> usize {
@@ -341,26 +275,8 @@ impl Buffer {
                 .map(|l| l.as_line(self.state.timestamps_visible)),
             wrapped_scroll,
         )
-
-        //     .map(|s| {
-        //     if s.len() < 5 {
-        //         Line::raw(s)
-        //     } else {
-        //         // TODO See if theres a more efficient matching method with variable-length patterns
-        //         let slice = &s[..4];
-        //         let line = Line::raw(s);
-        //         match slice {
-        //             "Got m" => line.blue(),
-        //             "ID:0x" => line.green(),
-        //             "Chan." => line.dark_gray(),
-        //             "Mode:" => line.yellow(),
-        //             "Power" => line.red(),
-        //             _ => line,
-        //         }
-        //     }
-        // })
-        //     // std::iter::once(Line::raw(""))
     }
+
     pub fn terminal_paragraph(&self) -> Paragraph<'_> {
         let (lines_iter, vert_scroll) = self.lines_iter();
         let lines: Vec<_> = lines_iter.collect();
@@ -474,36 +390,22 @@ impl Buffer {
 pub fn line_ending_iter<'a>(
     bytes: &'a [u8],
     line_ending: &'a str,
-) -> Option<impl Iterator<Item = (&'a [u8], &'a [u8])>> {
+) -> impl Iterator<Item = (&'a [u8], &'a [u8])> {
     assert!(!line_ending.is_empty(), "line_ending can't be empty");
     // TODO maybe do line ending splits at this level, so raw_buffer_index can be more accurate
     // https://docs.rs/memchr/latest/memchr/memmem/index.html
 
     let line_ending = line_ending.as_bytes();
 
-    let mut line_ending_pos_iter = memchr::memmem::find_iter(bytes, line_ending)
+    let line_ending_pos_iter = memchr::memmem::find_iter(bytes, line_ending)
         .map(|line_ending_index| (line_ending_index, false))
-        .chain(std::iter::once((bytes.len(), true)))
-        .peekable();
-
-    if let Some((_, is_final_entry)) = line_ending_pos_iter.peek() {
-        // No line endings were found, only iter item present is our extra chained "final item" indicator.
-        // TODO, maybe skip this check and allow returning the single full string slice?
-        if *is_final_entry {
-            return None;
-        }
-    } else {
-        unreachable!("Expected at least the final chained iter!");
-    }
+        .chain(std::iter::once((bytes.len(), true)));
 
     let mut last_index = 0;
 
     let slices_iter = line_ending_pos_iter.map(move |(line_ending_index, is_final_entry)| {
         if is_final_entry {
-            (
-                &bytes[last_index..bytes.len()],
-                &bytes[last_index..bytes.len()],
-            )
+            (&bytes[last_index..], &bytes[last_index..])
         } else {
             // Copy of `last_index` since we're about to modify it,
             // but we want to use the unmodified value.
@@ -518,61 +420,7 @@ pub fn line_ending_iter<'a>(
         }
     });
 
-    Some(slices_iter)
-
-    // for line_ending_pos in line_ending_pos_iter {
-    //     let line_ending_pos = line_ending_pos;
-    //     let is_complete_line = bytes[last_index..line_ending_pos + self.line_ending.len()]
-    //         .has_byte_suffix(self.line_ending.as_bytes());
-    //     let slice = &bytes[last_index..line_ending_pos];
-
-    //     append_to_self(slice, is_complete_line);
-
-    //     // debug!(
-    //     //     "[{last_index}..{line_ending_pos}]: {}",
-    //     //     string.escape_debug()
-    //     // );
-    //     last_index = line_ending_pos + self.line_ending.len();
-    // }
-
-    // return std::iter::once(bytes);
-
-    // let tab_spaces = " ".repeat(4);
-    // let mut appending_to_last = if is_user_input {
-    //     false
-    // } else {
-    //     !self.last_line_completed
-    // };
-
-    // let mut append_to_self = |slice, line_has_ending: bool| {
-    //     let string = String::from_utf8_lossy(slice)
-    //         .replace('\t', &tab_spaces)
-    //         .replace(&['\n', '\r'][..], "");
-
-    //     if appending_to_last {
-    //         self.lines
-    //             .last_mut()
-    //             .expect("was promised line to append to")
-    //             .append_bytes(slice);
-    //     } else {
-    //         let buf_line = BufLine::new(
-    //             string.as_bytes(),
-    //             0,
-    //             self.last_terminal_size.width,
-    //             self.state.timestamps_visible,
-    //         );
-    //         self.lines.push(buf_line);
-    //     }
-    //     if line_has_ending {
-    //         appending_to_last = false;
-    //     }
-    // };
-
-    // // In the case of an empty iterator where it found no line endings
-    // // && !bytes.is_empty()
-    // if last_index == 0 {
-    //     append_to_self(bytes, false);
-    // }
+    slices_iter
 }
 
 // pub fn colored_line<'a, L: Into<Line<'a>>>(text: L) -> Line<'a> {
