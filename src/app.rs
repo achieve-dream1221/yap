@@ -36,6 +36,7 @@ use crate::{
     serial::{
         PortSettings, PrintablePortInfo, Reconnections, SerialEvent, SerialHandle, MOCK_PORT_NAME,
     },
+    settings::Settings,
     traits::LastIndex,
     tui::{
         buffer::Buffer,
@@ -179,12 +180,51 @@ pub struct App {
     // buffer_rendered_lines: usize,
     repeating_line_flip: bool,
     failed_send_at: Option<Instant>,
+
+    settings: Settings,
 }
 
 impl App {
     pub fn new(tx: Sender<Event>, rx: Receiver<Event>) -> Self {
+        let exe_path = std::env::current_exe().unwrap();
+        let config_path = exe_path.with_extension("toml");
+
+        let settings = match Settings::load(&config_path, false) {
+            Ok(settings) => settings,
+            // Err(RedefaulterError::TomlDe(e)) => {
+            //     error!("Settings load failed: {e}");
+            //     // TODO move human_span formatting into thiserror fmt attr?
+            //     let err_str = e.to_string();
+            //     // Only grabbing the top line since it has the human-readable line and column information
+            //     // (the error's span method is in *bytes*, not lines and columns)
+            //     let human_span = err_str.lines().next().unwrap_or("").to_owned();
+            //     let reason = e.message().to_owned();
+            //     let new_err = RedefaulterError::SettingsLoad { human_span, reason };
+
+            //     settings_load_failed_popup(new_err, lock_file);
+            // }
+            Err(e) => {
+                error!("Settings load failed: {e}");
+                panic!("Settings load failed: {e}");
+            }
+        };
+
+        let mut user_input = UserInput::default();
+
+        let saved_baud_rate = settings.behavior.last_port_settings.baud_rate;
+        let selected_baud_index = COMMON_BAUD
+            .iter()
+            .position(|b| *b == saved_baud_rate)
+            .unwrap_or_else(|| {
+                user_input.input_box = Input::new(saved_baud_rate.to_string());
+                COMMON_BAUD.last_index()
+            });
+
+        debug!("{settings:#?}");
+
         let (event_carousel, carousel_thread) = CarouselHandle::new();
-        let (serial_handle, serial_thread) = SerialHandle::new(tx.clone());
+        let (serial_handle, serial_thread) =
+            SerialHandle::new(tx.clone(), settings.behavior.last_port_settings.clone());
 
         let tick_tx = tx.clone();
         event_carousel.add_repeating(
@@ -214,7 +254,7 @@ impl App {
             tx,
             rx,
             table_state: TableState::new().with_selected(Some(0)),
-            single_line_state: SingleLineSelectorState::new().with_selected(COMMON_BAUD_DEFAULT),
+            single_line_state: SingleLineSelectorState::new().with_selected(selected_baud_index),
             ports: Vec::new(),
 
             carousel: event_carousel,
@@ -223,8 +263,8 @@ impl App {
             serial: serial_handle,
             serial_thread: Takeable::new(serial_thread),
             serial_healthy: false,
-            scratch_port_settings: PortSettings::default(),
-            user_input: UserInput::default(),
+            scratch_port_settings: settings.behavior.last_port_settings.clone(),
+            user_input,
 
             buffer: Buffer::new(&line_ending),
             // buffer_scroll: 0,
@@ -235,6 +275,7 @@ impl App {
             repeating_line_flip: false,
             failed_send_at: None,
             // failed_send_at: Instant::now(),
+            settings,
         }
     }
     fn is_running(&self) -> bool {
@@ -691,8 +732,9 @@ impl App {
                 _ = self.popup.take();
                 self.table_state.select(None);
 
+                self.settings.behavior.last_port_settings = self.scratch_port_settings.clone();
+                self.settings.save().unwrap();
                 self.buffer.line_ending = self.scratch_port_settings.line_ending.clone();
-
                 self.serial
                     .update_settings(self.scratch_port_settings.clone());
                 return;
@@ -713,6 +755,9 @@ impl App {
                         };
 
                     self.scratch_port_settings.baud_rate = baud_rate;
+
+                    self.settings.behavior.last_port_settings = self.scratch_port_settings.clone();
+                    self.settings.save().unwrap();
 
                     self.serial
                         .connect(&info, self.scratch_port_settings.clone());

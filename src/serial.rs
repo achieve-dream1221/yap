@@ -9,6 +9,8 @@ use std::{
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use serde::{Deserialize, Serializer};
+use serde_inline_default::serde_inline_default;
 use serialport::{
     DataBits, FlowControl, Parity, SerialPort, SerialPortInfo, SerialPortType, StopBits,
 };
@@ -16,7 +18,12 @@ use struct_table::StructTable;
 use tracing::{debug, error, info, warn};
 use virtual_serialport::VirtualPort;
 
-use crate::app::{Event, Tick, COMMON_BAUD, DEFAULT_BAUD};
+use crate::{
+    app::{Event, Tick, COMMON_BAUD, DEFAULT_BAUD},
+    settings::ser::{
+        deserialize_from_u8, deserialize_line_ending, serialize_as_u8, serialize_line_ending,
+    },
+};
 
 #[cfg(feature = "espflash")]
 use espflash::connection::reset::ResetStrategy;
@@ -42,33 +49,54 @@ impl From<SerialEvent> for Event {
     }
 }
 
+#[serde_inline_default]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, StructTable)]
 pub struct PortSettings {
     /// The baud rate in symbols-per-second.
     // #[table(values = COMMON_BAUD)]
     #[table(skip)]
+    #[serde_inline_default(DEFAULT_BAUD)]
     pub baud_rate: u32,
     /// Number of bits per character.
     #[table(values = [DataBits::Five, DataBits::Six, DataBits::Seven, DataBits::Eight])]
+    #[serde_inline_default(DataBits::Eight)]
+    #[serde(
+        serialize_with = "serialize_as_u8",
+        deserialize_with = "deserialize_from_u8"
+    )]
     pub data_bits: DataBits,
     /// Flow control modes.
     #[table(values = [FlowControl::None, FlowControl::Software, FlowControl::Hardware])]
+    #[serde_inline_default(FlowControl::None)]
     pub flow_control: FlowControl,
     /// Parity bit modes.
     #[table(values = [Parity::None, Parity::Odd, Parity::Even])]
+    #[serde_inline_default(Parity::None)]
     pub parity_bits: Parity,
     /// Number of stop bits.
     #[table(values = [StopBits::One, StopBits::Two])]
+    #[serde_inline_default(StopBits::One)]
+    #[serde(
+        serialize_with = "serialize_as_u8",
+        deserialize_with = "deserialize_from_u8"
+    )]
     pub stop_bits: StopBits,
+    /// Line endings for RX and TX.
     #[table(display = ["None", "\\n", "\\r", "\\r\\n"])]
     #[table(values = ["", "\n", "\r", "\r\n"])]
-    /// Line endings for RX and TX.
+    #[serde(
+        serialize_with = "serialize_line_ending",
+        deserialize_with = "deserialize_line_ending"
+    )]
+    #[serde_inline_default(String::from("\n"))]
     pub line_ending: String,
-    /// Assert DTR to this state on port (re)connect.
+    /// Assert DTR to this state on port connect (and reconnect).
     #[table(rename = "DTR on open")]
+    #[serde_inline_default(true)]
     pub dtr_on_open: bool,
     /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB/COM device.
     #[table(values = [Reconnections::Disabled, Reconnections::StrictChecks, Reconnections::LooseChecks])]
+    #[serde_inline_default(Reconnections::LooseChecks)]
     pub reconnections: Reconnections,
 }
 
@@ -283,11 +311,8 @@ impl PrintablePortInfo for SerialPortInfo {
 }
 
 impl SerialHandle {
-    pub fn new(event_tx: Sender<Event>) -> (Self, JoinHandle<()>) {
+    pub fn new(event_tx: Sender<Event>, port_settings: PortSettings) -> (Self, JoinHandle<()>) {
         let (command_tx, command_rx) = mpsc::channel();
-
-        // TODO fill this in with incoming settings loaded from disk
-        let port_settings = PortSettings::default();
 
         let port_status = Arc::new(ArcSwap::from_pointee(PortStatus::new_idle(&port_settings)));
 
@@ -410,6 +435,9 @@ impl PortHandle {
     fn is_none(&self) -> bool {
         matches!(self, PortHandle::None)
     }
+    fn is_some(&self) -> bool {
+        !self.is_none()
+    }
     fn is_borrowed(&self) -> bool {
         matches!(self, PortHandle::Borrowed)
     }
@@ -490,7 +518,7 @@ impl SerialWorker {
             // or have some kind of cooldown after a 0-size serial read
             // (maybe use port.bytes_to_read() ?)
             // not sure if the barrage is what's causing weird unix issues with the ESP32-S3, need to test further
-            let sleep_time = if self.port.is_owned() {
+            let sleep_time = if self.port.is_some() {
                 Duration::from_millis(10)
             } else {
                 Duration::from_millis(100)
