@@ -196,16 +196,6 @@ impl App {
             Duration::from_secs(1),
         );
 
-        let scroll_tick_tx = tx.clone();
-        event_carousel.add_repeating(
-            Box::new(move || {
-                scroll_tick_tx
-                    .send(Tick::Scroll.into())
-                    .map_err(|e| e.to_string())
-            }),
-            Duration::from_millis(250),
-        );
-
         let serial_signal_tick_handle = serial_handle.clone();
         event_carousel.add_repeating(
             Box::new(move || {
@@ -326,7 +316,19 @@ impl App {
                         self.serial.request_port_scan();
                     }
                 },
-                Event::Tick(Tick::Scroll) => self.popup_desc_scroll += 1,
+                Event::Tick(Tick::Scroll) => {
+                    self.popup_desc_scroll += 1;
+
+                    if let Some(Popup::PortSettings) = &self.popup {
+                        let tx = self.tx.clone();
+                        self.carousel.add_oneshot(
+                            Box::new(move || {
+                                tx.send(Tick::Scroll.into()).map_err(|e| e.to_string())
+                            }),
+                            Duration::from_millis(250),
+                        );
+                    }
+                }
                 Event::Tick(Tick::Requested) => {
                     debug!("Requested tick recieved.");
                     self.failed_send_at
@@ -439,6 +441,11 @@ impl App {
                     self.popup = Some(Popup::PortSettings);
                     self.popup_desc_scroll = -2;
                     self.table_state.select(Some(0));
+
+                    self.tx
+                        .send(Tick::Scroll.into())
+                        .map_err(|e| e.to_string())
+                        .unwrap();
                 }
                 // 't' | 'T' if ctrl_pressed => {
                 //     self.buffer_show_timestamp = !self.buffer_show_timestamp;
@@ -848,7 +855,7 @@ impl App {
                         }
                     }
                 };
-                debug!("scroll_x: {scroll_x}, offset_x: {offset_x}");
+                // debug!("scroll_x: {scroll_x}, offset_x: {offset_x}");
                 let para =
                     Paragraph::new(Span::styled(Cow::Borrowed(text), Style::new())).scroll((
                         0,

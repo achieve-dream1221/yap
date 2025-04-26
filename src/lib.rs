@@ -13,8 +13,9 @@ use ratatui::crossterm::{
 };
 
 use serialport::{SerialPortInfo, SerialPortType};
-use tracing::{error, info, level_filters::LevelFilter, Level};
+use tracing::{debug, error, info, level_filters::LevelFilter, Level};
 use tracing_appender::non_blocking::WorkerGuard;
+use tui::buffer::line_ending_iter;
 
 mod app;
 mod buffer;
@@ -30,6 +31,24 @@ mod tui;
 pub fn run() -> color_eyre::Result<()> {
     initialize_panic_handler()?;
     let _log_guard = initialize_logging(Level::TRACE)?;
+
+    // let meow1 = b"1111\r\n22\r\n3333\n";
+    // for meow in line_ending_iter(meow1, "\r\n").unwrap() {
+    //     info!("MEOW: {meow:?}");
+    // }
+
+    // use ansi_to_tui::IntoText;
+    // // let bytes = b"\x1b[38;2;225;192;203mAAAAA\x1b[0m".to_owned().to_vec();
+    // let bytes = [
+    //     27, 91, 48, 59, 51, 54, 109, 91, 68, 93, 91, 97, 112, 105, 46, 99, 111, 110, 110, 101, 99,
+    //     116, 105, 111, 110, 58, 56, 50, 55, 93, 58, 32, 72, 111, 109, 101, 32, 65, 115, 115, 105,
+    //     115, 116, 97, 110, 116, 32, 50, 48, 50, 53, 46, 51, 46, 52, 32, 40, 49, 57, 50, 46, 49, 54,
+    //     56, 46, 56, 54, 46, 54, 41, 58, 32, 67, 111, 110, 110, 101, 99, 116, 101, 100, 32, 115,
+    //     117, 99, 99, 101, 115, 115, 102, 117, 108, 108, 121, 27, 91, 48, 109, 13,
+    // ];
+    // let text = bytes.into_text().unwrap();
+    // debug!("{text:#?}");
+
     let result = run_inner();
     if let Err(e) = &result {
         error!("Fatal error: {e}");
@@ -38,6 +57,8 @@ pub fn run() -> color_eyre::Result<()> {
     ratatui::restore();
     crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
     result
+    // std::thread::sleep(std::time::Duration::from_millis(500));
+    // Ok(())
 }
 
 fn run_inner() -> color_eyre::Result<()> {

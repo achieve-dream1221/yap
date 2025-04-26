@@ -102,10 +102,7 @@ impl StatefulWidget for SingleLineSelector<'_> {
 
         // debug!("{max_chars}");
 
-        let borrowed_line = source_line.iter().map(|i| match &i.content {
-            Cow::Owned(owned) => Cow::Borrowed(owned.as_str()),
-            Cow::Borrowed(borrowed) => Cow::Borrowed(*borrowed),
-        });
+        let borrowed_line = source_line.iter().map(|i| i.content.as_ref());
 
         // ugly but works for the moment
         let line = {
