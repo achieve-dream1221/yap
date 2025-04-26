@@ -366,23 +366,33 @@ impl App {
         // let at_port_selection = matches!(self.menu, Menu::PortSelection);
         // TODO soon, redo this variable's name + use
         let mut at_port_selection = false;
+        let mut at_terminal = false;
         // Filter for when we decide to handle user *text input*.
         match self.menu {
             Menu::Terminal(TerminalPrompt::None) => {
-                match self
-                    .user_input
-                    .input_box
-                    .handle_event(&ratatui::crossterm::event::Event::Key(key))
-                {
-                    // If we changed something in the value when handling the key event,
-                    // we should clear the user_history selection.
-                    Some(StateChanged {
-                        value,
-                        cursor: _cursor,
-                    }) if value => {
-                        self.user_input.history.clear_selection();
-                    }
-                    _ => (),
+                at_terminal = true;
+                match key.code {
+                    // Consuming Ctrl+A so input_box.handle_event doesn't move my cursor.
+                    KeyCode::Char('a') if ctrl_pressed => (),
+                    KeyCode::Delete | KeyCode::Backspace if self.user_input.all_text_selected => (),
+
+                    _ => match self
+                        .user_input
+                        .input_box
+                        .handle_event(&ratatui::crossterm::event::Event::Key(key))
+                    {
+                        // If we changed something in the value when handling the key event,
+                        // we should clear the user_history selection.
+                        Some(StateChanged { value: true, .. }) => {
+                            self.user_input.history.clear_selection();
+                            self.user_input.all_text_selected = false;
+                        }
+
+                        Some(StateChanged { cursor: true, .. }) => {
+                            self.user_input.all_text_selected = false;
+                        }
+                        _ => (),
+                    },
                 }
             }
             Menu::Terminal(TerminalPrompt::DisconnectPrompt) => (),
@@ -409,6 +419,13 @@ impl App {
                     }
                     _ => self.shutdown(),
                 },
+                'a' | 'A'
+                    if ctrl_pressed
+                        && at_terminal
+                        && !self.user_input.input_box.value().is_empty() =>
+                {
+                    self.user_input.all_text_selected = true;
+                }
                 'w' | 'W' if ctrl_pressed => {
                     self.buffer.state.text_wrapping = !self.buffer.state.text_wrapping;
                     self.buffer.scroll_by(0);
@@ -460,7 +477,9 @@ impl App {
             // TODO Ctrl+A -> Backspace | Delete to clear input buffer
             KeyCode::PageUp if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MAX),
             KeyCode::PageDown if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MIN),
-            KeyCode::Delete | KeyCode::Backspace if ctrl_pressed && shift_pressed => {
+            KeyCode::Delete | KeyCode::Backspace
+                if (ctrl_pressed && shift_pressed) || self.user_input.all_text_selected =>
+            {
                 self.user_input.reset();
             }
             KeyCode::PageUp => self.buffer.scroll_page_up(),
@@ -501,6 +520,7 @@ impl App {
         }
     }
     fn up_pressed(&mut self) {
+        self.user_input.all_text_selected = false;
         match self.popup {
             None => (),
             Some(Popup::PortSettings) => {
@@ -528,6 +548,7 @@ impl App {
         self.post_menu_scroll(true);
     }
     fn down_pressed(&mut self) {
+        self.user_input.all_text_selected = false;
         match self.popup {
             None => (),
             Some(Popup::PortSettings) => {
@@ -1032,13 +1053,19 @@ impl App {
             frame.render_widget(signals_line, line_area.offset(Offset { x: 3, y: 0 }));
         }
 
-        let input_style = match &self.failed_send_at {
-            Some(instant) if instant.elapsed() < FAILED_SEND_VISUAL_TIME => Style::new().on_red(),
+        let input_style = match (&self.failed_send_at, self.user_input.all_text_selected) {
+            (Some(instant), _) if instant.elapsed() < FAILED_SEND_VISUAL_TIME => {
+                Style::new().on_red()
+            }
+            (Some(instant), true) if instant.elapsed() < FAILED_SEND_VISUAL_TIME => {
+                Style::new().reversed().on_red()
+            }
+            (_, true) => Style::new().reversed(),
             _ => Style::new(),
         };
 
         let input_symbol = Span::raw(">").style(if self.serial_healthy {
-            input_style.green()
+            input_style.not_reversed().green()
         } else {
             input_style.red()
         });
@@ -1059,7 +1086,7 @@ impl App {
                 .scroll((0, scroll as u16))
                 .style(input_style);
             frame.render_widget(input_text, input_area);
-            if !disconnect_prompt_shown {
+            if !disconnect_prompt_shown && self.popup.is_none() {
                 frame.set_cursor_position((
                     // Put cursor past the end of the input text
                     input_area.x

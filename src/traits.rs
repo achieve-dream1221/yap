@@ -156,13 +156,14 @@ impl LineHelpers for Line<'_> {
     fn borrowed_spans_iter<'a>(&'a self) -> impl DoubleEndedIterator<Item = Span<'a>> {
         self.spans
             .iter()
-            .map(|s| Span::styled(Cow::Borrowed(s.content.as_ref()), self.style))
+            .map(|s| Span::styled(Cow::Borrowed(s.content.as_ref()), s.style))
     }
     fn new_borrowing<'a>(&'a self) -> Line<'a> {
         let mut line = Line::from_iter(self.borrowed_spans_iter());
         if self.alignment.is_some() {
             line.alignment = self.alignment;
         }
+        line.style = self.style;
         line
     }
 }

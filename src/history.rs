@@ -11,6 +11,7 @@ pub struct History {
 
 pub struct UserInput {
     pub input_box: Input,
+    pub all_text_selected: bool,
     pub preserved_input: Option<String>,
     pub history: History,
     pub clipboard: Clipboard,
@@ -20,6 +21,7 @@ impl Default for UserInput {
     fn default() -> Self {
         Self {
             input_box: Input::default(),
+            all_text_selected: false,
             preserved_input: None,
             history: History::new(),
             clipboard: Clipboard::new().unwrap(),
@@ -32,6 +34,7 @@ impl UserInput {
         self.input_box.reset();
         self.history.clear_selection();
         self.preserved_input = None;
+        self.all_text_selected = false;
     }
     pub fn scroll_history(&mut self, up: bool) {
         let entry = self.history.scroll(up);
