@@ -449,6 +449,7 @@ impl App {
                     KeyCode::Char('a') if ctrl_pressed => (),
                     KeyCode::Delete | KeyCode::Backspace if self.user_input.all_text_selected => (),
 
+                    // TODO move into UserInput impl?
                     _ if self.popup.is_none() => match self
                         .user_input
                         .input_box
@@ -457,7 +458,8 @@ impl App {
                         // If we changed something in the value when handling the key event,
                         // we should clear the user_history selection.
                         Some(StateChanged { value: true, .. }) => {
-                            self.user_input.history.clear_selection();
+                            self.user_input.clear_history_selection();
+                            self.user_input.search_result = None;
                             self.user_input.all_text_selected = false;
                         }
 
@@ -576,7 +578,7 @@ impl App {
             KeyCode::Delete | KeyCode::Backspace
                 if (ctrl_pressed && shift_pressed) || self.user_input.all_text_selected =>
             {
-                self.user_input.reset();
+                self.user_input.clear();
             }
             KeyCode::PageUp => self.buffer.scroll_page_up(),
             KeyCode::PageDown => self.buffer.scroll_page_down(),
@@ -588,10 +590,15 @@ impl App {
             KeyCode::Left => self.left_pressed(),
             KeyCode::Right => self.right_pressed(),
             KeyCode::Enter => self.enter_pressed(),
+            KeyCode::Tab if at_terminal && self.popup.is_none() => {
+                self.user_input.find_input_in_history();
+            }
+            // KeyCode::Tab => self.tab_pressed(),
             KeyCode::Esc => self.esc_pressed(),
             _ => (),
         }
     }
+    // fn tab_pressed(&mut self) {}
     fn esc_pressed(&mut self) {
         match self.popup {
             None => (),
@@ -965,7 +972,6 @@ impl App {
 
                     self.serial.connect(&info, self.scratch.port.clone());
 
-                    self.user_input.reset();
                     self.menu = Menu::Terminal(TerminalPrompt::None);
                 }
             }
@@ -984,8 +990,8 @@ impl App {
                             .send_str(user_input, self.buffer.line_ending.as_str());
                         self.buffer.append_user_text(user_input);
                         self.user_input.history.push(user_input);
-                        self.user_input.history.clear_selection();
-                        self.user_input.reset();
+
+                        self.user_input.clear();
                     } else {
                         self.serial.send_str(user_input, "");
                         todo!("not ready yet");
@@ -1025,7 +1031,7 @@ impl App {
 
                         self.buffer.clear();
                         // Clear the input box, but keep the user history!
-                        self.user_input.reset();
+                        self.user_input.clear();
 
                         self.menu = Menu::PortSelection(Pse::Ports);
                     }
