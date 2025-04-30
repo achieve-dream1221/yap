@@ -10,8 +10,10 @@ use tui_input::Input;
 use crate::tui::single_line_selector::SingleLineSelectorState;
 
 pub struct Macros {
-    pub macros: BTreeSet<Macro>,
+    pub inner: BTreeSet<Macro>,
     pub ui_state: MacrosPrompt,
+    // ["All Bytes", "All Strings", "All Macros", "OpenShock"]
+    //     Start here, at user's first category.  ^
     pub categories_selector: SingleLineSelectorState,
     pub input: Input,
     // // maybe just take from macros
@@ -30,9 +32,13 @@ pub enum MacrosPrompt {
 impl Macros {
     pub fn new() -> Self {
         Self {
-            macros: BTreeSet::from([
+            inner: BTreeSet::from([
                 Macro::new_string("Mrow!", "mrow", None),
                 Macro::new_string("Get Version", "version", None),
+                Macro::new_string("Factory Reset", "factoryreset", None),
+                Macro::new_string("Restart", "restart", None),
+                Macro::new_string("System Info", "sysinfo", None),
+                Macro::new_string("Keepalive Off", "keepalive false", None),
                 Macro::new_bytes("Backspace", "\x08".as_bytes().into(), None),
             ]),
             ui_state: MacrosPrompt::None,
@@ -42,13 +48,13 @@ impl Macros {
         }
     }
     pub fn is_empty(&self) -> bool {
-        self.macros.is_empty()
+        self.inner.is_empty()
     }
     pub fn len(&self) -> usize {
-        self.macros.len()
+        self.inner.len()
     }
     pub fn as_table(&self) -> Table<'_> {
-        let rows = self.macros.iter().map(|m| Row::new(vec![m.title.as_str()]));
+        let rows = self.inner.iter().map(|m| Row::new(vec![m.title.as_str()]));
         let widths = [Constraint::Fill(1), Constraint::Length(5)];
         let table = Table::new(rows, widths)
             .row_highlight_style(Style::new().reversed())
@@ -61,10 +67,10 @@ impl Macros {
 
 #[derive(Debug)]
 pub struct Macro {
-    title: String,
+    pub title: String,
     // category: String,
-    keybinding: Option<u8>,
-    content: MacroContent,
+    pub keybinding: Option<u8>,
+    pub content: MacroContent,
 }
 
 // Custom Eq+Ord impls to avoid checking `content` when sorting.
