@@ -25,7 +25,7 @@ pub fn serialize_line_ending<S>(input: &str, serializer: S) -> Result<S::Ok, S::
 where
     S: Serializer,
 {
-    let buffer = snailquote::escape(input);
+    let buffer = input.escape_default().to_string();
     serializer.serialize_str(&buffer)
 }
 
@@ -34,7 +34,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
-    match snailquote::unescape(&s) {
+    match unescaper::unescape(&s) {
         Ok(result) => Ok(result),
         Err(e) => Err(serde::de::Error::custom(format!(
             "Failed to unescape line ending string: {e}"

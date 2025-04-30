@@ -523,6 +523,7 @@ impl SerialWorker {
             } else {
                 Duration::from_millis(100)
             };
+            // TODO Fuzz testing with this + buffer
             match self.command_rx.recv_timeout(sleep_time) {
                 Ok(cmd) => match cmd {
                     // TODO: Catch failures to connect here instead of propogating to the whole task

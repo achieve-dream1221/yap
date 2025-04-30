@@ -21,6 +21,7 @@ mod app;
 mod buffer;
 mod event_carousel;
 mod history;
+mod macros;
 mod panic_handler;
 mod serial;
 mod settings;

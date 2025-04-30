@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use num_integer::Integer;
 use ratatui::{
     prelude::*,
     text::Line,
@@ -8,7 +9,7 @@ use ratatui::{
 use ratatui_macros::line;
 use tracing::debug;
 
-use crate::traits::LastIndex;
+use crate::traits::{LastIndex, LineHelpers};
 
 pub struct SingleLineSelector<'a> {
     items: Vec<Line<'a>>,
@@ -17,6 +18,7 @@ pub struct SingleLineSelector<'a> {
     next_style: Style,
     prev_symbol: Option<&'a str>,
     prev_style: Style,
+    space_padding: bool,
     // text_style: Style,
 }
 
@@ -56,11 +58,32 @@ impl<'a> SingleLineSelector<'a> {
             next_style: Style::new(),
             prev_symbol: None,
             prev_style: Style::new(),
+            space_padding: false,
             // text_style: Style::new(),
         }
     }
     pub fn items(&self) -> &Vec<Line<'_>> {
         &self.items
+    }
+    pub fn with_next_symbol(mut self, symbol: &'a str) -> Self {
+        self.next_symbol = Some(symbol);
+        self
+    }
+    pub fn with_next_style(mut self, style: Style) -> Self {
+        self.next_style = style;
+        self
+    }
+    pub fn with_prev_symbol(mut self, symbol: &'a str) -> Self {
+        self.prev_symbol = Some(symbol);
+        self
+    }
+    pub fn with_prev_style(mut self, style: Style) -> Self {
+        self.prev_style = style;
+        self
+    }
+    pub fn with_space_padding(mut self, space_padding: bool) -> Self {
+        self.space_padding = space_padding;
+        self
     }
 }
 
@@ -100,19 +123,24 @@ impl StatefulWidget for SingleLineSelector<'_> {
 
         let deficit = self.max_line_chars.saturating_sub(line_chars(source_line));
 
+        let (left, right) = deficit.div_rem(&2);
+
         // debug!("{max_chars}");
 
-        let borrowed_line = source_line.iter().map(|i| i.content.as_ref());
+        let borrowed_line = source_line.borrowed_spans_iter();
+
+        let space_iter = once(Span::raw(" ")).filter(|_| self.space_padding);
 
         // ugly but works for the moment
         let line = {
-            once(prev_span)
-                .chain(once(Span::raw(" ")))
-                // not a fan of the deep clone for owned cows
-                .chain(borrowed_line.map(Span::raw))
-                .chain(repeat(Span::raw(" ")).take(deficit))
-                .chain(once(Span::raw(" ")))
+            space_iter
+                .clone()
+                .chain(once(prev_span))
+                .chain(repeat(Span::raw(" ")).take(left.max(1)))
+                .chain(borrowed_line)
+                .chain(repeat(Span::raw(" ")).take(right.max(1)))
                 .chain(once(next_span))
+                .chain(space_iter)
         };
 
         let line = if state.active {
