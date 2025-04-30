@@ -7,6 +7,7 @@ use ratatui::{
 };
 use ratatui_macros::row;
 use strum::{VariantArray, VariantNames};
+use unicode_width::UnicodeWidthStr;
 
 pub struct Prompt {}
 
@@ -74,7 +75,7 @@ pub trait PromptTable: VariantNames + Into<u8> + TryFrom<u8> {
         state: &mut TableState,
     ) {
         let prompt = Self::prompt_table_block(text, border_style);
-        let min_width = text.chars().count() + 16; // For margin of 8 on either side
+        let min_width = text.width() + 16; // For margin of 8 on either side
         let min_height = Self::VARIANTS.len() + 2; // For block height
         let rect = Rect {
             height: min_height as u16,

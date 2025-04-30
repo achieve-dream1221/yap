@@ -205,19 +205,19 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
             match input {
                 ::struct_table::ArrowKey::Up if field_index == 0 => {
                     table_state.select(Some(final_field_index));
-                    return Ok(self_changed);
+                    return Ok((self_changed, true, false));
                 },
                 ::struct_table::ArrowKey::Up => {
                     table_state.scroll_up_by(1);
-                    return Ok(self_changed);
+                    return Ok((self_changed, false, false));
                 },
                 ::struct_table::ArrowKey::Down if field_index >= final_field_index => {
                     table_state.select(Some(0));
-                    return Ok(self_changed);
+                    return Ok((self_changed, false, true));
                 },
                 ::struct_table::ArrowKey::Down => {
                     table_state.scroll_down_by(1);
-                    return Ok(self_changed);
+                    return Ok((self_changed, false, false));
                 },
                 _ => (),
             }
@@ -227,17 +227,19 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
         quote! {
             match input {
                 ::struct_table::ArrowKey::Up => {
+                    let would_wrap_up = table_state.selected().map(|s| s == 0).unwrap_or(true);
                     table_state.scroll_up_by(1);
-                    return Ok(self_changed);
+                    return Ok((self_changed, would_wrap_up, false));
                 },
                 ::struct_table::ArrowKey::Down => {
+                    let would_wrap_down = table_state.selected().map(|s| s == final_field_index).unwrap_or(true);
                     table_state.scroll_down_by(1);
                     if let Some(index) = table_state.selected() {
                         if index >= final_field_index {
                             table_state.select(Some(final_field_index));
                         }
                     }
-                    return Ok(self_changed);
+                    return Ok((self_changed, false, would_wrap_down));
                 },
                 _ => (),
             }
@@ -246,12 +248,12 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
 
     Ok(quote! {
         impl #impl_generics ::struct_table::StructTable for #ident #type_generics #where_cause {
-            fn handle_input(&mut self, input: ::struct_table::ArrowKey, table_state: &mut ::ratatui::widgets::TableState) -> ::core::result::Result<bool, ()> {
+            fn handle_input(&mut self, input: ::struct_table::ArrowKey, table_state: &mut ::ratatui::widgets::TableState) -> ::core::result::Result<(bool, bool, bool), ()> {
                 let mut self_changed = false;
                 let field_index = match table_state.selected() {
                     None => {
                         table_state.select(Some(0));
-                        return Ok(self_changed);
+                        return Ok((self_changed, false, false));
                     }
                     Some(index) => index,
                 };
@@ -275,7 +277,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                     _ => return Err(()),
                 }
 
-                Ok(self_changed)
+                Ok((self_changed, false, false))
             }
 
             fn as_table(&self, table_state: &mut ::ratatui::widgets::TableState) -> ::ratatui::widgets::Table<'_> {

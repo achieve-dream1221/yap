@@ -8,6 +8,7 @@ use ratatui::{
 };
 use ratatui_macros::line;
 use tracing::debug;
+use unicode_width::UnicodeWidthStr;
 
 use crate::traits::{LastIndex, LineHelpers};
 
@@ -47,7 +48,7 @@ impl<'a> SingleLineSelector<'a> {
         let max_line_chars: usize = items
             .iter()
             // Getting the sum of chars for each line
-            .map(line_chars)
+            .map(Line::width)
             // .flatten()
             .max()
             .unwrap_or_default();
@@ -117,13 +118,14 @@ impl StatefulWidget for SingleLineSelector<'_> {
             )
         };
 
-        // TODO do centering with this somehow
-        // currently its "left-aligned", which is *fine*
-        // but just looks ugly
+        // + 2 is to ensure deficit always spawns *some* padding
+        let deficit = (self.max_line_chars + 2).saturating_sub(source_line.width());
 
-        let deficit = self.max_line_chars.saturating_sub(line_chars(source_line));
+        let (padding, extra) = deficit.div_rem(&2);
 
-        let (left, right) = deficit.div_rem(&2);
+        // debug!("{deficit} / 2 = {padding}, {extra}");
+
+        let (left, right) = (padding, padding + extra);
 
         // debug!("{max_chars}");
 
@@ -207,10 +209,6 @@ impl SingleLineSelectorState {
     pub fn select(&mut self, new_index: usize) {
         self.current_index = new_index;
     }
-}
-
-fn line_chars(l: &Line<'_>) -> usize {
-    l.iter().map(|s| s.content.chars().count()).sum()
 }
 
 pub trait StateBottomed<T> {

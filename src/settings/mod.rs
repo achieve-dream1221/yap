@@ -8,10 +8,19 @@ use derivative::Derivative;
 use fs_err::{self as fs};
 use serde::{Deserialize, Serialize};
 use serde_inline_default::serde_inline_default;
+use struct_table::StructTable;
 use tracing::{info, level_filters::LevelFilter};
 
 // Copied a lot from my other project, redefaulter
 // https://github.com/nullstalgia/redefaulter/blob/ad81fad9468891b50daaac3215b0532386b6d1aa/src/settings/mod.rs
+
+// TODO Cleaner defaults.
+// What I have now works and is predictable,
+// but there's a lot of gross repetition.
+// Especially with needing both:
+// - #[serde_inline_default] for when a _field_ is missing,
+//   - Since #[serde(default)] gets the default for the field's _type_, and *not* the parent struct's `Default::default()` value for it
+// - #[derivative(Default)] for properly setting up `Default::default()` for when a _struct_ is missing.
 
 use crate::serial::PortSettings;
 
@@ -27,6 +36,8 @@ pub struct Settings {
     pub behavior: Behavior,
     #[serde(default)]
     pub misc: Misc,
+    #[serde(default)]
+    pub last_port_settings: PortSettings,
 }
 
 #[serde_inline_default]
@@ -39,11 +50,15 @@ pub struct Misc {
 }
 
 #[serde_inline_default]
-#[derive(Debug, Serialize, Deserialize, Derivative)]
+#[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
 #[derivative(Default)]
 pub struct Behavior {
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    pub fake_shell: bool,
+
     #[serde(default)]
-    pub last_port_settings: PortSettings,
+    pub retain_history: bool,
 }
 
 impl Settings {

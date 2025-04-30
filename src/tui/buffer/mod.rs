@@ -114,7 +114,7 @@ impl Buffer {
 
         for (trunc, orig) in line_ending_iter(bytes, &self.line_ending) {
             if orig.is_empty() {
-                debug!("empty orig!");
+                // debug!("empty orig!");
                 continue;
             }
 

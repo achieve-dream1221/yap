@@ -121,8 +121,7 @@ impl std::fmt::Display for Reconnections {
 impl Default for PortSettings {
     fn default() -> Self {
         Self {
-            // baud_rate: DEFAULT_BAUD,
-            baud_rate: 0,
+            baud_rate: DEFAULT_BAUD,
             data_bits: DataBits::Eight,
             flow_control: FlowControl::None,
             parity_bits: Parity::None,
@@ -1015,7 +1014,9 @@ impl SerialWorker {
                 }
                 // But always send the UI update tick if a DTR/RTS change requested it
                 if changed || force_share {
-                    self.event_tx.send(Tick::Requested.into()).unwrap();
+                    self.event_tx
+                        .send(Tick::Requested("Serial Signals").into())
+                        .unwrap();
                 }
             }
         }

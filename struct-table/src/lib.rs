@@ -23,10 +23,17 @@ impl std::fmt::Display for ArrowKey {
 }
 
 pub trait StructTable: ::core::marker::Sized + 'static {
-    /// Returns `true` if the input caused a change in the struct
+    /// Returns a tuple of bools in the order of:
+    /// - if the input caused a change in the struct
+    /// - if the input caused a scroll wrap from the top
+    /// - if the input caused a scroll wrap from the bottom
     ///
     /// Returns an `Err` if a change was attempted at an invalid field index (>= field amount).
-    fn handle_input(&mut self, input: ArrowKey, table_state: &mut TableState) -> Result<bool, ()>;
+    fn handle_input(
+        &mut self,
+        input: ArrowKey,
+        table_state: &mut TableState,
+    ) -> Result<(bool, bool, bool), ()>;
     fn as_table(&self, table_state: &mut TableState) -> Table<'_>;
     const DOCSTRINGS: &'static [&'static str];
 }
