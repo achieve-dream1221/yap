@@ -86,9 +86,19 @@ impl<'a> SingleLineSelector<'a> {
         self.space_padding = space_padding;
         self
     }
+    pub fn max_chars(&self) -> usize {
+        self.max_line_chars
+    }
+    pub fn size_hint(&mut self, new: usize) {
+        self.max_line_chars = self.max_line_chars.max(new);
+    }
+    pub fn with_size_hint(mut self, new: usize) -> Self {
+        self.max_line_chars = self.max_line_chars.max(new);
+        self
+    }
 }
 
-impl StatefulWidget for SingleLineSelector<'_> {
+impl StatefulWidget for &SingleLineSelector<'_> {
     type State = SingleLineSelectorState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {

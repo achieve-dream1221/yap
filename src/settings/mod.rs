@@ -55,10 +55,21 @@ pub struct Misc {
 pub struct Behavior {
     #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]
+    /// Use text box to type in before sending, with history. If disabled, sends keyboard inputs directly (TODO).
     pub fake_shell: bool,
 
     #[serde(default)]
+    /// Persist Fake Shell's command history across sessions (TODO).
     pub retain_history: bool,
+
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// Show user input in buffer after sending.
+    pub echo_user_text: bool,
+
+    #[serde(default)]
+    /// Show timestamps next to each incoming line.
+    pub timestamps: bool,
 }
 
 impl Settings {

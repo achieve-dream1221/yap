@@ -159,6 +159,12 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
         .into_iter()
         .map(|a| {
             let ident = &a.ident;
+            // Do nothing if we're just ignoring this value
+            if a.immutable {
+                return quote! {
+                    ();
+                };
+            }
             // Bools just always flip
             // (regardless of no_wrap, for now?)
             if a.is_bool {
@@ -295,7 +301,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                     #(
                     Row::new([
                         Text::raw(#field_human_names).right_aligned(),
-                        Text::raw(#field_string_values).centered(),
+                        Text::raw(#field_string_values).centered().italic(),
                     ])
                     ),*
                 ];
@@ -355,6 +361,7 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
                 no_wrap: no_inner_wrap,
                 rename,
                 skip,
+                immutable,
             } = deluxe::extract_attributes(field)?;
 
             if skip {
@@ -373,27 +380,28 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
             // Extra checks are added in const {} contexts to ensure correctness.
 
             // Verifying validity of values_to_cycle values
-            match (is_bool, &values) {
-                (false, None) => {
+            match (is_bool, &values, immutable) {
+                (false, None, false) => {
                     return Err(ident
                         .span()
                         .error("expected #[table(values = [])] with array of values")
                         .into());
                 }
-                (false, Some(ArrayOrConst::Array(values))) if values.elems.is_empty() => {
+                (false, Some(ArrayOrConst::Array(values)), _) if values.elems.is_empty() => {
                     return Err(ident
                         .span()
                         .error("table values array cannot be empty")
                         .into());
                 }
-                (true, Some(_)) => {
+                (true, Some(_), _) => {
                     return Err(ident
                         .span()
                         .error("bools can't have other cycled values")
                         .into());
                 }
-                (false, Some(_)) => (),
-                (true, _) => (),
+                (false, Some(_), _) => (),
+                (true, _, _) => (),
+                (_, _, _) => (),
             }
 
             // This is one check that I haven't thought of a way to reproduce
@@ -446,6 +454,7 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
                 is_bool,
                 no_inner_wrap,
                 rename,
+                immutable,
             };
             field_attrs.push(processed_field);
         }
@@ -525,6 +534,7 @@ struct StructField {
     is_bool: bool,
     no_inner_wrap: bool,
     rename: Option<String>,
+    immutable: bool,
 }
 
 #[derive(deluxe::ExtractAttributes)]
@@ -546,6 +556,9 @@ struct StructFieldAttributes {
     /// Don't use this field in the StructTable impls.
     #[deluxe(default)]
     skip: bool,
+    /// Don't allow changing this field with the StructTable methods
+    #[deluxe(default)]
+    immutable: bool,
 }
 
 #[derive(deluxe::ExtractAttributes)]

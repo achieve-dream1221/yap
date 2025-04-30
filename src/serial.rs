@@ -54,7 +54,7 @@ impl From<SerialEvent> for Event {
 pub struct PortSettings {
     /// The baud rate in symbols-per-second.
     // #[table(values = COMMON_BAUD)]
-    #[table(skip)]
+    #[table(immutable)]
     #[serde_inline_default(DEFAULT_BAUD)]
     pub baud_rate: u32,
     /// Number of bits per character.
@@ -91,10 +91,10 @@ pub struct PortSettings {
     #[serde_inline_default(String::from("\n"))]
     pub line_ending: String,
     /// Assert DTR to this state on port connect (and reconnect).
-    #[table(rename = "DTR on open")]
+    #[table(rename = "DTR on Connect")]
     #[serde_inline_default(true)]
-    pub dtr_on_open: bool,
-    /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB/COM device.
+    pub dtr_on_connect: bool,
+    /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB device/COM port.
     #[table(values = [Reconnections::Disabled, Reconnections::StrictChecks, Reconnections::LooseChecks])]
     #[serde_inline_default(Reconnections::LooseChecks)]
     pub reconnections: Reconnections,
@@ -127,7 +127,7 @@ impl Default for PortSettings {
             parity_bits: Parity::None,
             stop_bits: StopBits::One,
             line_ending: "\n".into(),
-            dtr_on_open: true,
+            dtr_on_connect: true,
             reconnections: Reconnections::LooseChecks,
         }
     }
@@ -175,7 +175,7 @@ impl PortStatus {
     fn new_idle(settings: &PortSettings) -> Self {
         Self {
             signals: SerialSignals {
-                dtr: settings.dtr_on_open,
+                dtr: settings.dtr_on_connect,
                 ..Default::default()
             },
             ..Default::default()
@@ -194,7 +194,7 @@ impl PortStatus {
             healthy: false,
             current_port: None,
             signals: SerialSignals {
-                dtr: settings.dtr_on_open,
+                dtr: settings.dtr_on_connect,
                 ..Default::default()
             },
             ..self

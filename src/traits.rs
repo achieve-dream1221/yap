@@ -99,7 +99,7 @@ impl FirstChars for str {
     }
 }
 
-pub trait LineHelpers {
+pub trait LineHelpers<'a> {
     /// Removes all tabs, carriage returns, newlines, and control characters from all spans in the line.
     ///
     /// Any changed spans become owned if they weren't already. Unchanged spans are untouched. (Subject to change.)
@@ -110,13 +110,15 @@ pub trait LineHelpers {
     fn is_empty(&self) -> bool;
     /// Iterates through all Spans and sets the given style to all.
     fn style_all_spans(&mut self, new_style: Style);
+    /// Consumes the `Line` and returns a new one with all `Span`'s styles set to the specified style.
+    fn all_spans_styled(self, new_style: Style) -> Line<'a>;
     /// Returns an owned `Line` that borrows from the current line's spans.
-    fn new_borrowing<'a>(&'a self) -> Line<'a>;
+    fn new_borrowing(&'a self) -> Line<'a>;
     /// Generates an iterator that creates owned `Span` objects whose content borrows from the original line's spans..
-    fn borrowed_spans_iter<'a>(&'a self) -> impl DoubleEndedIterator<Item = Span<'a>>;
+    fn borrowed_spans_iter(&'a self) -> impl DoubleEndedIterator<Item = Span<'a>>;
 }
 
-impl LineHelpers for Line<'_> {
+impl<'a> LineHelpers<'a> for Line<'a> {
     fn remove_unsavory_chars(&mut self) {
         self.spans.iter_mut().for_each(|s| {
             let mut new_string = s.content.replace(&['\t', '\n', '\r'][..], "");
@@ -153,17 +155,21 @@ impl LineHelpers for Line<'_> {
             span.style = new_style;
         }
     }
-    fn borrowed_spans_iter<'a>(&'a self) -> impl DoubleEndedIterator<Item = Span<'a>> {
+    fn borrowed_spans_iter(&'a self) -> impl DoubleEndedIterator<Item = Span<'a>> {
         self.spans
             .iter()
             .map(|s| Span::styled(Cow::Borrowed(s.content.as_ref()), s.style))
     }
-    fn new_borrowing<'a>(&'a self) -> Line<'a> {
+    fn new_borrowing(&self) -> Line<'_> {
         let mut line = Line::from_iter(self.borrowed_spans_iter());
         if self.alignment.is_some() {
             line.alignment = self.alignment;
         }
         line.style = self.style;
         line
+    }
+    fn all_spans_styled(mut self, new_style: Style) -> Line<'a> {
+        self.style_all_spans(new_style);
+        self
     }
 }

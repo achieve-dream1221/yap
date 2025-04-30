@@ -26,7 +26,7 @@ mod wrap;
 pub struct BufferState {
     pub text_wrapping: bool,
     // TODO maybe make this private and provide a function that auto-runs the render length and scroll..?
-    pub timestamps_visible: bool,
+    timestamps_visible: bool,
 
     vert_scroll: usize,
     scrollbar_state: ScrollbarState,
@@ -378,6 +378,13 @@ impl Buffer {
     // pub fn line_ending(&self) -> &str {
     //     &self.line_ending
     // }
+
+    pub fn show_timestamps(&mut self, visible: bool) -> usize {
+        self.state.timestamps_visible = visible;
+        let count = self.update_wrapped_line_heights();
+        self.scroll_by(0);
+        count
+    }
 }
 
 // TODO make tests for this idiot thing
