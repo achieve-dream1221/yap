@@ -177,6 +177,7 @@ pub struct App {
     popup_desc_scroll: i32,
     popup_table_state: TableState,
     popup_single_line_state: SingleLineSelectorState,
+    popup_scrollbar_state: ScrollbarState,
 
     // notification: Option<Notification>,
     ports: Vec<SerialPortInfo>,
@@ -275,6 +276,7 @@ impl App {
             menu: Menu::PortSelection(PortSelectionElement::Ports),
             popup: None,
             popup_desc_scroll: -2,
+            popup_scrollbar_state: ScrollbarState::default(),
             tx,
             rx,
             table_state: TableState::new().with_selected(Some(0)),
@@ -494,8 +496,7 @@ impl App {
                 'c' | 'C' if ctrl_pressed => match self.menu {
                     Menu::Terminal(TerminalPrompt::DisconnectPrompt) => self.shutdown(),
                     Menu::Terminal(TerminalPrompt::None) => {
-                        _ = self.popup.take();
-                        self.popup_table_state.select(None);
+                        self.dismiss_popup();
                         self.menu = TerminalPrompt::DisconnectPrompt.into();
                     }
                     _ => self.shutdown(),
@@ -538,8 +539,13 @@ impl App {
                 }
                 'm' | 'M' if ctrl_pressed => {
                     self.popup = Some(PopupMenu::Macros);
-                    self.popup_table_state.select(Some(0));
-                    self.popup_single_line_state.active = false;
+                    if self.macros.is_empty() {
+                        self.popup_table_state.select(None);
+                        self.popup_single_line_state.active = true;
+                    } else {
+                        self.popup_table_state.select(Some(0));
+                        self.popup_single_line_state.active = false;
+                    }
                     self.tx
                         .send(Tick::Scroll.into())
                         .map_err(|e| e.to_string())
@@ -611,28 +617,20 @@ impl App {
         match self.popup {
             None => (),
             Some(PopupMenu::BehaviorSettings) => {
-                _ = self.popup.take();
-                self.popup_table_state.select(None);
-
-                self.refresh_scratch();
+                self.dismiss_popup();
                 return;
             }
             Some(PopupMenu::PortSettings) => {
-                _ = self.popup.take();
-                self.popup_table_state.select(None);
-
-                self.refresh_scratch();
+                self.dismiss_popup();
                 return;
             }
             Some(PopupMenu::Macros) => match &self.macros.ui_state {
                 MacrosPrompt::None => {
-                    _ = self.popup.take();
-                    self.popup_table_state.select(None);
+                    self.dismiss_popup();
                     return;
                 }
                 _ => {
                     self.popup.replace(PopupMenu::Macros);
-                    self.popup_table_state.select_first();
                 }
             },
         }
@@ -653,6 +651,7 @@ impl App {
     }
     fn up_pressed(&mut self) {
         self.user_input.all_text_selected = false;
+        self.popup_desc_scroll = -2;
         match &self.popup {
             None => (),
             Some(popup) if self.popup_single_line_state.active => {
@@ -664,7 +663,6 @@ impl App {
                 self.popup_table_state.select_last();
             }
             Some(PopupMenu::PortSettings) => {
-                self.popup_desc_scroll = -2;
                 match self
                     .scratch
                     .port
@@ -678,8 +676,11 @@ impl App {
                     (_, _, _) => (),
                 }
             }
+            Some(PopupMenu::Macros) if self.macros.categories_selector.active => {
+                self.popup_single_line_state.active = true;
+                self.macros.categories_selector.active = false;
+            }
             Some(PopupMenu::BehaviorSettings) => {
-                self.popup_desc_scroll = -2;
                 match self
                     .scratch
                     .behavior
@@ -695,11 +696,10 @@ impl App {
             }
             Some(PopupMenu::Macros) if self.popup_table_state.selected() == Some(0) => {
                 self.popup_table_state.select(None);
-                self.popup_single_line_state.active = true;
+                self.macros.categories_selector.active = true;
             }
             Some(PopupMenu::Macros) => match &self.macros.ui_state {
                 MacrosPrompt::None => {
-                    self.popup_desc_scroll = -2;
                     self.scroll_menu_up();
                 }
                 _ => (),
@@ -726,11 +726,20 @@ impl App {
         self.user_input.all_text_selected = false;
         match &self.popup {
             None => (),
-            Some(popup) if self.popup_single_line_state.active => {
+            Some(popup) if self.macros.categories_selector.active => {
                 match popup {
                     PopupMenu::Macros if self.macros.is_empty() => return,
                     _ => (),
                 }
+                self.macros.categories_selector.active = false;
+                self.popup_table_state.select_first();
+            }
+            Some(PopupMenu::Macros) if self.popup_single_line_state.active => {
+                self.popup_single_line_state.active = false;
+                self.macros.categories_selector.active = true;
+            }
+
+            Some(popup) if self.popup_single_line_state.active => {
                 self.popup_single_line_state.active = false;
                 self.popup_table_state.select_first();
             }
@@ -818,11 +827,8 @@ impl App {
     fn left_pressed(&mut self) {
         match &mut self.popup {
             None => (),
-            Some(ref mut popup) if self.popup_single_line_state.active => {
-                let mut donor = popup.prev();
-                std::mem::swap(popup, &mut donor);
-                self.refresh_scratch();
-                self.popup_desc_scroll = -2;
+            Some(_popup) if self.popup_single_line_state.active => {
+                self.scroll_popup(false);
             }
             Some(PopupMenu::PortSettings) => {
                 self.scratch
@@ -836,7 +842,9 @@ impl App {
                     .handle_input(ArrowKey::Left, &mut self.popup_table_state)
                     .unwrap();
             }
-            Some(PopupMenu::Macros) => {}
+            Some(PopupMenu::Macros) => {
+                self.macros.categories_selector.prev();
+            }
         }
         if self.popup.is_some() {
             return;
@@ -860,10 +868,7 @@ impl App {
         match &mut self.popup {
             None => (),
             Some(ref mut popup) if self.popup_single_line_state.active => {
-                let mut donor = popup.next();
-                std::mem::swap(popup, &mut donor);
-                self.refresh_scratch();
-                self.popup_desc_scroll = -2;
+                self.scroll_popup(true);
             }
             Some(PopupMenu::PortSettings) => {
                 self.scratch
@@ -878,7 +883,9 @@ impl App {
                     .handle_input(ArrowKey::Right, &mut self.popup_table_state)
                     .unwrap();
             }
-            Some(PopupMenu::Macros) => {}
+            Some(PopupMenu::Macros) => {
+                self.macros.categories_selector.next();
+            }
         }
         if self.popup.is_some() {
             return;
@@ -945,8 +952,7 @@ impl App {
         match self.popup {
             None => (),
             Some(PopupMenu::PortSettings) => {
-                _ = self.popup.take();
-                self.table_state.select(None);
+                self.dismiss_popup();
 
                 self.settings.last_port_settings = self.scratch.port.clone();
                 self.settings.save().unwrap();
@@ -955,8 +961,7 @@ impl App {
                 return;
             }
             Some(PopupMenu::BehaviorSettings) => {
-                _ = self.popup.take();
-                self.table_state.select(None);
+                self.dismiss_popup();
 
                 self.settings.behavior = self.scratch.behavior.clone();
                 self.buffer
@@ -978,25 +983,25 @@ impl App {
                 if ctrl_pressed || shift_pressed {
                     match &macro_binding.content {
                         MacroContent::Empty => (),
-                        MacroContent::Bytes(bytes) => {
+                        MacroContent::Bytes { content, preview } => {
                             todo!()
                         }
                         MacroContent::Text(text) => {
                             self.user_input.clear();
                             self.user_input.input_box = text.as_str().into();
-                            // TODO reconsider this repeating of take+select none.
-                            self.popup.take();
-                            self.table_state.select(None);
+                            self.dismiss_popup();
                             return;
                         }
                     }
                 } else {
                     match &macro_binding.content {
                         MacroContent::Empty => (),
-                        MacroContent::Bytes(bytes) => {
-                            self.serial
-                                .send_bytes(bytes.clone(), Some(self.buffer.line_ending.as_str()));
-                            debug!("Sending Macro Bytes: {:02X?}", bytes);
+                        MacroContent::Bytes { content, preview } => {
+                            self.serial.send_bytes(
+                                content.clone(),
+                                Some(self.buffer.line_ending.as_str()),
+                            );
+                            debug!("Sending Macro Bytes: {:02X?}", content);
                             // self.buffer.append_user_bytes(bytes);
                         }
                         MacroContent::Text(text) => {
@@ -1142,25 +1147,38 @@ impl App {
 
     fn render_popups(&mut self, frame: &mut Frame, area: Rect) {
         if let Some(popup) = &self.popup {
+            // todo fix this assert
+            // todo fix color on seperator line
             assert!(
-                self.popup_single_line_state.active != self.popup_table_state.selected().is_some(),
-                "Either a table element needs to be selected, or the menu title widget, but never both or neither."
+                (self.popup_single_line_state.active||self.macros.categories_selector.active)  != self.popup_table_state.selected().is_some(),
+                "Either a table element needs to be selected, or the menu title widget, but never both or neither. (Popup)"
+            );
+            // assert!(
+            //     self.macros.categories_selector.active != self.popup_table_state.selected().is_some(),
+            //     "Either a table element needs to be selected, or the menu title widget, but never both or neither. (Macro Category)"
+            // );
+            assert_eq!(
+                self.popup_single_line_state.active && self.macros.categories_selector.active,
+                false,
+                "Both selectors can't be active."
             );
             let area = centered_rect_size(
                 Size {
                     width: 36,
-                    height: 16,
+                    height: area.height.min(16),
                 },
                 area,
             );
             frame.render_widget(Clear, area);
 
-            let block = Block::bordered();
+            let block = Block::bordered().border_style(Style::new().cyan());
 
             frame.render_widget(&block, area);
 
-            let selector =
-                SingleLineSelector::new(<PopupMenu as VariantNames>::VARIANTS.iter().map(|v| *v))
+            // let title_lines = ;
+
+            let popup_menu_title_selector =
+                SingleLineSelector::new(<PopupMenu as VariantNames>::VARIANTS.iter().map(|s| *s))
                     .with_next_symbol(">")
                     .with_prev_symbol("<")
                     .with_space_padding(true);
@@ -1183,9 +1201,19 @@ impl App {
                     .position(|v| v == popup)
                     .unwrap(),
             );
-            frame.render_stateful_widget(&selector, title, &mut self.popup_single_line_state);
+            frame.render_stateful_widget(
+                &popup_menu_title_selector,
+                title,
+                &mut self.popup_single_line_state,
+            );
 
             let area = block.inner(area);
+
+            let settings_area = {
+                let mut area = area.clone();
+                area.height = area.height.saturating_sub(2);
+                area
+            };
 
             let hint_text_area = {
                 let mut area = area.clone();
@@ -1206,13 +1234,43 @@ impl App {
                 area.height = 1;
                 area
             };
-            frame.render_widget(Block::new().borders(Borders::TOP), line_area);
+
+            let macros_table_area = {
+                let mut area = area.clone();
+                area.height = area.height.saturating_sub(4);
+                area.y = area.y.saturating_add(2);
+                area
+            };
+
+            frame.render_widget(
+                Block::new()
+                    .borders(Borders::TOP)
+                    .border_style(Style::new().cyan()),
+                line_area,
+            );
+
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .style(Style::new().reset())
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+
+            let content_length = match popup {
+                PopupMenu::Macros => self.macros.len(),
+                // TODO find more clear way than checking this length
+                PopupMenu::PortSettings => PortSettings::DOCSTRINGS.len(),
+                PopupMenu::BehaviorSettings => Behavior::DOCSTRINGS.len(),
+            };
+
+            let height = match popup {
+                PopupMenu::Macros => macros_table_area.height,
+                PopupMenu::PortSettings | PopupMenu::BehaviorSettings => settings_area.height,
+            };
 
             match popup {
                 PopupMenu::PortSettings => {
                     frame.render_stateful_widget(
                         self.scratch.port.as_table(&mut self.popup_table_state),
-                        area,
+                        settings_area,
                         &mut self.popup_table_state,
                     );
 
@@ -1237,7 +1295,7 @@ impl App {
                 PopupMenu::BehaviorSettings => {
                     frame.render_stateful_widget(
                         self.scratch.behavior.as_table(&mut self.popup_table_state),
-                        area,
+                        settings_area,
                         &mut self.popup_table_state,
                     );
                     let text: &str = self
@@ -1272,27 +1330,27 @@ impl App {
                         area.height = 1;
                         area
                     };
-                    frame.render_widget(Block::new().borders(Borders::TOP), new_seperator);
+                    frame.render_widget(
+                        Block::new()
+                            .borders(Borders::TOP)
+                            .border_style(Style::new().cyan()),
+                        new_seperator,
+                    );
                     // frame.render_widget(
                     //     Line::raw(" <     All Macros    > ").centered(),
                     //     categories_area,
                     // );
                     let categories =
-                        SingleLineSelector::new(["All Macros", "All Strings", "All Bytes"])
+                        SingleLineSelector::new(["All Bytes", "All Strings", "All Macros"])
                             .with_next_symbol(">")
                             .with_prev_symbol("<")
-                            .with_size_hint(selector.max_chars());
+                            .with_size_hint(popup_menu_title_selector.max_chars());
                     frame.render_stateful_widget(
                         &categories,
                         categories_area,
                         &mut self.macros.categories_selector,
                     );
-                    let macros_table_area = {
-                        let mut area = area.clone();
-                        area.height = area.height.saturating_sub(4);
-                        area.y = area.y.saturating_add(2);
-                        area
-                    };
+
                     frame.render_stateful_widget(
                         self.macros.as_table(),
                         macros_table_area,
@@ -1305,15 +1363,17 @@ impl App {
                         //     .selected()
                         //     .map(|i| )
                         //     .unwrap_or(&"");
+
+                        let macro_binding = self.macros.inner.iter().nth(index).unwrap();
+                        let macro_preview = macro_binding.preview();
+                        let line = macro_preview.to_line().italic();
+                        // let line = if matches!(macro_binding.content, MacroContent::Bytes { .. }) {
+                        //     line.light_blue()
+                        // } else {
+                        //     line
+                        // };
                         render_scrolling_line(
-                            self.macros
-                                .inner
-                                .iter()
-                                .nth(index)
-                                .unwrap()
-                                .preview()
-                                .to_line()
-                                .italic(),
+                            line,
                             frame,
                             scrolling_text_area,
                             &mut self.popup_desc_scroll,
@@ -1343,6 +1403,24 @@ impl App {
                     // };
                 }
             }
+
+            // if render_scrollbar {
+            self.popup_scrollbar_state = self
+                .popup_scrollbar_state
+                .content_length(content_length.saturating_sub(height as usize));
+
+            self.popup_scrollbar_state = self
+                .popup_scrollbar_state
+                .position(self.popup_table_state.offset());
+            frame.render_stateful_widget(
+                scrollbar,
+                area.offset(Offset { x: 1, y: 0 }).inner(Margin {
+                    horizontal: 0,
+                    vertical: 1,
+                }),
+                &mut self.popup_scrollbar_state,
+            );
+            // }
         }
     }
 
@@ -1422,6 +1500,18 @@ impl App {
                 self.buffer.line_count()
             ))
             .right_aligned();
+            frame.render_widget(
+                line,
+                line_area.inner(Margin {
+                    horizontal: 3,
+                    vertical: 0,
+                }),
+            );
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            let line = Line::raw(format!("Lines: {}", self.buffer.lines.len())).right_aligned();
             frame.render_widget(
                 line,
                 line_area.inner(Margin {
@@ -1712,6 +1802,32 @@ impl App {
             behavior: self.settings.behavior.clone(),
             port: self.serial.port_settings.load().as_ref().clone(),
         }
+    }
+    fn dismiss_popup(&mut self) {
+        self.refresh_scratch();
+        self.popup.take();
+        self.macros.categories_selector.active = false;
+        self.popup_single_line_state.active = false;
+        self.popup_table_state.select(None);
+    }
+    fn scroll_popup(&mut self, next: bool) {
+        let Some(popup) = &mut self.popup else {
+            return;
+        };
+
+        let mut new_popup = if next { popup.next() } else { popup.prev() };
+        match &popup {
+            PopupMenu::Macros => self.macros.categories_selector.active = false,
+            _ => (),
+        };
+        // match &new_popup {
+
+        // };
+
+        std::mem::swap(popup, &mut new_popup);
+
+        self.refresh_scratch();
+        self.popup_desc_scroll = -2;
     }
 }
 

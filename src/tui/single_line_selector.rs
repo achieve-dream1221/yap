@@ -165,6 +165,9 @@ impl StatefulWidget for &SingleLineSelector<'_> {
         //     line = line.styl
         // }
 
+        let reset_line =
+            Line::from_iter(repeat(Span::raw(" ").reset()).take(line.width())).centered();
+        reset_line.render(area, buf);
         line.render(area, buf);
         // if state.content_length == 0 || self.track_length_excluding_arrow_heads(area) == 0 {
         //     return;
