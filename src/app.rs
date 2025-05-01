@@ -979,7 +979,7 @@ impl App {
                 let Some(index) = self.popup_table_state.selected() else {
                     unreachable!();
                 };
-                let macro_binding = self.macros.inner.iter().nth(index).unwrap();
+                let macro_binding = self.macros.category_filtered_macros().nth(index).unwrap();
                 if ctrl_pressed || shift_pressed {
                     match &macro_binding.content {
                         MacroContent::Empty => (),
@@ -1340,13 +1340,18 @@ impl App {
                     //     Line::raw(" <     All Macros    > ").centered(),
                     //     categories_area,
                     // );
-                    let categories =
-                        SingleLineSelector::new(["All Bytes", "All Strings", "All Macros"])
-                            .with_next_symbol(">")
-                            .with_prev_symbol("<")
-                            .with_size_hint(popup_menu_title_selector.max_chars());
+                    let categories_iter = ["All Bytes", "All Strings", "All Macros"]
+                        .iter()
+                        .map(|s| *s)
+                        .map(String::from)
+                        .map(Line::raw)
+                        .chain(self.macros.categories().map(String::from).map(Line::raw));
+                    let categories_selector = SingleLineSelector::new(categories_iter)
+                        .with_next_symbol(">")
+                        .with_prev_symbol("<")
+                        .with_size_hint(popup_menu_title_selector.max_chars());
                     frame.render_stateful_widget(
-                        &categories,
+                        &categories_selector,
                         categories_area,
                         &mut self.macros.categories_selector,
                     );
@@ -1364,7 +1369,8 @@ impl App {
                         //     .map(|i| )
                         //     .unwrap_or(&"");
 
-                        let macro_binding = self.macros.inner.iter().nth(index).unwrap();
+                        let macro_binding =
+                            self.macros.category_filtered_macros().nth(index).unwrap();
                         let macro_preview = macro_binding.preview();
                         let line = macro_preview.to_line().italic();
                         // let line = if matches!(macro_binding.content, MacroContent::Bytes { .. }) {
