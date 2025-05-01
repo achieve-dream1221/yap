@@ -70,6 +70,10 @@ pub struct Behavior {
     #[serde(default)]
     /// Show timestamps next to each incoming line.
     pub timestamps: bool,
+
+    #[serde(default)]
+    /// Wrap text longer than the screen.
+    pub wrap_text: bool,
 }
 
 impl Settings {

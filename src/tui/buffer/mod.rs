@@ -24,7 +24,7 @@ mod wrap;
 // use crate::app::{LINE_ENDINGS, LINE_ENDINGS_DEFAULT};
 
 pub struct BufferState {
-    pub text_wrapping: bool,
+    text_wrapping: bool,
     // TODO maybe make this private and provide a function that auto-runs the render length and scroll..?
     timestamps_visible: bool,
 
@@ -177,6 +177,10 @@ impl Buffer {
 
             total + new_height
         })
+    }
+    pub fn set_line_wrap(&mut self, wrap: bool) {
+        self.state.text_wrapping = wrap;
+        self.scroll_by(0);
     }
     pub fn lines_iter(&self) -> (impl Iterator<Item = Line>, u16) {
         // TODO styling based on line prefix

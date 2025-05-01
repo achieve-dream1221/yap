@@ -23,6 +23,7 @@ use crate::{
     settings::ser::{
         deserialize_from_u8, deserialize_line_ending, serialize_as_u8, serialize_line_ending,
     },
+    traits::ToggleBool,
 };
 
 #[cfg(feature = "espflash")]
@@ -616,10 +617,10 @@ impl SerialWorker {
                         let mut status: PortStatus = self.shared_status.load().as_ref().clone();
 
                         if dtr {
-                            status.signals.dtr = !status.signals.dtr;
+                            status.signals.dtr.flip();
                         }
                         if rts {
-                            status.signals.rts = !status.signals.rts;
+                            status.signals.rts.flip();
                         }
                         if let Some(port) = self.port.as_mut_port() {
                             // Sending both signals regardless of which one changed

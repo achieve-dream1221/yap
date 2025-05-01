@@ -39,7 +39,7 @@ use crate::{
         PortSettings, PrintablePortInfo, Reconnections, SerialEvent, SerialHandle, MOCK_PORT_NAME,
     },
     settings::{Behavior, Settings},
-    traits::{LastIndex, LineHelpers},
+    traits::{LastIndex, LineHelpers, ToggleBool},
     tui::{
         buffer::Buffer,
         centered_rect_size,
@@ -366,7 +366,7 @@ impl App {
                     self.buffer.append_rx_bytes(&mut data);
                     self.buffer.scroll_by(0);
 
-                    self.repeating_line_flip = !self.repeating_line_flip;
+                    self.repeating_line_flip.flip();
                 }
                 Event::Serial(SerialEvent::Ports(ports)) => {
                     self.ports = ports;
@@ -381,7 +381,7 @@ impl App {
                         let reconnections_allowed = self.serial.port_settings.load().reconnections
                             != Reconnections::Disabled;
                         if !self.serial_healthy && reconnections_allowed {
-                            self.repeating_line_flip = !self.repeating_line_flip;
+                            self.repeating_line_flip.flip();
                             self.serial.request_reconnect();
                         }
                     }
@@ -409,7 +409,9 @@ impl App {
                     self.failed_send_at
                         .take_if(|i| i.elapsed() >= FAILED_SEND_VISUAL_TIME);
                 }
-                Event::Tick(Tick::Tx) => self.repeating_line_flip = !self.repeating_line_flip,
+                Event::Tick(Tick::Tx) => {
+                    self.repeating_line_flip.flip();
+                }
             }
         }
         // Shutting down worker threads, with timeouts
@@ -509,8 +511,8 @@ impl App {
                     self.user_input.all_text_selected = true;
                 }
                 'w' | 'W' if ctrl_pressed => {
-                    self.buffer.state.text_wrapping = !self.buffer.state.text_wrapping;
-                    self.buffer.scroll_by(0);
+                    self.buffer
+                        .set_line_wrap(self.settings.behavior.wrap_text.flip());
                 }
                 'o' | 'O' if ctrl_pressed => {
                     self.serial.toggle_signals(true, false);
@@ -532,7 +534,7 @@ impl App {
                     // self.serial.esp_restart(None);
                 }
                 't' | 'T' if ctrl_pressed => {
-                    self.settings.behavior.timestamps = !self.settings.behavior.timestamps;
+                    self.settings.behavior.timestamps.flip();
                     self.buffer
                         .show_timestamps(self.settings.behavior.timestamps);
                     self.settings.save().unwrap();
@@ -952,21 +954,24 @@ impl App {
         match self.popup {
             None => (),
             Some(PopupMenu::PortSettings) => {
-                self.dismiss_popup();
-
                 self.settings.last_port_settings = self.scratch.port.clone();
-                self.settings.save().unwrap();
+
                 self.buffer.line_ending = self.scratch.port.line_ending.clone();
                 self.serial.update_settings(self.scratch.port.clone());
+
+                self.settings.save().unwrap();
+                self.dismiss_popup();
                 return;
             }
             Some(PopupMenu::BehaviorSettings) => {
-                self.dismiss_popup();
-
                 self.settings.behavior = self.scratch.behavior.clone();
+                // TODO update_settings methods?
                 self.buffer
                     .show_timestamps(self.settings.behavior.timestamps);
+                self.buffer.set_line_wrap(self.settings.behavior.wrap_text);
+
                 self.settings.save().unwrap();
+                self.dismiss_popup();
                 return;
             }
             Some(PopupMenu::Macros) => {
@@ -1069,7 +1074,7 @@ impl App {
                         // self.buffer.append_user_text(user_input);
                     }
 
-                    self.repeating_line_flip = !self.repeating_line_flip;
+                    self.repeating_line_flip.flip();
                     // Scroll all the way down
                     // TODO: Make this behavior a toggle
                     self.buffer.scroll_by(i32::MIN);

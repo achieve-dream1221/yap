@@ -173,3 +173,15 @@ impl<'a> LineHelpers<'a> for Line<'a> {
         self
     }
 }
+
+pub trait ToggleBool {
+    /// Flips the boolean value in-place, returning the new value.
+    fn flip(&mut self) -> bool;
+}
+
+impl ToggleBool for bool {
+    fn flip(&mut self) -> bool {
+        *self = !*self;
+        *self
+    }
+}
