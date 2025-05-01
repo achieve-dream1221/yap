@@ -698,7 +698,10 @@ impl App {
                 self.popup_single_line_state.active = true;
             }
             Some(PopupMenu::Macros) => match &self.macros.ui_state {
-                MacrosPrompt::None => self.scroll_menu_up(),
+                MacrosPrompt::None => {
+                    self.popup_desc_scroll = -2;
+                    self.scroll_menu_up();
+                }
                 _ => (),
             },
         }
@@ -769,7 +772,10 @@ impl App {
                 self.popup_single_line_state.active = true;
             }
             Some(PopupMenu::Macros) => match &self.macros.ui_state {
-                MacrosPrompt::None => self.scroll_menu_down(),
+                MacrosPrompt::None => {
+                    self.popup_desc_scroll = -2;
+                    self.scroll_menu_down();
+                }
                 _ => (),
             },
         }
@@ -1143,7 +1149,7 @@ impl App {
             let area = centered_rect_size(
                 Size {
                     width: 36,
-                    height: 12,
+                    height: 16,
                 },
                 area,
             );

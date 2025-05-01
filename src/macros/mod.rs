@@ -34,11 +34,26 @@ impl Macros {
         Self {
             inner: BTreeSet::from([
                 Macro::new_string("Mrow!", "mrow", None),
-                Macro::new_string("Get Version", "version", None),
+                Macro::new_string("Version", "version", None),
                 Macro::new_string("Factory Reset", "factoryreset", None),
                 Macro::new_string("Restart", "restart", None),
                 Macro::new_string("System Info", "sysinfo", None),
-                Macro::new_string("Keepalive Off", "keepalive false", None),
+                Macro::new_string("Echo Off", "echo false", None),
+                Macro::new_string("Keep-Alive Off", "keepalive false", None),
+                Macro::new_string("Setup Networks", "networks ", None),
+                Macro::new_string("Setup Authtoken", "authtoken ", None),
+                Macro::new_string("Get Config (JSON)", "jsonconfig ", None),
+                Macro::new_string("Get Config (Raw)", "rawconfig ", None),
+                Macro::new_string(
+                    "CaiX Vib (ID 12345, 0.5s)",
+                    r#"rftransmit {"model":"caixianlin","id":12345,"type":"vibrate","intensity":5,"durationMs":500}"#,
+                    None,
+                ),
+                Macro::new_string(
+                    "CaiX Vib (ID 12345, 1s)",
+                    r#"rftransmit {"model":"caixianlin","id":12345,"type":"vibrate","intensity":5,"durationMs":1000}"#,
+                    None,
+                ),
                 Macro::new_bytes("Backspace", "\x08".as_bytes().into(), None),
             ]),
             ui_state: MacrosPrompt::None,
