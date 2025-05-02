@@ -35,6 +35,7 @@ use crate::{
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     macros::{MacroContent, Macros, MacrosPrompt},
+    notifications::Notifications,
     serial::{
         PortSettings, PrintablePortInfo, Reconnections, SerialEvent, SerialHandle, MOCK_PORT_NAME,
     },
@@ -82,6 +83,8 @@ pub enum Tick {
     Tx,
     /// Used to periodically scroll long text for UIs
     Scroll,
+    /// Used to force UI updates when a notification is on screen
+    Notification,
 }
 
 impl From<Tick> for Event {
@@ -179,7 +182,7 @@ pub struct App {
     popup_single_line_state: SingleLineSelectorState,
     popup_scrollbar_state: ScrollbarState,
 
-    // notification: Option<Notification>,
+    notifs: Notifications,
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
     serial_thread: Takeable<JoinHandle<()>>,
@@ -253,6 +256,7 @@ impl App {
 
         let tick_tx = tx.clone();
         event_carousel.add_repeating(
+            "PerSecond",
             Box::new(move || {
                 tick_tx
                     .send(Tick::PerSecond.into())
@@ -263,6 +267,7 @@ impl App {
 
         let serial_signal_tick_handle = serial_handle.clone();
         event_carousel.add_repeating(
+            "SerialSignals",
             Box::new(move || {
                 serial_signal_tick_handle.read_signals();
                 Ok(())
@@ -310,6 +315,7 @@ impl App {
             // failed_send_at: Instant::now(),
             macros: Macros::new(),
             settings,
+            notifs: Notifications::default(),
         }
     }
     fn is_running(&self) -> bool {
@@ -397,10 +403,24 @@ impl App {
                     if self.popup.is_some() {
                         let tx = self.tx.clone();
                         self.carousel.add_oneshot(
+                            "ScrollText",
                             Box::new(move || {
                                 tx.send(Tick::Scroll.into()).map_err(|e| e.to_string())
                             }),
                             Duration::from_millis(400),
+                        );
+                    }
+                }
+                Event::Tick(Tick::Notification) => {
+                    if self.notifs.is_some() {
+                        let tx = self.tx.clone();
+                        self.carousel.add_oneshot(
+                            "Notification",
+                            Box::new(move || {
+                                tx.send(Tick::Notification.into())
+                                    .map_err(|e| e.to_string())
+                            }),
+                            Duration::from_millis(50),
                         );
                     }
                 }
@@ -1006,13 +1026,28 @@ impl App {
                                 content.clone(),
                                 Some(self.buffer.line_ending.as_str()),
                             );
-                            debug!("Sending Macro Bytes: {:02X?}", content);
+
+                            let text = format!("Sending Macro Bytes: {:02X?}", content);
+                            debug!("{text}");
+                            self.notifs.notify(
+                                format!("Sent Macro: {}", macro_binding.title),
+                                Color::Green,
+                            );
+                            // TODO:
                             // self.buffer.append_user_bytes(bytes);
                         }
                         MacroContent::Text(text) => {
                             self.serial.send_str(text, self.buffer.line_ending.as_str());
-                            debug!("Sending Macro Text: {}", text.escape_debug());
                             self.buffer.append_user_text(text);
+
+                            let text = format!("Sending Macro Text: {}", text.escape_debug());
+                            debug!("{text}");
+                            self.notifs.notify(
+                                format!("Sent Macro: {}", macro_binding.title),
+                                Color::Green,
+                            );
+
+                            self.tx.send(Tick::Notification.into()).unwrap();
                         }
                     }
                 }
@@ -1083,6 +1118,7 @@ impl App {
                     // Temporarily show text on red background when trying to send while unhealthy
                     let tx = self.tx.clone();
                     self.carousel.add_oneshot(
+                        "UnhealthyTxUi",
                         Box::new(move || {
                             tx.send(Tick::Requested("Unhealthy TX Background Removal").into())
                                 .map_err(|e| e.to_string())
@@ -1146,10 +1182,19 @@ impl App {
 
         self.render_popups(frame, frame.area());
 
+        self.render_notifs(frame, frame.area());
+
         // TODO:
         // self.render_error_messages(frame, frame.area());
     }
-
+    fn render_notifs(&mut self, frame: &mut Frame, area: Rect) {
+        if let Some(notif) = &self.notifs.inner {
+            frame.render_widget(&self.notifs, area);
+            if notif.shown_for() >= Duration::from_millis(3250) {
+                _ = self.notifs.inner.take();
+            }
+        }
+    }
     fn render_popups(&mut self, frame: &mut Frame, area: Rect) {
         if let Some(popup) = &self.popup {
             // todo fix this assert
@@ -1169,7 +1214,7 @@ impl App {
             );
             let area = centered_rect_size(
                 Size {
-                    width: 36,
+                    width: area.width.min(36),
                     height: area.height.min(16),
                 },
                 area,
@@ -1863,7 +1908,7 @@ pub fn repeating_pattern_widget(frame: &mut Frame, area: Rect, swap: bool, healt
 }
 
 /// If the given text is longer than the supplied area, it will be scrolled out of and then back in to the area.
-fn render_scrolling_line<'a, T: Into<Line<'a>>>(
+pub fn render_scrolling_line<'a, T: Into<Line<'a>>>(
     text: T,
     frame: &mut Frame,
     mut area: Rect,

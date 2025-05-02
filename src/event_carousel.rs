@@ -37,8 +37,9 @@ impl CarouselHandle {
 
         (Self { command_tx }, worker)
     }
-    pub fn add_repeating(&self, payload: PayloadFn, interval: Duration) {
+    pub fn add_repeating<S: Into<String>>(&self, name: S, payload: PayloadFn, interval: Duration) {
         let event = CarouselEvent {
+            name: name.into(),
             payload,
             interval,
             last_sent: Instant::now(),
@@ -48,8 +49,9 @@ impl CarouselHandle {
             .send(CarouselCommand::AddEvent(event))
             .unwrap();
     }
-    pub fn add_oneshot(&self, payload: PayloadFn, delay: Duration) {
+    pub fn add_oneshot<S: Into<String>>(&self, name: S, payload: PayloadFn, delay: Duration) {
         let event = CarouselEvent {
+            name: name.into(),
             payload,
             interval: delay,
             last_sent: Instant::now(),
@@ -80,6 +82,7 @@ impl CarouselHandle {
 }
 
 struct CarouselEvent {
+    name: String,
     interval: Duration,
     payload: PayloadFn,
     last_sent: Instant,
@@ -106,6 +109,10 @@ impl CarouselWorker {
         loop {
             match self.command_rx.recv_timeout(sleep_time) {
                 Ok(CarouselCommand::AddEvent(event)) => {
+                    // Remove any event with the same name if one is present.
+                    if let Some(index) = self.events.iter().position(|ev| ev.name == event.name) {
+                        self.events.remove(index);
+                    }
                     self.events.push(event);
                 }
                 Ok(CarouselCommand::Shutdown(shutdown_tx)) => {
@@ -132,7 +139,10 @@ impl CarouselWorker {
 
                         // info!("meow! {:?}", e.interval);
                         if let Err(err) = (ev.payload)() {
-                            error!("Carousel payload had error `{err}`, closing carousel thread.");
+                            error!(
+                                "Event {name}'s payload had error `{err}`, closing carousel thread.",
+                                name = ev.name
+                            );
                             send_error = true;
                         }
 

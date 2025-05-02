@@ -158,7 +158,7 @@ impl Macros {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Macro {
-    title: String,
+    pub title: String,
     category: Option<String>,
     pub keybinding: Option<u8>,
     pub content: MacroContent,
