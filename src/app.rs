@@ -35,7 +35,9 @@ use crate::{
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     macros::{MacroContent, Macros, MacrosPrompt},
-    notifications::Notifications,
+    notifications::{
+        Notification, Notifications, EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, PAUSE_TIME,
+    },
     serial::{
         PortSettings, PrintablePortInfo, Reconnections, SerialEvent, SerialHandle, MOCK_PORT_NAME,
     },
@@ -412,15 +414,25 @@ impl App {
                     }
                 }
                 Event::Tick(Tick::Notification) => {
-                    if self.notifs.is_some() {
+                    // debug!("notif!");
+                    if let Some(notif) = &self.notifs.inner {
                         let tx = self.tx.clone();
+                        let emerging = notif.shown_for() <= EMERGE_TIME;
+                        let collapsing = notif.shown_for() >= PAUSE_TIME;
+                        let sleep_time = if emerging || collapsing {
+                            Duration::from_millis(50)
+                        } else if notif.replaced && notif.shown_for() <= EXPAND_TIME {
+                            EXPAND_TIME.saturating_sub(notif.shown_for())
+                        } else {
+                            PAUSE_TIME.saturating_sub(notif.shown_for())
+                        };
                         self.carousel.add_oneshot(
                             "Notification",
                             Box::new(move || {
                                 tx.send(Tick::Notification.into())
                                     .map_err(|e| e.to_string())
                             }),
-                            Duration::from_millis(50),
+                            sleep_time,
                         );
                     }
                 }
@@ -533,6 +545,8 @@ impl App {
                 'w' | 'W' if ctrl_pressed => {
                     self.buffer
                         .set_line_wrap(self.settings.behavior.wrap_text.flip());
+                    self.settings.save().unwrap();
+                    self.notify("Toggled Text Wrapping", Color::Gray);
                 }
                 'o' | 'O' if ctrl_pressed => {
                     self.serial.toggle_signals(true, false);
@@ -558,6 +572,7 @@ impl App {
                     self.buffer
                         .show_timestamps(self.settings.behavior.timestamps);
                     self.settings.save().unwrap();
+                    self.notify("Toggled Timestamps", Color::Gray);
                 }
                 'm' | 'M' if ctrl_pressed => {
                     self.popup = Some(PopupMenu::Macros);
@@ -981,6 +996,7 @@ impl App {
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
+                self.notify("Settings saved!", Color::Green);
                 return;
             }
             Some(PopupMenu::BehaviorSettings) => {
@@ -992,6 +1008,7 @@ impl App {
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
+                self.notify("Settings saved!", Color::Green);
                 return;
             }
             Some(PopupMenu::Macros) => {
@@ -999,6 +1016,7 @@ impl App {
                     return;
                 }
                 if !self.serial_healthy {
+                    self.notify("Port isn't ready!", Color::Red);
                     return;
                 }
                 let Some(index) = self.popup_table_state.selected() else {
@@ -1020,7 +1038,7 @@ impl App {
                     }
                 } else {
                     match &macro_binding.content {
-                        MacroContent::Empty => (),
+                        MacroContent::Empty => self.notify("Macro is empty!", Color::Yellow),
                         MacroContent::Bytes { content, preview } => {
                             self.serial.send_bytes(
                                 content.clone(),
@@ -1029,7 +1047,7 @@ impl App {
 
                             let text = format!("Sending Macro Bytes: {:02X?}", content);
                             debug!("{text}");
-                            self.notifs.notify(
+                            self.notify(
                                 format!("Sent Macro: {}", macro_binding.title),
                                 Color::Green,
                             );
@@ -1042,12 +1060,10 @@ impl App {
 
                             let text = format!("Sending Macro Text: {}", text.escape_debug());
                             debug!("{text}");
-                            self.notifs.notify(
+                            self.notify(
                                 format!("Sent Macro: {}", macro_binding.title),
                                 Color::Green,
                             );
-
-                            self.tx.send(Tick::Notification.into()).unwrap();
                         }
                     }
                 }
@@ -1190,10 +1206,21 @@ impl App {
     fn render_notifs(&mut self, frame: &mut Frame, area: Rect) {
         if let Some(notif) = &self.notifs.inner {
             frame.render_widget(&self.notifs, area);
-            if notif.shown_for() >= Duration::from_millis(3250) {
+            if notif.shown_for() >= EXPIRE_TIME {
                 _ = self.notifs.inner.take();
             }
         }
+    }
+    pub fn notify<S: AsRef<str>>(&mut self, text: S, color: Color) {
+        let text: &str = text.as_ref();
+        debug!("Notification: {text}, Color: {color}");
+        self.notifs.inner = Some(Notification {
+            text: text.to_owned(),
+            color,
+            shown_at: Instant::now(),
+            replaced: self.notifs.inner.is_some(),
+        });
+        self.tx.send(Tick::Notification.into()).unwrap();
     }
     fn render_popups(&mut self, frame: &mut Frame, area: Rect) {
         if let Some(popup) = &self.popup {

@@ -44,6 +44,7 @@ impl Macros {
         // TODO Load from disk
         let test_macros = BTreeSet::from([
             Macro::new_string("Mrow!", None, "mrow", None),
+            Macro::new_empty("Mrowwww"),
             Macro::new_string("Version", Some("OpenShock"), "version", None),
             Macro::new_string(
                 "Factory Reset",
@@ -236,6 +237,14 @@ impl Macro {
             category: category.map(|t| t.as_ref().into()),
             content: MacroContent::new_bytes(bytes),
             keybinding,
+        }
+    }
+    pub fn new_empty<T: AsRef<str>>(title: T) -> Self {
+        Self {
+            title: title.as_ref().into(),
+            category: None,
+            content: MacroContent::Empty,
+            keybinding: None,
         }
     }
     pub fn new_string<T: AsRef<str>, S: AsRef<str>>(

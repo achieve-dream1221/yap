@@ -109,7 +109,7 @@ impl CarouselWorker {
         loop {
             match self.command_rx.recv_timeout(sleep_time) {
                 Ok(CarouselCommand::AddEvent(event)) => {
-                    // Remove any event with the same name if one is present.
+                    // Replace any event with the same name if one is present.
                     if let Some(index) = self.events.iter().position(|ev| ev.name == event.name) {
                         self.events.remove(index);
                     }
