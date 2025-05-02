@@ -272,8 +272,9 @@ impl App {
         event_carousel.add_repeating(
             "SerialSignals",
             Box::new(move || {
-                serial_signal_tick_handle.read_signals();
-                Ok(())
+                serial_signal_tick_handle
+                    .read_signals()
+                    .map_err(|e| e.to_string())
             }),
             Duration::from_millis(100),
         );
@@ -433,13 +434,13 @@ impl App {
                         self.serial.port_settings.load().reconnections != Reconnections::Disabled;
                     if !self.serial_healthy && reconnections_allowed {
                         self.repeating_line_flip.flip();
-                        self.serial.request_reconnect();
+                        self.serial.request_reconnect().unwrap();
                     }
                 }
                 // If disconnect prompt is open, pause reacting to the ticks
                 Menu::Terminal(TerminalPrompt::DisconnectPrompt) => (),
                 Menu::PortSelection(_) => {
-                    self.serial.request_port_scan();
+                    self.serial.request_port_scan().unwrap();
                 }
             },
             Event::Tick(Tick::Scroll) => {
@@ -574,10 +575,10 @@ impl App {
                     self.notify("Toggled Text Wrapping", Color::Gray);
                 }
                 'o' | 'O' if ctrl_pressed => {
-                    self.serial.toggle_signals(true, false);
+                    self.serial.toggle_signals(true, false).unwrap();
                 }
                 'p' | 'P' if ctrl_pressed => {
-                    self.serial.toggle_signals(false, true);
+                    self.serial.toggle_signals(false, true).unwrap();
                 }
                 'e' | 'E' if ctrl_pressed => {
                     // self.serial.write_signals(Some(false), Some(false));
@@ -1017,7 +1018,9 @@ impl App {
                 self.settings.last_port_settings = self.scratch.port.clone();
 
                 self.buffer.line_ending = self.scratch.port.line_ending.clone();
-                self.serial.update_settings(self.scratch.port.clone());
+                self.serial
+                    .update_settings(self.scratch.port.clone())
+                    .unwrap();
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
@@ -1067,10 +1070,9 @@ impl App {
                     match &macro_binding.content {
                         MacroContent::Empty => self.notify("Macro is empty!", Color::Yellow),
                         MacroContent::Bytes { content, preview } => {
-                            self.serial.send_bytes(
-                                content.clone(),
-                                Some(self.buffer.line_ending.as_str()),
-                            );
+                            self.serial
+                                .send_bytes(content.clone(), Some(self.buffer.line_ending.as_str()))
+                                .unwrap();
 
                             let text = format!("Sending Macro Bytes: {:02X?}", content);
                             debug!("{text}");
@@ -1082,7 +1084,9 @@ impl App {
                             // self.buffer.append_user_bytes(bytes);
                         }
                         MacroContent::Text(text) => {
-                            self.serial.send_str(text, self.buffer.line_ending.as_str());
+                            self.serial
+                                .send_str(text, self.buffer.line_ending.as_str())
+                                .unwrap();
                             self.buffer.append_user_text(text);
 
                             let text = format!("Sending Macro Text: {}", text.escape_debug());
@@ -1118,7 +1122,9 @@ impl App {
                     self.settings.last_port_settings = self.scratch.port.clone();
                     self.settings.save().unwrap();
 
-                    self.serial.connect(&info, self.scratch.port.clone());
+                    self.serial
+                        .connect(&info, self.scratch.port.clone())
+                        .unwrap();
 
                     self.menu = Menu::Terminal(TerminalPrompt::None);
                 }
@@ -1141,13 +1147,14 @@ impl App {
 
                     if self.settings.behavior.fake_shell {
                         self.serial
-                            .send_str(user_input, self.buffer.line_ending.as_str());
+                            .send_str(user_input, self.buffer.line_ending.as_str())
+                            .unwrap();
                         self.buffer.append_user_text(user_input);
                         self.user_input.history.push(user_input);
 
                         self.user_input.clear();
                     } else {
-                        self.serial.send_str(user_input, "");
+                        self.serial.send_str(user_input, "").unwrap();
                         todo!("not ready yet");
                         // self.buffer.append_user_text(user_input);
                     }
@@ -1179,10 +1186,10 @@ impl App {
                     DisconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
                     DisconnectPrompt::Exit => self.shutdown(),
                     DisconnectPrompt::Disconnect => {
-                        self.serial.disconnect();
+                        self.serial.disconnect().unwrap();
                         // Refresh port listings
                         self.ports.clear();
-                        self.serial.request_port_scan();
+                        self.serial.request_port_scan().unwrap();
 
                         self.buffer.clear();
                         // Clear the input box, but keep the user history!

@@ -20,6 +20,7 @@ use virtual_serialport::VirtualPort;
 
 use crate::{
     app::{Event, Tick, COMMON_BAUD, DEFAULT_BAUD},
+    errors::{YapError, YapResult},
     settings::ser::{
         deserialize_from_u8, deserialize_line_ending, serialize_as_u8, serialize_line_ending,
     },
@@ -336,7 +337,7 @@ impl SerialHandle {
         let worker = std::thread::spawn(move || {
             worker
                 .work_loop()
-                .expect("Serial worker encountered an error!");
+                .expect("Serial worker encountered a fatal error!");
         });
 
         let handle = Self {
@@ -344,69 +345,73 @@ impl SerialHandle {
             port_status,
             port_settings,
         };
-        handle.request_port_scan();
+        handle.request_port_scan().unwrap();
         (handle, worker)
     }
-    pub fn connect(&self, port: &SerialPortInfo, settings: PortSettings) {
+    pub fn connect(&self, port: &SerialPortInfo, settings: PortSettings) -> YapResult<()> {
         self.command_tx
             .send(SerialCommand::Connect {
                 port: port.to_owned(),
                 settings,
             })
-            .unwrap();
+            .map_err(|_| YapError::NoSerialWorker)
     }
-    pub fn disconnect(&self) {
-        self.command_tx.send(SerialCommand::Disconnect).unwrap();
+    pub fn disconnect(&self) -> YapResult<()> {
+        self.command_tx
+            .send(SerialCommand::Disconnect)
+            .map_err(|_| YapError::NoSerialWorker)
     }
-    pub fn update_settings(&self, settings: PortSettings) {
+    pub fn update_settings(&self, settings: PortSettings) -> YapResult<()> {
         self.command_tx
             .send(SerialCommand::PortSettings(settings))
-            .unwrap();
+            .map_err(|_| YapError::NoSerialWorker)
     }
     /// Sends the supplied bytes through the connected Serial device.
-    pub fn send_bytes(&self, mut input: Vec<u8>, line_ending: Option<&str>) {
+    pub fn send_bytes(&self, mut input: Vec<u8>, line_ending: Option<&str>) -> YapResult<()> {
         if let Some(ending) = line_ending.map(str::as_bytes) {
             input.extend(ending.iter());
         }
         self.command_tx
             .send(SerialCommand::TxBuffer(input))
-            .unwrap();
+            .map_err(|_| YapError::NoSerialWorker)
     }
-    pub fn send_str(&self, input: &str, line_ending: &str) {
+    pub fn send_str(&self, input: &str, line_ending: &str) -> YapResult<()> {
         // debug!("Outputting to serial: {input}");
         let buffer = input.as_bytes().to_owned();
-        self.send_bytes(buffer, Some(line_ending));
+        self.send_bytes(buffer, Some(line_ending))
     }
-    pub fn read_signals(&self) {
-        self.command_tx.send(SerialCommand::ReadSignals).unwrap();
+    pub fn read_signals(&self) -> YapResult<()> {
+        self.command_tx
+            .send(SerialCommand::ReadSignals)
+            .map_err(|_| YapError::NoSerialWorker)
     }
     #[cfg(feature = "espflash")]
-    pub fn esp_restart(&self, strategy: Option<u128>) {
+    pub fn esp_restart(&self, strategy: Option<u128>) -> YapResult<()> {
         self.command_tx
             .send(SerialCommand::EspRestart(strategy))
-            .unwrap();
+            .map_err(|_| YapError::NoSerialWorker)
     }
-    pub fn write_signals(&self, dtr: Option<bool>, rts: Option<bool>) {
+    pub fn write_signals(&self, dtr: Option<bool>, rts: Option<bool>) -> YapResult<()> {
         self.command_tx
             .send(SerialCommand::WriteSignals { dtr, rts })
-            .unwrap();
+            .map_err(|_| YapError::NoSerialWorker)
     }
-    pub fn toggle_signals(&self, dtr: bool, rts: bool) {
+    pub fn toggle_signals(&self, dtr: bool, rts: bool) -> YapResult<()> {
         self.command_tx
             .send(SerialCommand::ToggleSignals { dtr, rts })
-            .unwrap();
+            .map_err(|_| YapError::NoSerialWorker)
     }
     /// Non-blocking request for the serial worker to scan for ports and send a list of available ports
-    pub fn request_port_scan(&self) {
+    pub fn request_port_scan(&self) -> YapResult<()> {
         self.command_tx
             .send(SerialCommand::RequestPortScan)
-            .unwrap();
+            .map_err(|_| YapError::NoSerialWorker)
     }
     /// Non-blocking request for the serial worker to attempt to reconnect to the "current" device
-    pub fn request_reconnect(&self) {
+    pub fn request_reconnect(&self) -> YapResult<()> {
         self.command_tx
             .send(SerialCommand::RequestReconnect)
-            .unwrap();
+            .map_err(|_| YapError::NoSerialWorker)
     }
     // TODO maybe just shut down when we lose all Tx handles?
     // Would still want to detect a locked thread and handle it though

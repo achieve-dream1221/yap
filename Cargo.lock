@@ -4195,6 +4195,7 @@ dependencies = [
  "strum 0.27.1",
  "takeable",
  "textwrap",
+ "thiserror 2.0.12",
  "toml",
  "tracing",
  "tracing-appender",
