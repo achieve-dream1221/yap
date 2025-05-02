@@ -47,6 +47,8 @@ impl Notifications {
     }
 }
 
+// TODO make reactive to text width + popup area
+
 pub const EXPIRE_TIME: Duration = Duration::from_millis(3150);
 pub const PAUSE_TIME: Duration = Duration::from_millis(3000);
 pub const EXPAND_TIME: Duration = Duration::from_millis(250);

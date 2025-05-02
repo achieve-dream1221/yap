@@ -74,6 +74,11 @@ pub struct Behavior {
     #[serde(default)]
     /// Wrap text longer than the screen.
     pub wrap_text: bool,
+
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// Fall back to macros with same name if category missing (TODO).
+    pub fuzzy_macro_match: bool,
 }
 
 impl Settings {

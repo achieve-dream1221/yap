@@ -577,6 +577,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "crokey"
+version = "1.1.1"
+dependencies = [
+ "crokey-proc_macros",
+ "crossterm 0.28.1",
+ "once_cell",
+ "serde",
+ "strict",
+]
+
+[[package]]
+name = "crokey-proc_macros"
+version = "1.1.1"
+dependencies = [
+ "crossterm 0.28.1",
+ "proc-macro2",
+ "quote",
+ "strict",
+ "syn 2.0.96",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3042,6 +3064,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "strict"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f42444fea5b87a39db4218d9422087e66a85d0e7a0963a439b07bcdf91804006"
+
+[[package]]
 name = "strip-ansi-escapes"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4174,6 +4202,7 @@ dependencies = [
  "better-panic",
  "chrono",
  "color-eyre",
+ "crokey",
  "derivative",
  "enum-rotate",
  "espflash",

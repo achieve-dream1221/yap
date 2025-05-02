@@ -8,6 +8,7 @@ use std::{
 
 use arboard::Clipboard;
 use color_eyre::{eyre::Result, owo_colors::OwoColorize};
+use crokey::{key, KeyCombination};
 use enum_rotate::EnumRotate;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
@@ -26,7 +27,7 @@ use serialport::{SerialPortInfo, SerialPortType};
 use struct_table::{ArrowKey, StructTable};
 use strum::{VariantArray, VariantNames};
 use takeable::Takeable;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 use tui_big_text::{BigText, PixelSize};
 use tui_input::{backend::crossterm::EventHandler, Input, StateChanged};
 use unicode_width::UnicodeWidthStr;
@@ -34,7 +35,11 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
-    macros::{MacroContent, Macros, MacrosPrompt},
+    keybinds::{
+        KeybindMacro, Keybinds, SHOW_MACROS, SHOW_PORTSETTINGS, TOGGLE_DTR, TOGGLE_RTS,
+        TOGGLE_TEXTWRAP, TOGGLE_TIMESTAMPS,
+    },
+    macros::{Macro, MacroContent, Macros, MacrosPrompt},
     notifications::{
         Notification, Notifications, EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, PAUSE_TIME,
     },
@@ -213,6 +218,7 @@ pub struct App {
     macros: Macros,
 
     settings: Settings,
+    keybinds: Keybinds,
 }
 
 impl App {
@@ -325,6 +331,7 @@ impl App {
             // failed_send_at: Instant::now(),
             macros: Macros::new(),
             settings,
+            keybinds: Keybinds::new(),
             notifs: Notifications::default(),
         }
     }
@@ -499,7 +506,9 @@ impl App {
     fn shutdown(&mut self) {
         self.state = RunningState::Finished;
     }
+    // TODO fuzz this
     fn handle_key_press(&mut self, key: KeyEvent) {
+        let key_combo = KeyCombination::from(key);
         let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
 
@@ -515,10 +524,10 @@ impl App {
                 if self.popup.is_none() {
                     at_terminal = true;
                 }
-                match key.code {
+                match key_combo {
                     // Consuming Ctrl+A so input_box.handle_event doesn't move my cursor.
-                    KeyCode::Char('a') if ctrl_pressed => (),
-                    KeyCode::Delete | KeyCode::Backspace if self.user_input.all_text_selected => (),
+                    key!(a) if ctrl_pressed => (),
+                    key!(del) | key!(backspace) if self.user_input.all_text_selected => (),
 
                     // TODO move into UserInput impl?
                     _ if self.popup.is_none() => match self
@@ -556,100 +565,23 @@ impl App {
             Menu::PortSelection(_) => at_port_selection = true,
         }
         // TODO split this up into more functions based on menu
-        match key.code {
-            KeyCode::Char(char) => match char {
-                'q' | 'Q' if at_port_selection => self.shutdown(),
-                'c' | 'C' if ctrl_pressed && shift_pressed => self.shutdown(),
-                'c' | 'C' if ctrl_pressed => match self.menu {
-                    Menu::Terminal(TerminalPrompt::DisconnectPrompt) => self.shutdown(),
-                    Menu::Terminal(TerminalPrompt::None) => {
-                        self.dismiss_popup();
-                        self.menu = TerminalPrompt::DisconnectPrompt.into();
-                    }
-                    _ => self.shutdown(),
-                },
-                'a' | 'A'
-                    if ctrl_pressed
-                        && at_terminal
-                        && !self.user_input.input_box.value().is_empty() =>
-                {
-                    self.user_input.all_text_selected = true;
+        match key_combo {
+            // Start of hardcoded keybinds.
+            key!(q) if at_port_selection => self.shutdown(),
+            key!(ctrl - shift - c) => self.shutdown(),
+            // move into ctrl-c func?
+            key!(ctrl - c) => match self.menu {
+                Menu::Terminal(TerminalPrompt::DisconnectPrompt) => self.shutdown(),
+                Menu::Terminal(TerminalPrompt::None) => {
+                    self.dismiss_popup();
+                    self.menu = TerminalPrompt::DisconnectPrompt.into();
                 }
-                'w' | 'W' if ctrl_pressed => {
-                    self.buffer
-                        .set_line_wrap(self.settings.behavior.wrap_text.flip());
-                    self.settings.save().unwrap();
-                    self.notify("Toggled Text Wrapping", Color::Gray);
-                }
-                'o' | 'O' if ctrl_pressed => {
-                    self.serial.toggle_signals(true, false).unwrap();
-                }
-                'p' | 'P' if ctrl_pressed => {
-                    self.serial.toggle_signals(false, true).unwrap();
-                }
-                'e' | 'E' if ctrl_pressed => {
-                    // self.serial.write_signals(Some(false), Some(false));
-                    // self.serial.write_signals(Some(true), Some(true));
-                    // self.serial.write_signals(Some(false), Some(true));
-                    // std::thread::sleep(Duration::from_millis(100));
-                    // self.serial.write_signals(Some(true), Some(false));
-                    // std::thread::sleep(Duration::from_millis(100));
-                    // self.serial.write_signals(Some(false), Some(false));
-
-                    // self.buffer
-                    //     .append_user_text("Attempting to put Espressif device into bootloader...");
-                    // self.serial.esp_restart(None);
-                }
-                't' | 'T' if ctrl_pressed => {
-                    self.settings.behavior.timestamps.flip();
-                    self.buffer
-                        .show_timestamps(self.settings.behavior.timestamps);
-                    self.settings.save().unwrap();
-                    self.notify("Toggled Timestamps", Color::Gray);
-                }
-                'm' | 'M' if ctrl_pressed => {
-                    self.popup = Some(PopupMenu::Macros);
-                    if self.macros.is_empty() {
-                        self.popup_table_state.select(None);
-                        self.popup_single_line_state.active = true;
-                    } else {
-                        self.popup_table_state.select(Some(0));
-                        self.popup_single_line_state.active = false;
-                    }
-                    self.tx
-                        .send(Tick::Scroll.into())
-                        .map_err(|e| e.to_string())
-                        .unwrap();
-                    // self.popup_desc_scroll = -2;
-
-                    // self.tx
-                    //     .send(Tick::Scroll.into())
-                    //     .map_err(|e| e.to_string())
-                    //     .unwrap();
-                }
-                '.' if ctrl_pressed => {
-                    self.popup = Some(PopupMenu::PortSettings);
-                    self.refresh_scratch();
-                    self.popup_desc_scroll = -2;
-                    self.popup_table_state.select(Some(0));
-                    self.popup_single_line_state.active = false;
-
-                    self.tx
-                        .send(Tick::Scroll.into())
-                        .map_err(|e| e.to_string())
-                        .unwrap();
-                }
-                // 't' | 'T' if ctrl_pressed => {
-                //     self.buffer_show_timestamp = !self.buffer_show_timestamp;
-                //     self.buffer.update_line_count(self.buffer_show_timestamp);
-                //     self.scroll_buffer(0);
-                // }
-                _ => {
-                    // self.user_input
-                    //     .handle_event(&ratatui::crossterm::event::Event::Key(key));
-                }
+                _ => self.shutdown(),
             },
-            KeyCode::Home if self.popup.is_some() => {
+            key!(ctrl - a) if at_terminal && !self.user_input.input_box.value().is_empty() => {
+                self.user_input.all_text_selected = true;
+            }
+            key!(home) if self.popup.is_some() => {
                 // TODO make this not as hardcoded here.
                 self.macros.ui_state = MacrosPrompt::None;
 
@@ -657,30 +589,190 @@ impl App {
                 self.popup_single_line_state.active = true;
             }
             // TODO ctrl+backspace remove a word
-            KeyCode::PageUp if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MAX),
-            KeyCode::PageDown if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MIN),
-            KeyCode::Delete | KeyCode::Backspace
+            key!(pageup) if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MAX),
+            key!(pagedown) if ctrl_pressed || shift_pressed => self.buffer.scroll_by(i32::MIN),
+            key!(delete) | key!(backspace)
                 if (ctrl_pressed && shift_pressed) || self.user_input.all_text_selected =>
             {
                 self.user_input.clear();
             }
-            KeyCode::PageUp => self.buffer.scroll_page_up(),
-            KeyCode::PageDown => self.buffer.scroll_page_down(),
+            key!(pageup) => self.buffer.scroll_page_up(),
+            key!(pagedown) => self.buffer.scroll_page_down(),
+            // KeyCode::F(f_key) if ctrl_pressed && shift_pressed => {
+            //     let meow = key!(ctrl - c);
+            //     self.notify(format!("Pressed Ctrl+Shift+F{f_key}"), Color::Blue)
+            // }
+            // KeyCode::F(f_key) if ctrl_pressed => {
+            //     self.notify(format!("Pressed Ctrl+F{f_key}"), Color::Blue)
+            // }
+            // KeyCode::F(f_key) if shift_pressed => {
+            //     self.notify(format!("Pressed Shift+F{f_key}"), Color::Blue)
+            // }
+            // KeyCode::F(f_key) => self.notify(format!("Pressed F{f_key}"), Color::Blue),
             // KeyCode::End => self
             //     .event_carousel
             //     .add_event(Event::TickSecond, Duration::from_secs(3)),
-            KeyCode::Up => self.up_pressed(),
-            KeyCode::Down => self.down_pressed(),
-            KeyCode::Left => self.left_pressed(),
-            KeyCode::Right => self.right_pressed(),
-            KeyCode::Enter => self.enter_pressed(ctrl_pressed, shift_pressed),
-            KeyCode::Tab if at_terminal && self.popup.is_none() => {
+            key!(up) => self.up_pressed(),
+            key!(down) => self.down_pressed(),
+            key!(left) => self.left_pressed(),
+            key!(right) => self.right_pressed(),
+            key!(enter) => self.enter_pressed(ctrl_pressed, shift_pressed),
+            key!(tab) if at_terminal && self.popup.is_none() => {
                 self.user_input.find_input_in_history();
             }
             // KeyCode::Tab => self.tab_pressed(),
-            KeyCode::Esc => self.esc_pressed(),
-            _ => (),
+            key!(esc) => self.esc_pressed(),
+            key_combo => {
+                // debug!("");
+                if let Some(method) = self.method_from_key_combo(key_combo) {
+                    if let Err(e) = self.method_from_string(&method) {
+                        error!("Error running method `{method}`: {e}");
+                    }
+                } else if let Some(macro_ref) = self.macro_from_key_combo(key_combo) {
+                    let found_macro = self
+                        .macros
+                        .all
+                        .iter()
+                        .find(|m| macro_ref.eq_macro(m))
+                        .or_else(|| {
+                            if self.settings.behavior.fuzzy_macro_match {
+                                self.macros.all.iter().find(|m| macro_ref.eq_macro_fuzzy(m))
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some(found_macro) = found_macro {
+                        if self.serial_healthy {
+                            match &found_macro.content {
+                                MacroContent::Empty => {
+                                    self.notify("Macro is empty!", Color::Yellow)
+                                }
+                                MacroContent::Bytes { content, preview } => {
+                                    self.serial
+                                        .send_bytes(
+                                            content.clone(),
+                                            Some(self.buffer.line_ending.as_str()),
+                                        )
+                                        .unwrap();
+
+                                    debug!("{}", format!("Sending Macro Bytes: {:02X?}", content));
+                                    self.notify(format!("Sent Macro: {found_macro}"), Color::Green);
+                                    // TODO:
+                                    // self.buffer.append_user_bytes(bytes);
+                                }
+                                MacroContent::Text(text) => {
+                                    self.serial
+                                        .send_str(text, self.buffer.line_ending.as_str())
+                                        .unwrap();
+                                    self.buffer.append_user_text(text);
+
+                                    debug!(
+                                        "{}",
+                                        format!("Sending Macro Text: {}", text.escape_debug())
+                                    );
+                                    self.notify(
+                                        format!("Macro: {found_macro} [{key_combo}]"),
+                                        Color::Green,
+                                    );
+                                }
+                            }
+                        } else {
+                            self.notify(
+                                format!("Macro: {found_macro} [{key_combo}] (Not Sent)"),
+                                Color::Yellow,
+                            );
+                        }
+                    } else {
+                        self.notify(
+                            format!("No such macro {macro_ref}! [{key_combo}]"),
+                            Color::Yellow,
+                        );
+                    }
+                }
+            }
         }
+    }
+    fn macro_from_key_combo(&self, key_combo: KeyCombination) -> Option<KeybindMacro> {
+        self.keybinds
+            .macros
+            .iter()
+            .find(|kc| kc.0 == &key_combo)
+            .map(|kc| kc.1.clone())
+    }
+    fn method_from_key_combo(&self, key_combo: KeyCombination) -> Option<String> {
+        self.keybinds
+            .keybindings
+            .iter()
+            .find(|kc| kc.0 == &key_combo)
+            .map(|kc| kc.1.clone())
+    }
+    fn method_from_string(&mut self, method: &str) -> Result<()> {
+        let m = method;
+        match m {
+            _ if m == TOGGLE_TEXTWRAP => {
+                self.buffer
+                    .set_line_wrap(self.settings.behavior.wrap_text.flip());
+                self.settings.save().unwrap();
+                self.notify("Toggled Text Wrapping", Color::Gray);
+            }
+            _ if m == TOGGLE_DTR => {
+                self.serial.toggle_signals(true, false).unwrap();
+            }
+            _ if m == TOGGLE_RTS => {
+                self.serial.toggle_signals(false, true).unwrap();
+            }
+            // key!(ctrl - e) => {
+            // "esp-bootloader" => {
+            // self.serial.write_signals(Some(false), Some(false));
+            // self.serial.write_signals(Some(true), Some(true));
+            // self.serial.write_signals(Some(false), Some(true));
+            // std::thread::sleep(Duration::from_millis(100));
+            // self.serial.write_signals(Some(true), Some(false));
+            // std::thread::sleep(Duration::from_millis(100));
+            // self.serial.write_signals(Some(false), Some(false));
+
+            // self.buffer
+            //     .append_user_text("Attempting to put Espressif device into bootloader...");
+            // self.serial.esp_restart(None);
+            // }
+            _ if m == TOGGLE_TIMESTAMPS => {
+                self.settings.behavior.timestamps.flip();
+                self.buffer
+                    .show_timestamps(self.settings.behavior.timestamps);
+                self.settings.save().unwrap();
+                self.notify("Toggled Timestamps", Color::Gray);
+            }
+
+            _ if m == SHOW_MACROS => {
+                self.popup = Some(PopupMenu::Macros);
+                if self.macros.is_empty() {
+                    self.popup_table_state.select(None);
+                    self.popup_single_line_state.active = true;
+                } else {
+                    self.popup_table_state.select(Some(0));
+                    self.popup_single_line_state.active = false;
+                }
+                self.tx
+                    .send(Tick::Scroll.into())
+                    .map_err(|e| e.to_string())
+                    .unwrap();
+            }
+
+            _ if m == SHOW_PORTSETTINGS => {
+                self.popup = Some(PopupMenu::PortSettings);
+                self.refresh_scratch();
+                self.popup_desc_scroll = -2;
+                self.popup_table_state.select(Some(0));
+                self.popup_single_line_state.active = false;
+
+                self.tx
+                    .send(Tick::Scroll.into())
+                    .map_err(|e| e.to_string())
+                    .unwrap();
+            }
+            unknown => warn!("Unknown keybind: {unknown}"),
+        };
+        Ok(())
     }
     // fn tab_pressed(&mut self) {}
     fn esc_pressed(&mut self) {
@@ -1061,6 +1153,7 @@ impl App {
                 };
                 let macro_binding = self.macros.category_filtered_macros().nth(index).unwrap();
                 if ctrl_pressed || shift_pressed {
+                    // Putting macro content into buffer.
                     match &macro_binding.content {
                         MacroContent::Empty => (),
                         MacroContent::Bytes { content, preview } => {
@@ -1083,10 +1176,7 @@ impl App {
 
                             let text = format!("Sending Macro Bytes: {:02X?}", content);
                             debug!("{text}");
-                            self.notify(
-                                format!("Sent Macro: {}", macro_binding.title),
-                                Color::Green,
-                            );
+                            self.notify(format!("Sent Macro: {macro_binding}"), Color::Green);
                             // TODO:
                             // self.buffer.append_user_bytes(bytes);
                         }
@@ -1098,10 +1188,7 @@ impl App {
 
                             let text = format!("Sending Macro Text: {}", text.escape_debug());
                             debug!("{text}");
-                            self.notify(
-                                format!("Sent Macro: {}", macro_binding.title),
-                                Color::Green,
-                            );
+                            self.notify(format!("Sent Macro: {macro_binding}"), Color::Green);
                         }
                     }
                 }
@@ -1268,16 +1355,10 @@ impl App {
     }
     fn render_popups(&mut self, frame: &mut Frame, area: Rect) {
         if let Some(popup) = &self.popup {
-            // todo fix this assert
-            // todo fix color on seperator line
             assert!(
-                (self.popup_single_line_state.active||self.macros.categories_selector.active)  != self.popup_table_state.selected().is_some(),
-                "Either a table element needs to be selected, or the menu title widget, but never both or neither. (Popup)"
+                (self.popup_single_line_state.active || self.macros.categories_selector.active) != self.popup_table_state.selected().is_some(),
+                "Either a table element needs to be selected, or the menu title widget, but never both or neither."
             );
-            // assert!(
-            //     self.macros.categories_selector.active != self.popup_table_state.selected().is_some(),
-            //     "Either a table element needs to be selected, or the menu title widget, but never both or neither. (Macro Category)"
-            // );
             assert_eq!(
                 self.popup_single_line_state.active && self.macros.categories_selector.active,
                 false,
@@ -1285,7 +1366,7 @@ impl App {
             );
             let area = centered_rect_size(
                 Size {
-                    width: area.width.min(36),
+                    width: area.width.min(38),
                     height: area.height.min(16),
                 },
                 area,
@@ -1478,7 +1559,8 @@ impl App {
                     );
 
                     frame.render_stateful_widget(
-                        self.macros.as_table(),
+                        self.macros
+                            .as_table(&self.keybinds, self.settings.behavior.fuzzy_macro_match),
                         macros_table_area,
                         &mut self.popup_table_state,
                     );

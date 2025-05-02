@@ -17,6 +17,8 @@ arc-swap = "1.7.1"
 better-panic = "0.3.0"
 chrono = "0.4.39"
 color-eyre = "0.6.3"
+# crokey = { version = "1.1.1", features = ["serde"] }
+crokey = { path = "../crokey", features = ["serde"] }
 derivative = "2.2.0"
 enum-rotate = "0.1.1"
 # enum_rotate = { path = "../enum-rotate" }
