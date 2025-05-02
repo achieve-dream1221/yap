@@ -20,7 +20,6 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tui::buffer::line_ending_iter;
 
 mod app;
-mod buffer;
 mod errors;
 mod event_carousel;
 mod history;

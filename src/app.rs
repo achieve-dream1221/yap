@@ -280,6 +280,12 @@ impl App {
         );
 
         let line_ending = &settings.last_port_settings.line_ending;
+        let buffer = Buffer::new(
+            &line_ending,
+            settings.behavior.wrap_text,
+            settings.behavior.timestamps,
+            settings.behavior.echo_user_text,
+        );
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection(PortSelectionElement::Ports),
@@ -308,7 +314,7 @@ impl App {
 
             user_input,
 
-            buffer: Buffer::new(&line_ending),
+            buffer,
             // buffer_scroll: 0,
             // buffer_scroll_state: ScrollbarState::default(),
             // buffer_stick_to_bottom: true,
@@ -392,7 +398,8 @@ impl App {
                     Some(ReconnectType::UsbStrict) => "Reconnected to same device?",
                     Some(ReconnectType::UsbLoose) => "Connected to similar USB device.",
                     Some(ReconnectType::LastDitch) => "Connected to COM port by name.",
-                    None => "Connected to port!",
+                    None => "",
+                    // None => "Connected to port!",
                 };
                 self.notify(text, Color::Green);
             }
@@ -1248,6 +1255,9 @@ impl App {
     pub fn notify<S: AsRef<str>>(&mut self, text: S, color: Color) {
         let text: &str = text.as_ref();
         debug!("Notification: \"{text}\", Color: {color}");
+        if text.is_empty() {
+            return;
+        }
         self.notifs.inner = Some(Notification {
             text: text.to_owned(),
             color,

@@ -59,7 +59,14 @@ pub struct Buffer {
 // }
 
 impl Buffer {
-    pub fn new(line_ending: &str) -> Self {
+    // TODO lower sources of truth for all this.
+    // Rc<Something> with the settings that's shared around?
+    pub fn new(
+        line_ending: &str,
+        text_wrapping: bool,
+        timestamps_visible: bool,
+        user_lines_visible: bool,
+    ) -> Self {
         Self {
             raw_buffer: Vec::with_capacity(1024),
             lines: Vec::with_capacity(1024),
@@ -69,9 +76,9 @@ impl Buffer {
                 vert_scroll: 0,
                 scrollbar_state: ScrollbarState::default(),
                 stuck_to_bottom: false,
-                text_wrapping: false,
-                timestamps_visible: false,
-                user_lines_visible: false,
+                text_wrapping,
+                timestamps_visible,
+                user_lines_visible,
             },
             line_ending: line_ending.to_owned(),
             last_line_completed: true,
