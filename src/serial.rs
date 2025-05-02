@@ -37,11 +37,19 @@ pub type NativePort = serialport::COMPort;
 // TODO maybe relegate this to the serial worker thread in case it blocks?
 
 #[derive(Clone, Debug)]
+pub enum ReconnectType {
+    PerfectMatch,
+    UsbStrict,
+    UsbLoose,
+    LastDitch,
+}
+
+#[derive(Clone, Debug)]
 pub enum SerialEvent {
     Ports(Vec<SerialPortInfo>),
-    Connected,
+    Connected(Option<ReconnectType>),
     RxBuffer(Vec<u8>),
-    Disconnected,
+    Disconnected(Option<String>),
 }
 
 impl From<SerialEvent> for Event {
@@ -518,6 +526,8 @@ impl SerialWorker {
             // or have some kind of cooldown after a 0-size serial read
             // (maybe use port.bytes_to_read() ?)
             // not sure if the barrage is what's causing weird unix issues with the ESP32-S3, need to test further
+
+            // TODO toy with the timeouts when writing to see if i can tell if im hitting the S3's ring buffer limit
             let sleep_time = if self.port.is_some() {
                 Duration::from_millis(10)
             } else {
@@ -530,7 +540,7 @@ impl SerialWorker {
                     SerialCommand::Connect { port, settings } => {
                         // self.settings.baud_rate = baud_rate;
                         self.update_settings(settings)?;
-                        self.connect_to_port(&port)?;
+                        self.connect_to_port(&port, None)?;
                     }
                     SerialCommand::PortSettings(settings) => self.update_settings(settings)?,
                     #[cfg(feature = "espflash")]
@@ -661,7 +671,7 @@ impl SerialWorker {
                         self.shared_status
                             .store(Arc::new(previous_status.to_idle(&*settings)));
                         self.port.drop();
-                        self.event_tx.send(SerialEvent::Disconnected.into())?;
+                        self.event_tx.send(SerialEvent::Disconnected(None).into())?;
                     }
                     // This should maybe reply with a success/fail in case the
                     // port is having an issue, so the user's input buffer isn't consumed visually
@@ -772,7 +782,8 @@ impl SerialWorker {
                         };
                         self.shared_status.store(Arc::new(disconnected_status));
 
-                        self.event_tx.send(SerialEvent::Disconnected.into())?;
+                        self.event_tx
+                            .send(SerialEvent::Disconnected(Some(e.to_string())).into())?;
                     }
                 }
             }
@@ -828,7 +839,7 @@ impl SerialWorker {
             // Sleeping to give the device some time to intialize with Windows
             // (Otherwise Access Denied errors can occur from trying to connect too quick)
             std::thread::sleep(Duration::from_secs(1));
-            self.connect_to_port(&port)?;
+            self.connect_to_port(&port, Some(ReconnectType::PerfectMatch))?;
             return Ok(());
         };
 
@@ -849,7 +860,7 @@ impl SerialWorker {
                     port.port_name
                 );
                 std::thread::sleep(Duration::from_secs(1));
-                self.connect_to_port(&port)?;
+                self.connect_to_port(&port, Some(ReconnectType::UsbStrict))?;
                 return Ok(());
             };
 
@@ -875,7 +886,7 @@ impl SerialWorker {
                         port.port_name
                     );
                     std::thread::sleep(Duration::from_secs(1));
-                    self.connect_to_port(&port)?;
+                    self.connect_to_port(&port, Some(ReconnectType::UsbLoose))?;
                     return Ok(());
                 };
             }
@@ -890,7 +901,7 @@ impl SerialWorker {
             {
                 info!("Last ditch connect attempt on: {}", port.port_name);
                 std::thread::sleep(Duration::from_secs(1));
-                self.connect_to_port(&port)?;
+                self.connect_to_port(&port, Some(ReconnectType::LastDitch))?;
                 return Ok(());
             }
         }
@@ -938,7 +949,11 @@ impl SerialWorker {
         // self.scanned_ports = ports;
         Ok(ports)
     }
-    fn connect_to_port(&mut self, port_info: &SerialPortInfo) -> Result<(), serialport::Error> {
+    fn connect_to_port(
+        &mut self,
+        port_info: &SerialPortInfo,
+        reconnect_type: Option<ReconnectType>,
+    ) -> Result<(), serialport::Error> {
         let mut port_status: PortStatus = self.shared_status.load().as_ref().clone();
         // If this is a normal connection, then this should be set to settings.dtr_on_open
         // otherwise, if we're reconnecting, then this should match the state of DTR at the time of disconnection
@@ -992,7 +1007,9 @@ impl SerialWorker {
             port_info.port_name
         );
         // info!("port.baud_rate {}", self.port.as_ref().unwrap().baud_rate()?);
-        self.event_tx.send(SerialEvent::Connected.into()).unwrap();
+        self.event_tx
+            .send(SerialEvent::Connected(reconnect_type).into())
+            .unwrap();
         Ok(())
     }
     fn read_and_share_serial_signals(

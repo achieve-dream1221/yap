@@ -50,7 +50,7 @@ impl Notifications {
 pub const EXPIRE_TIME: Duration = Duration::from_millis(3150);
 pub const PAUSE_TIME: Duration = Duration::from_millis(3000);
 pub const EXPAND_TIME: Duration = Duration::from_millis(250);
-pub const EMERGE_TIME: Duration = Duration::from_millis(60);
+pub const EMERGE_TIME: Duration = Duration::from_millis(75);
 
 pub const MIN_NOTIF_WIDTH: u16 = 70;
 

@@ -114,7 +114,7 @@ pub trait LineHelpers<'a> {
     fn all_spans_styled(self, new_style: Style) -> Line<'a>;
     /// Returns an owned `Line` that borrows from the current line's spans.
     fn new_borrowing(&'a self) -> Line<'a>;
-    /// Generates an iterator that creates owned `Span` objects whose content borrows from the original line's spans..
+    /// Generates an iterator that creates owned `Span` objects whose content borrows from the original line's spans.
     fn borrowed_spans_iter(&'a self) -> impl DoubleEndedIterator<Item = Span<'a>>;
 }
 

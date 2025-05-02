@@ -163,6 +163,7 @@ pub struct Macro {
     category: Option<String>,
     pub keybinding: Option<u8>,
     pub content: MacroContent,
+    // preview_hidden: bool,
 }
 
 // // Custom Eq+Ord impls to avoid checking `content` when sorting.

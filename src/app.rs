@@ -39,7 +39,8 @@ use crate::{
         Notification, Notifications, EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, PAUSE_TIME,
     },
     serial::{
-        PortSettings, PrintablePortInfo, Reconnections, SerialEvent, SerialHandle, MOCK_PORT_NAME,
+        PortSettings, PrintablePortInfo, ReconnectType, Reconnections, SerialEvent, SerialHandle,
+        MOCK_PORT_NAME,
     },
     settings::{Behavior, Settings},
     traits::{LastIndex, LineHelpers, ToggleBool},
@@ -326,125 +327,9 @@ impl App {
     pub fn run(&mut self, mut terminal: Terminal<impl Backend>) -> Result<()> {
         while self.is_running() {
             self.draw(&mut terminal)?;
-            let msg = self.rx.recv().unwrap();
+            let msg = self.rx.recv()?;
+            self.handle_event(msg, &mut terminal)?;
             // debug!("{msg:?}");
-            match msg {
-                Event::Quit => self.shutdown(),
-
-                Event::Crossterm(CrosstermEvent::Resize) => {
-                    terminal.autoresize()?;
-                    if let Ok(size) = terminal.size() {
-                        self.buffer.update_terminal_size(size);
-                        // self.buffer.update_wrapped_line_count();
-                        // self.buffer.scroll_by(0);
-                    } else {
-                        error!("Failed to query terminal size!");
-                    }
-                }
-                Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
-                Event::Crossterm(CrosstermEvent::MouseScroll { up }) => {
-                    let amount = if up { 1 } else { -1 };
-                    self.buffer.scroll_by(amount);
-                }
-
-                Event::Crossterm(CrosstermEvent::RightClick) => {
-                    match self.user_input.clipboard.get_text() {
-                        Ok(clipboard_text) => {
-                            let mut previous_value = self.user_input.input_box.value().to_owned();
-                            previous_value.push_str(&clipboard_text);
-                            self.user_input.input_box = previous_value.into();
-                        }
-                        Err(e) => {
-                            // error!("Failed to get clipboard text!");
-                            error!("{e}");
-                        }
-                    }
-                }
-
-                Event::Serial(SerialEvent::Connected) => {
-                    info!("Connected!");
-                    self.buffer.scroll_by(0);
-                    self.serial_healthy = true;
-                }
-                Event::Serial(SerialEvent::Disconnected) => {
-                    // self.menu = Menu::PortSelection;
-                    self.serial_healthy = false;
-                }
-                Event::Serial(SerialEvent::RxBuffer(mut data)) => {
-                    self.buffer.append_rx_bytes(&mut data);
-                    self.buffer.scroll_by(0);
-
-                    self.repeating_line_flip.flip();
-                }
-                Event::Serial(SerialEvent::Ports(ports)) => {
-                    self.ports = ports;
-                    if let Menu::PortSelection(PortSelectionElement::Ports) = &self.menu {
-                        if self.table_state.selected().is_none() {
-                            self.table_state.select(Some(0));
-                        }
-                    }
-                }
-                Event::Tick(Tick::PerSecond) => match self.menu {
-                    Menu::Terminal(TerminalPrompt::None) => {
-                        let reconnections_allowed = self.serial.port_settings.load().reconnections
-                            != Reconnections::Disabled;
-                        if !self.serial_healthy && reconnections_allowed {
-                            self.repeating_line_flip.flip();
-                            self.serial.request_reconnect();
-                        }
-                    }
-                    // If disconnect prompt is open, pause reacting to the ticks
-                    Menu::Terminal(TerminalPrompt::DisconnectPrompt) => (),
-                    Menu::PortSelection(_) => {
-                        self.serial.request_port_scan();
-                    }
-                },
-                Event::Tick(Tick::Scroll) => {
-                    self.popup_desc_scroll += 1;
-
-                    if self.popup.is_some() {
-                        let tx = self.tx.clone();
-                        self.carousel.add_oneshot(
-                            "ScrollText",
-                            Box::new(move || {
-                                tx.send(Tick::Scroll.into()).map_err(|e| e.to_string())
-                            }),
-                            Duration::from_millis(400),
-                        );
-                    }
-                }
-                Event::Tick(Tick::Notification) => {
-                    // debug!("notif!");
-                    if let Some(notif) = &self.notifs.inner {
-                        let tx = self.tx.clone();
-                        let emerging = notif.shown_for() <= EMERGE_TIME;
-                        let collapsing = notif.shown_for() >= PAUSE_TIME;
-                        let sleep_time = if emerging || collapsing {
-                            Duration::from_millis(50)
-                        } else if notif.replaced && notif.shown_for() <= EXPAND_TIME {
-                            EXPAND_TIME.saturating_sub(notif.shown_for())
-                        } else {
-                            PAUSE_TIME.saturating_sub(notif.shown_for())
-                        };
-                        self.carousel.add_oneshot(
-                            "Notification",
-                            Box::new(move || {
-                                tx.send(Tick::Notification.into())
-                                    .map_err(|e| e.to_string())
-                            }),
-                            sleep_time,
-                        );
-                    }
-                }
-                Event::Tick(Tick::Requested(origin)) => {
-                    debug!("Requested tick recieved from: {origin}");
-                    self.failed_send_at
-                        .take_if(|i| i.elapsed() >= FAILED_SEND_VISUAL_TIME);
-                }
-                Event::Tick(Tick::Tx) => {
-                    self.repeating_line_flip.flip();
-                }
-            }
         }
         // Shutting down worker threads, with timeouts
         debug!("Shutting down Serial worker");
@@ -459,6 +344,146 @@ impl App {
             let carousel = self.carousel_thread.take();
             if let Err(_) = carousel.join() {
                 error!("Carousel thread closed with an error!");
+            }
+        }
+        Ok(())
+    }
+    fn handle_event(&mut self, event: Event, terminal: &mut Terminal<impl Backend>) -> Result<()> {
+        match event {
+            Event::Quit => self.shutdown(),
+
+            Event::Crossterm(CrosstermEvent::Resize) => {
+                terminal.autoresize()?;
+                if let Ok(size) = terminal.size() {
+                    self.buffer.update_terminal_size(size);
+                    // self.buffer.update_wrapped_line_count();
+                    // self.buffer.scroll_by(0);
+                } else {
+                    error!("Failed to query terminal size!");
+                }
+            }
+            Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
+            Event::Crossterm(CrosstermEvent::MouseScroll { up }) => {
+                let amount = if up { 1 } else { -1 };
+                self.buffer.scroll_by(amount);
+            }
+
+            Event::Crossterm(CrosstermEvent::RightClick) => {
+                match self.user_input.clipboard.get_text() {
+                    Ok(clipboard_text) => {
+                        let mut previous_value = self.user_input.input_box.value().to_owned();
+                        previous_value.push_str(&clipboard_text);
+                        self.user_input.input_box = previous_value.into();
+                    }
+                    Err(e) => {
+                        // error!("Failed to get clipboard text!");
+                        error!("{e}");
+                    }
+                }
+            }
+
+            Event::Serial(SerialEvent::Connected(reconnect)) => {
+                info!("Connected!");
+                self.buffer.scroll_by(0);
+                self.serial_healthy = true;
+                let text = match reconnect {
+                    Some(ReconnectType::PerfectMatch) => "Reconnected to same device!",
+                    Some(ReconnectType::UsbStrict) => "Reconnected to same device?",
+                    Some(ReconnectType::UsbLoose) => "Connected to similar USB device.",
+                    Some(ReconnectType::LastDitch) => "Connected to COM port by name.",
+                    None => "Connected to port!",
+                };
+                self.notify(text, Color::Green);
+            }
+            Event::Serial(SerialEvent::Disconnected(reason)) => {
+                // self.menu = Menu::PortSelection;
+                self.serial_healthy = false;
+                // if let Some(reason) = reason {
+                //     self.notify(format!("Disconnected from port! {reason}"), Color::Red);
+                // }
+                if reason.is_some() {
+                    let reconnect_text = match &self.settings.last_port_settings.reconnections {
+                        Reconnections::Disabled => "Not attempting to reconnect.",
+                        Reconnections::LooseChecks => "Attempting to reconnect (loose checks).",
+                        Reconnections::StrictChecks => "Attempting to reconnect (strict checks).",
+                    };
+                    self.notify(
+                        format!("Disconnected from port! {reconnect_text}"),
+                        Color::Red,
+                    );
+                }
+            }
+            Event::Serial(SerialEvent::RxBuffer(mut data)) => {
+                self.buffer.append_rx_bytes(&mut data);
+                self.buffer.scroll_by(0);
+
+                self.repeating_line_flip.flip();
+            }
+            Event::Serial(SerialEvent::Ports(ports)) => {
+                self.ports = ports;
+                if let Menu::PortSelection(PortSelectionElement::Ports) = &self.menu {
+                    if self.table_state.selected().is_none() {
+                        self.table_state.select(Some(0));
+                    }
+                }
+            }
+            Event::Tick(Tick::PerSecond) => match self.menu {
+                Menu::Terminal(TerminalPrompt::None) => {
+                    let reconnections_allowed =
+                        self.serial.port_settings.load().reconnections != Reconnections::Disabled;
+                    if !self.serial_healthy && reconnections_allowed {
+                        self.repeating_line_flip.flip();
+                        self.serial.request_reconnect();
+                    }
+                }
+                // If disconnect prompt is open, pause reacting to the ticks
+                Menu::Terminal(TerminalPrompt::DisconnectPrompt) => (),
+                Menu::PortSelection(_) => {
+                    self.serial.request_port_scan();
+                }
+            },
+            Event::Tick(Tick::Scroll) => {
+                self.popup_desc_scroll += 1;
+
+                if self.popup.is_some() {
+                    let tx = self.tx.clone();
+                    self.carousel.add_oneshot(
+                        "ScrollText",
+                        Box::new(move || tx.send(Tick::Scroll.into()).map_err(|e| e.to_string())),
+                        Duration::from_millis(400),
+                    );
+                }
+            }
+            Event::Tick(Tick::Notification) => {
+                // debug!("notif!");
+                if let Some(notif) = &self.notifs.inner {
+                    let tx = self.tx.clone();
+                    let emerging = notif.shown_for() <= EMERGE_TIME;
+                    let collapsing = notif.shown_for() >= PAUSE_TIME;
+                    let sleep_time = if emerging || collapsing {
+                        Duration::from_millis(50)
+                    } else if notif.replaced && notif.shown_for() <= EXPAND_TIME {
+                        EXPAND_TIME.saturating_sub(notif.shown_for())
+                    } else {
+                        PAUSE_TIME.saturating_sub(notif.shown_for())
+                    };
+                    self.carousel.add_oneshot(
+                        "Notification",
+                        Box::new(move || {
+                            tx.send(Tick::Notification.into())
+                                .map_err(|e| e.to_string())
+                        }),
+                        sleep_time,
+                    );
+                }
+            }
+            Event::Tick(Tick::Requested(origin)) => {
+                debug!("Requested tick recieved from: {origin}");
+                self.failed_send_at
+                    .take_if(|i| i.elapsed() >= FAILED_SEND_VISUAL_TIME);
+            }
+            Event::Tick(Tick::Tx) => {
+                self.repeating_line_flip.flip();
             }
         }
         Ok(())
@@ -996,7 +1021,7 @@ impl App {
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
-                self.notify("Settings saved!", Color::Green);
+                self.notify("Port settings saved!", Color::Green);
                 return;
             }
             Some(PopupMenu::BehaviorSettings) => {
@@ -1005,10 +1030,12 @@ impl App {
                 self.buffer
                     .show_timestamps(self.settings.behavior.timestamps);
                 self.buffer.set_line_wrap(self.settings.behavior.wrap_text);
+                self.buffer
+                    .set_user_lines(self.settings.behavior.echo_user_text);
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
-                self.notify("Settings saved!", Color::Green);
+                self.notify("Behavior settings saved!", Color::Green);
                 return;
             }
             Some(PopupMenu::Macros) => {
@@ -1213,7 +1240,7 @@ impl App {
     }
     pub fn notify<S: AsRef<str>>(&mut self, text: S, color: Color) {
         let text: &str = text.as_ref();
-        debug!("Notification: {text}, Color: {color}");
+        debug!("Notification: \"{text}\", Color: {color}");
         self.notifs.inner = Some(Notification {
             text: text.to_owned(),
             color,
@@ -1575,22 +1602,22 @@ impl App {
             self.serial_healthy,
         );
 
-        #[cfg(debug_assertions)]
-        {
-            let line = Line::raw(format!(
-                "Entries: {} | Lines: {}",
-                self.buffer.lines.len(),
-                self.buffer.line_count()
-            ))
-            .right_aligned();
-            frame.render_widget(
-                line,
-                line_area.inner(Margin {
-                    horizontal: 3,
-                    vertical: 0,
-                }),
-            );
-        }
+        // #[cfg(debug_assertions)]
+        // {
+        //     let line = Line::raw(format!(
+        //         "Entries: {} | Lines: {}",
+        //         self.buffer.lines.len(),
+        //         self.buffer.line_count()
+        //     ))
+        //     .right_aligned();
+        //     frame.render_widget(
+        //         line,
+        //         line_area.inner(Margin {
+        //             horizontal: 3,
+        //             vertical: 0,
+        //         }),
+        //     );
+        // }
 
         #[cfg(not(debug_assertions))]
         {

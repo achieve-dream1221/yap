@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, iter::Peekable};
 
 use ansi_to_tui::IntoText;
 use buf_line::BufLine;
@@ -27,7 +27,7 @@ pub struct BufferState {
     text_wrapping: bool,
     // TODO maybe make this private and provide a function that auto-runs the render length and scroll..?
     timestamps_visible: bool,
-
+    user_lines_visible: bool,
     vert_scroll: usize,
     scrollbar_state: ScrollbarState,
     stuck_to_bottom: bool,
@@ -37,7 +37,8 @@ pub struct BufferState {
 
 pub struct Buffer {
     raw_buffer: Vec<u8>,
-    pub lines: Vec<BufLine>,
+    lines: Vec<BufLine>,
+    user_lines: Vec<BufLine>,
     last_line_completed: bool,
 
     /// The last-known size of the area given to render the buffer in
@@ -62,6 +63,7 @@ impl Buffer {
         Self {
             raw_buffer: Vec::with_capacity(1024),
             lines: Vec::with_capacity(1024),
+            user_lines: Vec::with_capacity(1024),
             last_terminal_size: Size::default(),
             state: BufferState {
                 vert_scroll: 0,
@@ -69,6 +71,7 @@ impl Buffer {
                 stuck_to_bottom: false,
                 text_wrapping: false,
                 timestamps_visible: false,
+                user_lines_visible: false,
             },
             line_ending: line_ending.to_owned(),
             last_line_completed: true,
@@ -95,9 +98,12 @@ impl Buffer {
 
             line.spans.insert(0, user_span.clone());
             line.style_all_spans(Color::DarkGray.into());
-            self.lines.push(BufLine::new_with_line(
+            self.user_lines.push(BufLine::new_with_line(
                 line,
-                0,
+                self.lines
+                    .last()
+                    .map(|l| l.raw_buffer_index)
+                    .unwrap_or_default(), // .max(1)
                 self.last_terminal_size.width,
                 self.state.timestamps_visible,
             ));
@@ -176,11 +182,28 @@ impl Buffer {
                 l.update_line_height(self.last_terminal_size.width, self.state.timestamps_visible);
 
             total + new_height
+        }) + self.user_lines.iter_mut().fold(0, |total, l| {
+            let new_height =
+                l.update_line_height(self.last_terminal_size.width, self.state.timestamps_visible);
+
+            total + new_height
         })
     }
     pub fn set_line_wrap(&mut self, wrap: bool) {
         self.state.text_wrapping = wrap;
         self.scroll_by(0);
+    }
+    pub fn set_user_lines(&mut self, show: bool) {
+        self.state.user_lines_visible = show;
+    }
+    fn buflines_iter(&self) -> impl Iterator<Item = &BufLine> {
+        self.lines
+            .iter()
+            .filter(|_| !self.state.user_lines_visible)
+            .chain(
+                interleave(self.lines.iter(), self.user_lines.iter(), true)
+                    .filter(|_| self.state.user_lines_visible),
+            )
     }
     pub fn lines_iter(&self) -> (impl Iterator<Item = Line>, u16) {
         // TODO styling based on line prefix
@@ -189,6 +212,8 @@ impl Buffer {
         let last_size = &self.last_terminal_size;
         let total_lines = self.line_count();
         let more_lines_than_height = total_lines > last_size.height as usize;
+
+        // let lines_iter = ;
 
         let entries_to_skip: usize;
         let entries_to_take: usize;
@@ -204,8 +229,10 @@ impl Buffer {
                     let mut current_line_height: usize = 0;
 
                     let mut lines_from_top: usize = 0;
-                    for (index, entries_lines) in
-                        self.lines.iter().map(|l| l.get_line_height()).enumerate()
+                    for (index, entries_lines) in self
+                        .buflines_iter()
+                        .map(|l| l.get_line_height())
+                        .enumerate()
                     {
                         current_line_index = index;
                         current_line_height = entries_lines;
@@ -239,8 +266,7 @@ impl Buffer {
                     let mut entries_to_take = 0;
 
                     for entry_lines in self
-                        .lines
-                        .iter()
+                        .buflines_iter()
                         .skip(entries_to_skip)
                         .map(|l| l.get_line_height())
                     {
@@ -272,8 +298,7 @@ impl Buffer {
         }
 
         (
-            self.lines
-                .iter()
+            self.buflines_iter()
                 .skip(entries_to_skip)
                 .take(entries_to_take)
                 .map(|l| l.as_line(self.state.timestamps_visible)),
@@ -295,6 +320,7 @@ impl Buffer {
     }
     pub fn clear(&mut self) {
         self.lines.clear();
+        self.user_lines.clear();
         self.raw_buffer.clear();
         self.last_line_completed = true;
     }
@@ -354,7 +380,16 @@ impl Buffer {
             .content_length(self.line_count().saturating_sub(last_size.height as usize));
     }
     fn wrapped_line_count(&self) -> usize {
-        self.lines.iter().map(|l| l.get_line_height()).sum()
+        let sum = self.lines.iter().map(|l| l.get_line_height()).sum();
+        if self.state.user_lines_visible {
+            sum + self
+                .user_lines
+                .iter()
+                .map(|l| l.get_line_height())
+                .sum::<usize>()
+        } else {
+            sum
+        }
     }
 
     /// Returns the total amount of lines that can be rendered,
@@ -362,6 +397,8 @@ impl Buffer {
     pub fn line_count(&self) -> usize {
         if self.state.text_wrapping {
             self.wrapped_line_count()
+        } else if self.state.user_lines_visible {
+            self.lines.len() + self.user_lines.len()
         } else {
             self.lines.len()
         }
@@ -478,3 +515,63 @@ fn extract_line(text: Text<'_>) -> Option<Line<'_>> {
     let Text { lines, .. } = text;
     lines.into_iter().find(|l| !l.spans.is_empty())
 }
+
+fn interleave<I>(
+    // mut a: Peekable<I>,
+    // mut b: Peekable<I>,
+    a: I,
+    b: I,
+    swap_zero_equal: bool,
+) -> impl Iterator<Item = I::Item>
+where
+    I: Iterator,
+    // I::Item: Clone,
+    // I::Item: std::fmt::Debug,
+    I::Item: std::cmp::Ord,
+{
+    let mut a = a.enumerate().peekable();
+    let mut b = b.enumerate().peekable();
+    std::iter::from_fn(move || match (a.peek(), b.peek()) {
+        // My schizo logic
+        // If there's a system line and a user line both at index 0, user line go first.
+        (Some((0, ia)), Some((0, ib))) if swap_zero_equal => {
+            if ia == ib {
+                b.next().map(|t| t.1)
+            } else {
+                a.next().map(|t| t.1)
+            }
+        }
+        // Normal logic
+        (Some((_, ia)), Some((_, ib))) => {
+            if ia <= ib {
+                a.next().map(|t| t.1)
+            } else {
+                b.next().map(|t| t.1)
+            }
+        }
+        (Some(_), None) => a.next().map(|t| t.1),
+        (None, Some(_)) => b.next().map(|t| t.1),
+        (None, None) => None,
+    })
+}
+
+// fn interleave<I>(mut a: Peekable<I>, mut b: Peekable<I>, swap_zero_equal: bool) -> impl Iterator<Item = I::Item>
+// where
+//     I: Iterator,
+//     // I::Item: Clone,
+//     // I::Item: std::fmt::Debug,
+//     I::Item: std::cmp::Ord,
+// {
+//     std::iter::from_fn(move || match (a.peek(), b.peek()) {
+//         (Some(ia), Some(ib)) => {
+//             if ia <= ib {
+//                 a.next()
+//             } else {
+//                 b.next()
+//             }
+//         }
+//         (Some(_), None) => a.next(),
+//         (None, Some(_)) => b.next(),
+//         (None, None) => None,
+//     })
+// }

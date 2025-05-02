@@ -25,8 +25,28 @@ pub struct BufLine {
     /// How many vertical lines are needed in the terminal to fully show this line.
     rendered_line_height: usize,
     // Might not be exactly accurate, but would be enough to place user input lines in proper space if needing to
-    raw_buffer_index: usize,
+    pub(super) raw_buffer_index: usize,
     timestamp: String,
+}
+
+impl PartialEq for BufLine {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw_buffer_index == other.raw_buffer_index
+    }
+}
+
+impl Eq for BufLine {}
+
+impl PartialOrd for BufLine {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.raw_buffer_index.partial_cmp(&other.raw_buffer_index)
+    }
+}
+
+impl Ord for BufLine {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.raw_buffer_index.cmp(&other.raw_buffer_index)
+    }
 }
 
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
