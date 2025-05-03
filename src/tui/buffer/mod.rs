@@ -28,7 +28,7 @@ pub struct BufferState {
     text_wrapping: bool,
     // TODO maybe make this private and provide a function that auto-runs the render length and scroll..?
     timestamps_visible: bool,
-    user_lines_visible: bool,
+    user_echo_input: UserEcho,
     vert_scroll: usize,
     scrollbar_state: ScrollbarState,
     stuck_to_bottom: bool,
@@ -53,6 +53,22 @@ pub struct Buffer {
     // line_ending_finder: Finder<'static>,
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::Display,
+)]
+#[strum(serialize_all = "title_case")]
+pub enum UserEcho {
+    #[strum(serialize = "false")]
+    None,
+    #[strum(serialize = "true")]
+    All,
+    // #[strum(serialize = "All but No Bytes")]
+    NoBytes,
+    // #[strum(serialize = "All but No Macros")]
+    NoMacros,
+    NoMacrosOrBytes,
+}
+
 // impl Default for Buffer {
 //     fn default() -> Self {
 //         Self::new()
@@ -66,7 +82,7 @@ impl Buffer {
         line_ending: &str,
         text_wrapping: bool,
         timestamps_visible: bool,
-        user_lines_visible: bool,
+        user_echo: UserEcho,
     ) -> Self {
         Self {
             raw_buffer: Vec::with_capacity(1024),
@@ -79,7 +95,7 @@ impl Buffer {
                 stuck_to_bottom: false,
                 text_wrapping,
                 timestamps_visible,
-                user_lines_visible,
+                user_echo_input: user_echo,
             },
             line_ending: line_ending.to_owned(),
             last_line_completed: true,
@@ -88,7 +104,7 @@ impl Buffer {
     // pub fn append_str(&mut self, str: &str) {
     // }
 
-    pub fn append_user_bytes(&mut self, bytes: &[u8]) {
+    pub fn append_user_bytes(&mut self, bytes: &[u8], is_macro: bool) {
         let text: Span = bytes.iter().map(|b| format!("{:02X}", b)).join(" ").into();
         let text = text.dark_gray().italic().bold();
 
@@ -106,12 +122,14 @@ impl Buffer {
                 .unwrap_or_default(), // .max(1)
             self.last_terminal_size.width,
             self.state.timestamps_visible,
+            true,
+            is_macro,
         ));
-
+        // TODO make this more dynamic with the macro hiding
         self.last_line_completed = true;
     }
 
-    pub fn append_user_text(&mut self, text: &str) {
+    pub fn append_user_text(&mut self, text: &str, is_macro: bool) {
         let mm = text.escape_debug().to_string();
 
         let user_span = span!(Color::DarkGray;"USER> ");
@@ -136,8 +154,11 @@ impl Buffer {
                     .unwrap_or_default(), // .max(1)
                 self.last_terminal_size.width,
                 self.state.timestamps_visible,
+                false,
+                is_macro,
             ));
         }
+        // TODO make this more dynamic with the macro hiding
         self.last_line_completed = true;
     }
 
@@ -195,6 +216,8 @@ impl Buffer {
                     index,
                     self.last_terminal_size.width,
                     self.state.timestamps_visible,
+                    false,
+                    false,
                 ));
             };
         }
@@ -223,16 +246,28 @@ impl Buffer {
         self.state.text_wrapping = wrap;
         self.scroll_by(0);
     }
-    pub fn set_user_lines(&mut self, show: bool) {
-        self.state.user_lines_visible = show;
+    pub fn set_user_lines(&mut self, user_echo: UserEcho) {
+        self.state.user_echo_input = user_echo;
     }
     fn buflines_iter(&self) -> impl Iterator<Item = &BufLine> {
         self.lines
             .iter()
-            .filter(|_| !self.state.user_lines_visible)
+            .filter(|_| self.state.user_echo_input == UserEcho::None)
             .chain(
-                interleave(self.lines.iter(), self.user_lines.iter(), true)
-                    .filter(|_| self.state.user_lines_visible),
+                interleave(
+                    self.lines.iter(),
+                    self.user_lines
+                        .iter()
+                        .filter(|l| match self.state.user_echo_input {
+                            UserEcho::None => false,
+                            UserEcho::All => true,
+                            UserEcho::NoBytes => !l.is_bytes,
+                            UserEcho::NoMacros => !l.is_macro,
+                            UserEcho::NoMacrosOrBytes => !l.is_bytes && !l.is_macro,
+                        }),
+                    true,
+                )
+                .filter(|_| self.state.user_echo_input != UserEcho::None),
             )
     }
     pub fn lines_iter(&self) -> (impl Iterator<Item = Line>, u16) {
@@ -410,16 +445,7 @@ impl Buffer {
             .content_length(self.line_count().saturating_sub(last_size.height as usize));
     }
     fn wrapped_line_count(&self) -> usize {
-        let sum = self.lines.iter().map(|l| l.get_line_height()).sum();
-        if self.state.user_lines_visible {
-            sum + self
-                .user_lines
-                .iter()
-                .map(|l| l.get_line_height())
-                .sum::<usize>()
-        } else {
-            sum
-        }
+        self.buflines_iter().map(|l| l.get_line_height()).sum()
     }
 
     /// Returns the total amount of lines that can be rendered,
@@ -427,10 +453,8 @@ impl Buffer {
     pub fn line_count(&self) -> usize {
         if self.state.text_wrapping {
             self.wrapped_line_count()
-        } else if self.state.user_lines_visible {
-            self.lines.len() + self.user_lines.len()
         } else {
-            self.lines.len()
+            self.buflines_iter().count()
         }
     }
 
@@ -546,18 +570,11 @@ fn extract_line(text: Text<'_>) -> Option<Line<'_>> {
     lines.into_iter().find(|l| !l.spans.is_empty())
 }
 
-fn interleave<I>(
-    // mut a: Peekable<I>,
-    // mut b: Peekable<I>,
-    a: I,
-    b: I,
-    swap_zero_equal: bool,
-) -> impl Iterator<Item = I::Item>
+fn interleave<A, B, T>(a: A, b: B, swap_zero_equal: bool) -> impl Iterator<Item = T>
 where
-    I: Iterator,
-    // I::Item: Clone,
-    // I::Item: std::fmt::Debug,
-    I::Item: std::cmp::Ord,
+    A: Iterator<Item = T>,
+    B: Iterator<Item = T>,
+    T: Ord,
 {
     let mut a = a.enumerate().peekable();
     let mut b = b.enumerate().peekable();

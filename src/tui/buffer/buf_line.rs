@@ -26,6 +26,10 @@ pub struct BufLine {
     rendered_line_height: usize,
     // Might not be exactly accurate, but would be enough to place user input lines in proper space if needing to
     pub(super) raw_buffer_index: usize,
+
+    pub(super) is_bytes: bool,
+    pub(super) is_macro: bool,
+
     timestamp: String,
 }
 
@@ -57,6 +61,8 @@ impl BufLine {
         raw_buffer_index: usize,
         area_width: u16,
         with_timestamp: bool,
+        is_bytes: bool,
+        is_macro: bool,
     ) -> Self {
         let time_format = "[%H:%M:%S%.3f] ";
 
@@ -74,6 +80,8 @@ impl BufLine {
             // style: None,
             rendered_line_height: 0,
             timestamp: Local::now().format(time_format).to_string(),
+            is_bytes,
+            is_macro,
         };
         bufline.update_line_height(area_width, with_timestamp);
         bufline
@@ -146,6 +154,10 @@ impl BufLine {
     pub fn index_in_buffer(&self) -> usize {
         self.raw_buffer_index
     }
+
+    // pub fn is_bytes(&self) -> bool {}
+
+    // pub fn is_macro(&self) -> bool {}
 
     // pub fn bytes(&self) -> &[u8] {
     //     self.raw_value.as_slice()

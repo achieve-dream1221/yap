@@ -297,7 +297,7 @@ impl App {
             &line_ending,
             settings.behavior.wrap_text,
             settings.behavior.timestamps,
-            settings.behavior.echo_user_text,
+            settings.behavior.echo_user_input,
         );
         Self {
             state: RunningState::Running,
@@ -492,7 +492,7 @@ impl App {
                     self.carousel.add_oneshot(
                         "MacroTX",
                         Box::new(move || tx.send(Tick::MacroTx.into()).map_err(|e| e.to_string())),
-                        Duration::from_millis(300),
+                        self.settings.behavior.macro_chain_delay,
                     );
                 }
             }
@@ -562,13 +562,13 @@ impl App {
                     .unwrap();
 
                 debug!("{}", format!("Sending Macro Bytes: {:02X?}", content));
-                self.buffer.append_user_bytes(&content);
+                self.buffer.append_user_bytes(&content, true);
             }
             MacroContent::Text(text) => {
                 self.serial
                     .send_str(text, self.buffer.line_ending.as_str())
                     .unwrap();
-                self.buffer.append_user_text(text);
+                self.buffer.append_user_text(text, true);
 
                 debug!("{}", format!("Sending Macro Text: {}", text.escape_debug()));
             }
@@ -1169,7 +1169,7 @@ impl App {
                     .show_timestamps(self.settings.behavior.timestamps);
                 self.buffer.set_line_wrap(self.settings.behavior.wrap_text);
                 self.buffer
-                    .set_user_lines(self.settings.behavior.echo_user_text);
+                    .set_user_lines(self.settings.behavior.echo_user_input);
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
@@ -1262,7 +1262,7 @@ impl App {
                         self.serial
                             .send_str(user_input, self.buffer.line_ending.as_str())
                             .unwrap();
-                        self.buffer.append_user_text(user_input);
+                        self.buffer.append_user_text(user_input, false);
                         self.user_input.history.push(user_input);
 
                         self.user_input.clear();
@@ -1372,7 +1372,7 @@ impl App {
             );
             let area = centered_rect_size(
                 Size {
-                    width: area.width.min(38),
+                    width: area.width.min(42),
                     height: area.height.min(16),
                 },
                 area,

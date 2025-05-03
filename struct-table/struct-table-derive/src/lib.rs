@@ -21,6 +21,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
 
     // Extracting the 'struct-global' attributes
     let struct_attrs: StructTableAttributes = deluxe::extract_attributes(&mut ast)?;
+    // panic!("{ast:#?}");
     // Vec of each processed field, in order of declaration
     let field_attrs: Vec<StructField> = extract_field_attrs(&mut ast)?;
 
@@ -48,6 +49,12 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
             let field_to_string = if let Some(overrides) = &f.display_override {
                 // If an override for Display was given
 
+                let use_debug = match overrides {
+                    ArrayOrConst::Expr(syn::Expr::Path(path)) if path.path.is_ident("Debug") => true,
+                    ArrayOrConst::Expr(_) => false,
+                    ArrayOrConst::Array(_) => false,
+                };
+
                 // Bools use simpler logic, flipping between [0] and [1]
                 // in [true, false] order
                 if f.is_bool {
@@ -74,6 +81,11 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
 
                             overrides_ref[label_index]
                         }
+                    }
+                } else if use_debug {
+                    // if display is set to Debug, use the field's type's Debug impl
+                    quote! {
+                        format!("{:?}", self.#ident)
                     }
                 } else {
                     // Getting the overridden label with the same index of the field's value
@@ -179,15 +191,17 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                 let inner_wrap_logic = inner_wrap(a.no_inner_wrap);
 
                 quote! {
-                    let variants: &[_] = #variants.as_ref();
+                    let variants: _ = #variants;
 
-                    let current_position: usize = variants.iter().position(|v: &_| v == &self.#ident ).expect("current variant not in given list");
+                    let variants_ref: &[_] = variants.as_ref();
 
-                    let last_index = variants.len() - 1;
+                    let current_position: usize = variants_ref.iter().position(|v: &_| v == &self.#ident ).expect("current variant not in given list");
+
+                    let last_index = variants_ref.len() - 1;
 
                     #inner_wrap_logic
 
-                    self.#ident = variants[new_index].clone().into();
+                    self.#ident = variants_ref[new_index].clone().into();
                 }
             }
         })

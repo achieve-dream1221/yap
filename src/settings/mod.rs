@@ -2,6 +2,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
+    time::Duration,
 };
 
 use derivative::Derivative;
@@ -22,7 +23,7 @@ use tracing::{info, level_filters::LevelFilter};
 //   - Since #[serde(default)] gets the default for the field's _type_, and *not* the parent struct's `Default::default()` value for it
 // - #[derivative(Default)] for properly setting up `Default::default()` for when a _struct_ is missing.
 
-use crate::serial::PortSettings;
+use crate::{serial::PortSettings, tui::buffer::UserEcho};
 
 pub mod ser;
 
@@ -62,10 +63,11 @@ pub struct Behavior {
     /// Persist Fake Shell's command history across sessions (TODO).
     pub retain_history: bool,
 
-    #[serde_inline_default(true)]
-    #[derivative(Default(value = "true"))]
+    #[serde_inline_default(UserEcho::All)]
+    #[derivative(Default(value = "UserEcho::All"))]
+    #[table(values = [UserEcho::None, UserEcho::All, UserEcho::NoBytes, UserEcho::NoMacros, UserEcho::NoMacrosOrBytes])]
     /// Show user input in buffer after sending.
-    pub echo_user_text: bool,
+    pub echo_user_input: UserEcho,
 
     #[serde(default)]
     /// Show timestamps next to each incoming line.
@@ -79,6 +81,13 @@ pub struct Behavior {
     #[derivative(Default(value = "true"))]
     /// Fall back to macros with same name if category missing (TODO).
     pub fuzzy_macro_match: bool,
+
+    #[serde_inline_default(Duration::from_millis(500))]
+    #[derivative(Default(value = "Duration::from_millis(500)"))]
+    #[table(display = Debug)]
+    #[table(values = [Duration::from_millis(10), Duration::from_millis(100), Duration::from_millis(250), Duration::from_millis(500), Duration::from_secs(1)])]
+    /// Pause between chained Macros.
+    pub macro_chain_delay: Duration,
 }
 
 impl Settings {
