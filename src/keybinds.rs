@@ -22,95 +22,35 @@ ctrl-m = "show-macros"
 'ctrl-.' = "show-portsettings"
 
 [macros]
-ctrl-h = "meow"
-ctrl-r = "Restart"
-F19 = "Restart"
-ctrl-f = "Cum|Factory Reset"
-ctrl-s = "CaiX Vib (ID 12345, 0.5s)"
-ctrl-g = "OpenShock Setup|Echo Off"
+F19 = ["Restart"]
+ctrl-r = ["Restart","Restart"]
+ctrl-f = ["Cum|Factory Reset"]
+ctrl-s = ["CaiX Vib (ID 12345, 0.5s)"]
+ctrl-g = ["OpenShock Setup|Echo Off"]
+ctrl-h = ["OpenShock Setup|Factory Reset","OpenShock Setup|Setup Authtoken","OpenShock Setup|Setup Networks"]
 "#;
 
 use serde::{Deserializer, Serializer};
 
-use crate::macros::Macro;
+use crate::macros::MacroRef;
 
 // TODO use ; to chain macros
-
-const MACRO_DELIMITER: char = '|';
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct KeybindMacro {
-    pub category: Option<String>,
-    pub title: String,
-}
-
-impl fmt::Display for KeybindMacro {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(ref cat) = self.category {
-            write!(f, "\"{}\" in \"{cat}\"", self.title)
-        } else {
-            write!(f, "\"{}\"", self.title)
-        }
-    }
-}
-
-impl KeybindMacro {
-    pub fn eq_macro(&self, other: &Macro) -> bool {
-        self.title == other.title && self.category == other.category
-    }
-    pub fn eq_macro_fuzzy(&self, other: &Macro) -> bool {
-        self.title == other.title
-    }
-}
-
-impl<'de> Deserialize<'de> for KeybindMacro {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let buf = String::deserialize(deserializer)?;
-        let parts: Vec<&str> = buf.splitn(2, MACRO_DELIMITER).collect();
-
-        let (category, title) = match parts.len() {
-            2 => (
-                Some(parts[0].trim().to_string()),
-                parts[1].trim().to_string(),
-            ),
-            1 => (None, parts[0].trim().to_string()),
-            _ => (None, String::new()),
-        };
-
-        Ok(KeybindMacro { category, title })
-    }
-}
-
-impl Serialize for KeybindMacro {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let s = if let Some(ref cat) = self.category {
-            format!("{}|{}", cat, self.title)
-        } else {
-            self.title.clone()
-        };
-        serializer.serialize_str(&s)
-    }
-}
 
 #[derive(Serialize, Deserialize)]
 pub struct Keybinds {
     pub keybindings: HashMap<KeyCombination, String>,
-    // #[serde(
-    //     deserialize_with = "deserialize_keybind_macros",
-    //     serialize_with = "serialize_keybind_macros"
-    // )]
-    pub macros: HashMap<KeyCombination, KeybindMacro>,
+    pub macros: HashMap<KeyCombination, Vec<MacroRef>>,
 }
 
 impl Keybinds {
     pub fn new() -> Self {
         toml::from_str(CONFIG_TOML).unwrap()
+    }
+    pub fn method_from_key_combo(&self, key_combo: KeyCombination) -> Option<&str> {
+        self.keybindings
+            .iter()
+            .find(|(kc, m)| *kc == &key_combo)
+            .map(|(kc, m)| m.as_str())
     }
 }
 

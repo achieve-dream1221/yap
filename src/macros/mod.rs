@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fmt,
+};
 
 use crokey::KeyCombination;
 use ratatui::{
@@ -11,8 +14,12 @@ use tui_input::Input;
 
 use crate::{keybinds::Keybinds, tui::single_line_selector::SingleLineSelectorState};
 
+mod macro_ref;
+pub use macro_ref::MacroRef;
+
 pub struct Macros {
     pub all: BTreeSet<Macro>,
+
     pub ui_state: MacrosPrompt,
     // ["All Bytes", "All Strings", "All Macros", "OpenShock"]
     //     Start here, at user's first category.  ^
@@ -75,6 +82,7 @@ impl Macros {
         Self {
             // scrollbar_state: ScrollbarState::new(test_macros.len()),
             all: test_macros,
+            // tx_queue: Vec::new(),
             ui_state: MacrosPrompt::None,
             input: Input::default(),
             categories_selector: SingleLineSelectorState::new().with_selected(2),
@@ -120,10 +128,17 @@ impl Macros {
                 let macro_string = keybinds
                     .macros
                     .iter()
+                    .filter(|(kc, km)| km.len() == 1)
+                    .map(|(kc, km)| (kc, &km[0]))
                     .find(|(kc, km)| km.eq_macro(m))
                     .or_else(|| {
                         if fuzzy_macro_name_match {
-                            keybinds.macros.iter().find(|(kc, km)| km.eq_macro_fuzzy(m))
+                            keybinds
+                                .macros
+                                .iter()
+                                .filter(|(kc, km)| km.len() == 1)
+                                .map(|(kc, km)| (kc, &km[0]))
+                                .find(|(kc, km)| km.eq_macro_fuzzy(m))
                         } else {
                             None
                         }
@@ -151,6 +166,55 @@ impl Macros {
             .collect();
 
         no_category.chain(categories.into_iter())
+    }
+    pub fn macro_from_key_combo<'a>(
+        &'a self,
+        key_combo: KeyCombination,
+        macro_keybinds: &'a HashMap<KeyCombination, Vec<MacroRef>>,
+        fuzzy_macro_name_match: bool,
+    ) -> Result<Vec<&'a Macro>, Option<Vec<&'a MacroRef>>> {
+        // ) -> Result<Vec<usize>, Option<Vec<&KeybindMacro>>> {
+        let Some(v) = macro_keybinds.get(&key_combo) else {
+            return Err(None);
+        };
+
+        let mut somes: Vec<&Macro> = Vec::new();
+        let mut nones: Vec<&MacroRef> = Vec::new();
+
+        v.iter().for_each(|km| {
+            let eq_result = self
+                .all
+                .iter()
+                // .enumerate()
+                .find(|m| km.eq_macro(m));
+            match eq_result {
+                Some(macro_ref) => {
+                    somes.push(macro_ref);
+                    return;
+                }
+                None if fuzzy_macro_name_match => (),
+                None => {
+                    nones.push(km);
+                    return;
+                }
+            }
+            assert!(fuzzy_macro_name_match);
+            let eq_result = self
+                .all
+                .iter()
+                // .enumerate()
+                .find(|m| km.eq_macro_fuzzy(m));
+            match eq_result {
+                Some(macro_ref) => somes.push(macro_ref),
+                None => nones.push(km),
+            }
+        });
+
+        if nones.is_empty() {
+            Ok(somes)
+        } else {
+            Err(Some(nones))
+        }
     }
 }
 

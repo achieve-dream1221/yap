@@ -3,10 +3,11 @@ use std::{borrow::Cow, iter::Peekable};
 use ansi_to_tui::IntoText;
 use buf_line::BufLine;
 use chrono::{DateTime, Local};
+use itertools::Itertools;
 use memchr::memmem::Finder;
 use ratatui::{
     layout::Size,
-    style::{palette::material::PINK, Color, Style, Stylize},
+    style::{Color, Style, Stylize, palette::material::PINK},
     text::{Line, Span, Text, ToText},
     widgets::{
         Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -87,7 +88,29 @@ impl Buffer {
     // pub fn append_str(&mut self, str: &str) {
     // }
 
-    // TODO also do append_user_bytes
+    pub fn append_user_bytes(&mut self, bytes: &[u8]) {
+        let text: Span = bytes.iter().map(|b| format!("{:02X}", b)).join(" ").into();
+        let text = text.dark_gray().italic().bold();
+
+        let user_span = span!(Color::DarkGray; "BYTE> ");
+
+        let line = Line::from(vec![user_span, text]);
+
+        // line.spans.insert(0, user_span.clone());
+        // line.style_all_spans(Color::DarkGray.into());
+        self.user_lines.push(BufLine::new_with_line(
+            line,
+            self.lines
+                .last()
+                .map(|l| l.raw_buffer_index)
+                .unwrap_or_default(), // .max(1)
+            self.last_terminal_size.width,
+            self.state.timestamps_visible,
+        ));
+
+        self.last_line_completed = true;
+    }
+
     pub fn append_user_text(&mut self, text: &str) {
         let mm = text.escape_debug().to_string();
 

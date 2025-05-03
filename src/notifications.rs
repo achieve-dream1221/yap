@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::mpsc::Sender,
+    time::{Duration, Instant},
+};
 
 use ratatui::{
     prelude::*,
@@ -7,9 +10,11 @@ use ratatui::{
 use ratatui_macros::horizontal;
 use tracing::debug;
 
-#[derive(Default)]
+use crate::app::{Event, Tick};
+
 pub struct Notifications {
     pub inner: Option<Notification>,
+    tx: Sender<Event>,
 }
 
 #[derive(Debug)]
@@ -27,17 +32,23 @@ impl Notification {
 }
 
 impl Notifications {
-    // pub fn notify<S: AsRef<str>>(&mut self, text: S, color: Color) {
-    //     let text: &str = text.as_ref();
-    //     debug!("Notification: {text}, Color: {color}");
-    //     self.inner = Some(Notification {
-    //         text: text.to_owned(),
-    //         color,
-    //         shown_at: Instant::now(),
-    //         // animating: true,
-    //         replaced: self.inner.is_some(),
-    //     })
-    // }
+    pub fn new(tx: Sender<Event>) -> Self {
+        Self { inner: None, tx }
+    }
+    pub fn notify<S: AsRef<str>>(&mut self, text: S, color: Color) {
+        let text: &str = text.as_ref();
+        debug!("Notification: \"{text}\", Color: {color}");
+        if text.is_empty() {
+            return;
+        }
+        self.inner = Some(Notification {
+            text: text.to_owned(),
+            color,
+            shown_at: Instant::now(),
+            replaced: self.inner.is_some(),
+        });
+        self.tx.send(Tick::Notification.into()).unwrap();
+    }
     pub fn is_some(&self) -> bool {
         self.inner.is_some()
     }

@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::VecDeque,
     i32,
     sync::mpsc::{Receiver, Sender},
     thread::JoinHandle,
@@ -8,9 +9,11 @@ use std::{
 
 use arboard::Clipboard;
 use color_eyre::{eyre::Result, owo_colors::OwoColorize};
-use crokey::{key, KeyCombination};
+use crokey::{KeyCombination, key};
 use enum_rotate::EnumRotate;
+use itertools::Itertools;
 use ratatui::{
+    Frame, Terminal,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::{Constraint, Layout, Margin, Offset, Rect, Size},
     prelude::Backend,
@@ -20,7 +23,6 @@ use ratatui::{
         Block, Borders, Clear, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Table, TableState, Widget, Wrap,
     },
-    Frame, Terminal,
 };
 use ratatui_macros::{horizontal, line, span, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
@@ -29,30 +31,30 @@ use strum::{VariantArray, VariantNames};
 use takeable::Takeable;
 use tracing::{debug, error, info, instrument, warn};
 use tui_big_text::{BigText, PixelSize};
-use tui_input::{backend::crossterm::EventHandler, Input, StateChanged};
+use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     keybinds::{
-        KeybindMacro, Keybinds, SHOW_MACROS, SHOW_PORTSETTINGS, TOGGLE_DTR, TOGGLE_RTS,
-        TOGGLE_TEXTWRAP, TOGGLE_TIMESTAMPS,
+        Keybinds, SHOW_MACROS, SHOW_PORTSETTINGS, TOGGLE_DTR, TOGGLE_RTS, TOGGLE_TEXTWRAP,
+        TOGGLE_TIMESTAMPS,
     },
-    macros::{Macro, MacroContent, Macros, MacrosPrompt},
+    macros::{Macro, MacroContent, MacroRef, Macros, MacrosPrompt},
     notifications::{
-        Notification, Notifications, EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, PAUSE_TIME,
+        EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
     },
     serial::{
-        PortSettings, PrintablePortInfo, ReconnectType, Reconnections, SerialEvent, SerialHandle,
-        MOCK_PORT_NAME,
+        MOCK_PORT_NAME, PortSettings, PrintablePortInfo, ReconnectType, Reconnections, SerialEvent,
+        SerialHandle,
     },
     settings::{Behavior, Settings},
     traits::{LastIndex, LineHelpers, ToggleBool},
     tui::{
         buffer::Buffer,
         centered_rect_size,
-        prompts::{centered_rect, DisconnectPrompt, PromptTable},
+        prompts::{DisconnectPrompt, PromptTable, centered_rect},
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
 };
@@ -93,6 +95,10 @@ pub enum Tick {
     Scroll,
     /// Used to force UI updates when a notification is on screen
     Notification,
+    /// Used to trigger consumption of the Macro TX Queue
+    ///
+    /// TODO: I hate this.
+    MacroTx,
 }
 
 impl From<Tick> for Event {
@@ -216,6 +222,7 @@ pub struct App {
     failed_send_at: Option<Instant>,
 
     macros: Macros,
+    macros_tx_queue: VecDeque<(Option<KeyCombination>, MacroRef)>,
 
     settings: Settings,
     keybinds: Keybinds,
@@ -298,8 +305,6 @@ impl App {
             popup: None,
             popup_desc_scroll: -2,
             popup_scrollbar_state: ScrollbarState::default(),
-            tx,
-            rx,
             table_state: TableState::new().with_selected(Some(0)),
             baud_selection_state: SingleLineSelectorState::new().with_selected(selected_baud_index),
             popup_table_state: TableState::new(),
@@ -330,9 +335,12 @@ impl App {
             failed_send_at: None,
             // failed_send_at: Instant::now(),
             macros: Macros::new(),
+            macros_tx_queue: VecDeque::new(),
             settings,
             keybinds: Keybinds::new(),
-            notifs: Notifications::default(),
+            notifs: Notifications::new(tx.clone()),
+            tx,
+            rx,
         }
     }
     fn is_running(&self) -> bool {
@@ -340,9 +348,17 @@ impl App {
     }
     pub fn run(&mut self, mut terminal: Terminal<impl Backend>) -> Result<()> {
         while self.is_running() {
+            let start = Instant::now();
             self.draw(&mut terminal)?;
+            let end = Instant::now();
             let msg = self.rx.recv()?;
+            let start2 = Instant::now();
             self.handle_event(msg, &mut terminal)?;
+            debug!(
+                "Frame took {:?} to draw, {:?} to handle ",
+                end.saturating_duration_since(start),
+                start2.elapsed()
+            );
             // debug!("{msg:?}");
         }
         // Shutting down worker threads, with timeouts
@@ -408,7 +424,7 @@ impl App {
                     None => "",
                     // None => "Connected to port!",
                 };
-                self.notify(text, Color::Green);
+                self.notifs.notify(text, Color::Green);
             }
             Event::Serial(SerialEvent::Disconnected(reason)) => {
                 // self.menu = Menu::PortSelection;
@@ -422,7 +438,7 @@ impl App {
                         Reconnections::LooseChecks => "Attempting to reconnect (loose checks).",
                         Reconnections::StrictChecks => "Attempting to reconnect (strict checks).",
                     };
-                    self.notify(
+                    self.notifs.notify(
                         format!("Disconnected from port! {reconnect_text}"),
                         Color::Red,
                     );
@@ -469,6 +485,17 @@ impl App {
                     );
                 }
             }
+            Event::Tick(Tick::MacroTx) => {
+                self.send_one_macro();
+                if !self.macros_tx_queue.is_empty() {
+                    let tx = self.tx.clone();
+                    self.carousel.add_oneshot(
+                        "MacroTX",
+                        Box::new(move || tx.send(Tick::MacroTx.into()).map_err(|e| e.to_string())),
+                        Duration::from_millis(300),
+                    );
+                }
+            }
             Event::Tick(Tick::Notification) => {
                 // debug!("notif!");
                 if let Some(notif) = &self.notifs.inner {
@@ -505,6 +532,49 @@ impl App {
     }
     fn shutdown(&mut self) {
         self.state = RunningState::Finished;
+    }
+    fn send_one_macro(&mut self) {
+        let Some((key_combo_opt, macro_ref)) = self.macros_tx_queue.pop_front() else {
+            return;
+        };
+
+        let macro_binding = self
+            .macros
+            .all
+            .iter()
+            .find(|m| macro_ref.eq_macro(m))
+            .expect("Failed to find referenced Macro");
+
+        let (notif_text, notif_color) = match (key_combo_opt, &macro_binding.content) {
+            (_, MacroContent::Empty) => {
+                ("Macro {macro_binding} is empty!".to_owned(), Color::Yellow)
+            }
+            (Some(a), _) => (format!("Macro: {macro_binding} [{a}]"), Color::Green),
+
+            (None, _) => (format!("Macro: {macro_binding}"), Color::Green),
+        };
+
+        match &macro_binding.content {
+            MacroContent::Empty => (),
+            MacroContent::Bytes { content, preview } => {
+                self.serial
+                    .send_bytes(content.clone(), Some(self.buffer.line_ending.as_str()))
+                    .unwrap();
+
+                debug!("{}", format!("Sending Macro Bytes: {:02X?}", content));
+                self.buffer.append_user_bytes(&content);
+            }
+            MacroContent::Text(text) => {
+                self.serial
+                    .send_str(text, self.buffer.line_ending.as_str())
+                    .unwrap();
+                self.buffer.append_user_text(text);
+
+                debug!("{}", format!("Sending Macro Text: {}", text.escape_debug()));
+            }
+        };
+
+        self.notifs.notify(notif_text, notif_color);
     }
     // TODO fuzz this
     fn handle_key_press(&mut self, key: KeyEvent) {
@@ -623,97 +693,63 @@ impl App {
             // KeyCode::Tab => self.tab_pressed(),
             key!(esc) => self.esc_pressed(),
             key_combo => {
-                // debug!("");
-                if let Some(method) = self.method_from_key_combo(key_combo) {
-                    if let Err(e) = self.method_from_string(&method) {
+                if let Some(method) = self
+                    .keybinds
+                    .method_from_key_combo(key_combo)
+                    .map(ToOwned::to_owned)
+                {
+                    if let Err(e) = self.run_method_from_string(&method) {
                         error!("Error running method `{method}`: {e}");
                     }
-                } else if let Some(macro_ref) = self.macro_from_key_combo(key_combo) {
-                    let found_macro = self
-                        .macros
-                        .all
-                        .iter()
-                        .find(|m| macro_ref.eq_macro(m))
-                        .or_else(|| {
-                            if self.settings.behavior.fuzzy_macro_match {
-                                self.macros.all.iter().find(|m| macro_ref.eq_macro_fuzzy(m))
-                            } else {
-                                None
-                            }
-                        });
-                    if let Some(found_macro) = found_macro {
-                        if self.serial_healthy {
-                            match &found_macro.content {
-                                MacroContent::Empty => {
-                                    self.notify("Macro is empty!", Color::Yellow)
-                                }
-                                MacroContent::Bytes { content, preview } => {
-                                    self.serial
-                                        .send_bytes(
-                                            content.clone(),
-                                            Some(self.buffer.line_ending.as_str()),
-                                        )
-                                        .unwrap();
-
-                                    debug!("{}", format!("Sending Macro Bytes: {:02X?}", content));
-                                    self.notify(format!("Sent Macro: {found_macro}"), Color::Green);
-                                    // TODO:
-                                    // self.buffer.append_user_bytes(bytes);
-                                }
-                                MacroContent::Text(text) => {
-                                    self.serial
-                                        .send_str(text, self.buffer.line_ending.as_str())
-                                        .unwrap();
-                                    self.buffer.append_user_text(text);
-
-                                    debug!(
-                                        "{}",
-                                        format!("Sending Macro Text: {}", text.escape_debug())
-                                    );
-                                    self.notify(
-                                        format!("Macro: {found_macro} [{key_combo}]"),
-                                        Color::Green,
-                                    );
-                                }
-                            }
-                        } else {
-                            self.notify(
-                                format!("Macro: {found_macro} [{key_combo}] (Not Sent)"),
-                                Color::Yellow,
+                    return;
+                }
+                // TODO just do a macro queue with KeybindMacro or something
+                // or some other object that refers to Macros without having their content.
+                match self.macros.macro_from_key_combo(
+                    key_combo,
+                    &self.keybinds.macros,
+                    self.settings.behavior.fuzzy_macro_match,
+                ) {
+                    Ok(somes) if self.serial_healthy => {
+                        if !somes.is_empty() {
+                            self.macros_tx_queue.extend(
+                                somes
+                                    .into_iter()
+                                    .map(MacroRef::from)
+                                    .map(|m| (Some(key_combo), m)),
                             );
+                            self.tx.send(Tick::MacroTx.into()).unwrap();
                         }
-                    } else {
-                        self.notify(
-                            format!("No such macro {macro_ref}! [{key_combo}]"),
+                    }
+                    Ok(somes) => {
+                        let unsent = somes
+                            .into_iter()
+                            .map(|km| format!("\"{}\"", km.title))
+                            .join(", ");
+                        self.notifs.notify(
+                            format!("Macro: {unsent} [{key_combo}] (Not Sent)"),
                             Color::Yellow,
                         );
                     }
+                    Err(Some(nones)) => {
+                        let missed = nones.into_iter().map(|km| km.to_string()).join(", ");
+                        self.notifs
+                            .notify(format!("Macro search failed for: {missed}"), Color::Yellow);
+                    }
+                    // No macros found.
+                    Err(None) => (),
                 }
             }
         }
     }
-    fn macro_from_key_combo(&self, key_combo: KeyCombination) -> Option<KeybindMacro> {
-        self.keybinds
-            .macros
-            .iter()
-            .find(|kc| kc.0 == &key_combo)
-            .map(|kc| kc.1.clone())
-    }
-    fn method_from_key_combo(&self, key_combo: KeyCombination) -> Option<String> {
-        self.keybinds
-            .keybindings
-            .iter()
-            .find(|kc| kc.0 == &key_combo)
-            .map(|kc| kc.1.clone())
-    }
-    fn method_from_string(&mut self, method: &str) -> Result<()> {
+    fn run_method_from_string(&mut self, method: &str) -> Result<()> {
         let m = method;
         match m {
             _ if m == TOGGLE_TEXTWRAP => {
                 self.buffer
                     .set_line_wrap(self.settings.behavior.wrap_text.flip());
                 self.settings.save().unwrap();
-                self.notify("Toggled Text Wrapping", Color::Gray);
+                self.notifs.notify("Toggled Text Wrapping", Color::Gray);
             }
             _ if m == TOGGLE_DTR => {
                 self.serial.toggle_signals(true, false).unwrap();
@@ -740,7 +776,7 @@ impl App {
                 self.buffer
                     .show_timestamps(self.settings.behavior.timestamps);
                 self.settings.save().unwrap();
-                self.notify("Toggled Timestamps", Color::Gray);
+                self.notifs.notify("Toggled Timestamps", Color::Gray);
             }
 
             _ if m == SHOW_MACROS => {
@@ -1029,7 +1065,7 @@ impl App {
         // }
         match &mut self.popup {
             None => (),
-            Some(ref mut popup) if self.popup_single_line_state.active => {
+            Some(popup) if self.popup_single_line_state.active => {
                 self.scroll_popup(true);
             }
             Some(PopupMenu::PortSettings) => {
@@ -1123,7 +1159,7 @@ impl App {
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
-                self.notify("Port settings saved!", Color::Green);
+                self.notifs.notify("Port settings saved!", Color::Green);
                 return;
             }
             Some(PopupMenu::BehaviorSettings) => {
@@ -1137,7 +1173,7 @@ impl App {
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
-                self.notify("Behavior settings saved!", Color::Green);
+                self.notifs.notify("Behavior settings saved!", Color::Green);
                 return;
             }
             Some(PopupMenu::Macros) => {
@@ -1145,7 +1181,7 @@ impl App {
                     return;
                 }
                 if !self.serial_healthy {
-                    self.notify("Port isn't ready!", Color::Red);
+                    self.notifs.notify("Port isn't ready!", Color::Red);
                     return;
                 }
                 let Some(index) = self.popup_table_state.selected() else {
@@ -1168,27 +1204,10 @@ impl App {
                     }
                 } else {
                     match &macro_binding.content {
-                        MacroContent::Empty => self.notify("Macro is empty!", Color::Yellow),
-                        MacroContent::Bytes { content, preview } => {
-                            self.serial
-                                .send_bytes(content.clone(), Some(self.buffer.line_ending.as_str()))
-                                .unwrap();
-
-                            let text = format!("Sending Macro Bytes: {:02X?}", content);
-                            debug!("{text}");
-                            self.notify(format!("Sent Macro: {macro_binding}"), Color::Green);
-                            // TODO:
-                            // self.buffer.append_user_bytes(bytes);
-                        }
-                        MacroContent::Text(text) => {
-                            self.serial
-                                .send_str(text, self.buffer.line_ending.as_str())
-                                .unwrap();
-                            self.buffer.append_user_text(text);
-
-                            let text = format!("Sending Macro Text: {}", text.escape_debug());
-                            debug!("{text}");
-                            self.notify(format!("Sent Macro: {macro_binding}"), Color::Green);
+                        MacroContent::Empty => self.notifs.notify("Macro is empty!", Color::Yellow),
+                        MacroContent::Bytes { .. } | MacroContent::Text(_) => {
+                            self.macros_tx_queue.push_back((None, macro_binding.into()));
+                            self.tx.send(Tick::MacroTx.into()).unwrap();
                         }
                     }
                 }
@@ -1339,24 +1358,11 @@ impl App {
             }
         }
     }
-    pub fn notify<S: AsRef<str>>(&mut self, text: S, color: Color) {
-        let text: &str = text.as_ref();
-        debug!("Notification: \"{text}\", Color: {color}");
-        if text.is_empty() {
-            return;
-        }
-        self.notifs.inner = Some(Notification {
-            text: text.to_owned(),
-            color,
-            shown_at: Instant::now(),
-            replaced: self.notifs.inner.is_some(),
-        });
-        self.tx.send(Tick::Notification.into()).unwrap();
-    }
     fn render_popups(&mut self, frame: &mut Frame, area: Rect) {
         if let Some(popup) = &self.popup {
             assert!(
-                (self.popup_single_line_state.active || self.macros.categories_selector.active) != self.popup_table_state.selected().is_some(),
+                (self.popup_single_line_state.active || self.macros.categories_selector.active)
+                    != self.popup_table_state.selected().is_some(),
                 "Either a table element needs to be selected, or the menu title widget, but never both or neither."
             );
             assert_eq!(
@@ -1488,7 +1494,7 @@ impl App {
                         &mut self.popup_desc_scroll,
                     );
                     frame.render_widget(
-                        Line::raw("Esc: Cancel | Enter: Confirm")
+                        Line::raw("Esc: Cancel | Enter: Save")
                             .all_spans_styled(Color::DarkGray.into())
                             .centered(),
                         hint_text_area,
@@ -1512,7 +1518,7 @@ impl App {
                         &mut self.popup_desc_scroll,
                     );
                     frame.render_widget(
-                        Line::raw("Esc: Cancel | Enter: Confirm")
+                        Line::raw("Esc: Cancel | Enter: Save")
                             .all_spans_styled(Color::DarkGray.into())
                             .centered(),
                         hint_text_area,
@@ -1718,17 +1724,17 @@ impl App {
         //     );
         // }
 
-        #[cfg(not(debug_assertions))]
-        {
-            let line = Line::raw(format!("Lines: {}", self.buffer.lines.len())).right_aligned();
-            frame.render_widget(
-                line,
-                line_area.inner(Margin {
-                    horizontal: 3,
-                    vertical: 0,
-                }),
-            );
-        }
+        // #[cfg(not(debug_assertions))]
+        // {
+        //     let line = Line::raw(format!("Lines: {}", self.buffer.lines.len())).right_aligned();
+        //     frame.render_widget(
+        //         line,
+        //         line_area.inner(Margin {
+        //             horizontal: 3,
+        //             vertical: 0,
+        //         }),
+        //     );
+        // }
 
         {
             let port_status_guard = self.serial.port_status.load();
@@ -1906,8 +1912,13 @@ impl App {
             .highlight_spacing(HighlightSpacing::Always)
             .highlight_symbol(">>");
 
-        let [table_area, mut filler_or_custom_baud_entry, mut baud_text_area, mut baud_selector, more_options] =
-            vertical![*=1, ==1, ==1, ==1, ==1].areas(block.inner(area));
+        let [
+            table_area,
+            mut filler_or_custom_baud_entry,
+            mut baud_text_area,
+            mut baud_selector,
+            more_options,
+        ] = vertical![*=1, ==1, ==1, ==1, ==1].areas(block.inner(area));
 
         let custom_visible = self.baud_selection_state.on_last(COMMON_BAUD);
         let custom_selected = matches!(
