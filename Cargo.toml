@@ -22,7 +22,7 @@ crokey = { version = "1.1.2", features = ["serde"] }
 derivative = "2.2.0"
 enum-rotate = "0.1.1"
 # enum_rotate = { path = "../enum-rotate" }
-espflash = { version = "3.3.0", optional = true }
+espflash = { version = "3.3.0", optional = true, features = ["serialport"] }
 fs-err = "3.1.0"
 human-panic = "2.0.2"
 int-enum = { git = "https://github.com/nullstalgia/int-enum-rs", branch = "feat/colors-and-discriminators" }

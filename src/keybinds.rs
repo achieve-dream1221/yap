@@ -61,5 +61,7 @@ mod test {
     #[test]
     fn test_default_config_deser() {
         let keybinds: Keybinds = toml::from_str(CONFIG_TOML).unwrap();
+        assert!(keybinds.keybindings.len() > 0);
+        assert!(keybinds.macros.len() > 0);
     }
 }

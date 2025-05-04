@@ -154,8 +154,8 @@ pub enum RunningState {
 pub enum PopupMenu {
     PortSettings,
     BehaviorSettings,
-    #[cfg(feature = "espflash")]
-    EspFlash,
+    // #[cfg(feature = "espflash")]
+    // EspFlash,
     Macros,
 }
 
@@ -347,6 +347,11 @@ impl App {
         self.state == RunningState::Running
     }
     pub fn run(&mut self, mut terminal: Terminal<impl Backend>) -> Result<()> {
+        // if let Ok(size) = terminal.size() {
+        //     self.buffer.update_terminal_size(size);
+        // } else {
+        //     error!("Failed to query terminal size!");
+        // }
         while self.is_running() {
             let start = Instant::now();
             self.draw(&mut terminal)?;

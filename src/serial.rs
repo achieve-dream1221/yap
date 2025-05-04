@@ -1,8 +1,8 @@
 use std::{
     io::{BufWriter, Read, Write},
     sync::{
-        mpsc::{self, Receiver, Sender},
         Arc,
+        mpsc::{self, Receiver, Sender},
     },
     thread::JoinHandle,
     time::Duration,
@@ -19,7 +19,7 @@ use tracing::{debug, error, info, warn};
 use virtual_serialport::VirtualPort;
 
 use crate::{
-    app::{Event, Tick, COMMON_BAUD, DEFAULT_BAUD},
+    app::{COMMON_BAUD, DEFAULT_BAUD, Event, Tick},
     errors::{YapError, YapResult},
     settings::ser::{
         deserialize_from_u8, deserialize_line_ending, serialize_as_u8, serialize_line_ending,
@@ -551,7 +551,7 @@ impl SerialWorker {
                     #[cfg(feature = "espflash")]
                     SerialCommand::EspRestart(_) => {
                         if let Some(port) = self.port.as_mut_native_port() {
-                            let strategy = TestReset::new();
+                            let strategy = espflash_stuff::TestReset::new();
                             // let strategy = espflash::connection::reset::ClassicReset::new(false);
                             strategy.reset(port)?;
                             // let strategy = espflash::connection::reset::ClassicReset::new(true);
@@ -560,6 +560,7 @@ impl SerialWorker {
                             error!("Requested an ESP restart with no port active!");
                         }
                     }
+
                     // This actually does work!
                     // Just needs a helluva lot of logic and polish to work in a presentable manner
                     // SerialCommand::EspFlashing(_) => {
@@ -1049,12 +1050,17 @@ impl SerialWorker {
 }
 
 #[cfg(feature = "espflash")]
-mod espflash {
-    struct TestReset {
+mod espflash_stuff {
+    use std::time::Duration;
+
+    use espflash::connection::reset::ResetStrategy;
+    use tracing::debug;
+
+    pub struct TestReset {
         delay: u64,
     }
     impl TestReset {
-        fn new() -> Self {
+        pub fn new() -> Self {
             Self { delay: 50 }
         }
     }
