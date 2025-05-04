@@ -19,6 +19,9 @@ use crate::traits::{ByteSuffixCheck, FirstChars, LineHelpers};
 
 #[derive(Debug)]
 pub struct BufLine {
+    timestamp: DateTime<Local>,
+    timestamp_str: String,
+
     value: Line<'static>,
     // maybe? depends on whats easier to chain bytes from, for the hex view later
     // raw_value: Vec<u8>,
@@ -29,13 +32,11 @@ pub struct BufLine {
 
     pub(super) is_bytes: bool,
     pub(super) is_macro: bool,
-
-    timestamp: String,
 }
 
 impl PartialEq for BufLine {
     fn eq(&self, other: &Self) -> bool {
-        self.raw_buffer_index == other.raw_buffer_index
+        self.timestamp == other.timestamp
     }
 }
 
@@ -43,13 +44,13 @@ impl Eq for BufLine {}
 
 impl PartialOrd for BufLine {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.raw_buffer_index.partial_cmp(&other.raw_buffer_index)
+        self.timestamp.partial_cmp(&other.timestamp)
     }
 }
 
 impl Ord for BufLine {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.raw_buffer_index.cmp(&other.raw_buffer_index)
+        self.timestamp.cmp(&other.timestamp)
     }
 }
 
@@ -64,6 +65,7 @@ impl BufLine {
         is_bytes: bool,
         is_macro: bool,
     ) -> Self {
+        let now = Local::now();
         let time_format = "[%H:%M:%S%.3f] ";
 
         line.remove_unsavory_chars();
@@ -74,12 +76,11 @@ impl BufLine {
         }
 
         let mut bufline = Self {
+            timestamp_str: now.format(time_format).to_string(),
+            timestamp: now,
             value: line,
-            // raw_value: raw_value.to_owned(),
             raw_buffer_index,
-            // style: None,
             rendered_line_height: 0,
-            timestamp: Local::now().format(time_format).to_string(),
             is_bytes,
             is_macro,
         };
@@ -142,7 +143,7 @@ impl BufLine {
     pub fn as_line(&self, with_timestamp: bool) -> Line {
         let borrowed_spans = self.value.borrowed_spans_iter();
         let spans = std::iter::once(Span::styled(
-            Cow::Borrowed(self.timestamp.as_ref()),
+            Cow::Borrowed(self.timestamp_str.as_ref()),
             Style::new().dark_gray(),
         ))
         .filter(|_| with_timestamp)

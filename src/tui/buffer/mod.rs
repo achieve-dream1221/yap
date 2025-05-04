@@ -65,10 +65,10 @@ pub enum UserEcho {
     None,
     #[strum(serialize = "true")]
     All,
-    // #[strum(serialize = "All but No Bytes")]
-    NoBytes,
     // #[strum(serialize = "All but No Macros")]
     NoMacros,
+    // #[strum(serialize = "All but No Bytes")]
+    NoBytes,
     NoMacrosOrBytes,
 }
 
@@ -268,7 +268,6 @@ impl Buffer {
                             UserEcho::NoMacros => !l.is_macro,
                             UserEcho::NoMacrosOrBytes => !l.is_bytes && !l.is_macro,
                         }),
-                    true,
                 )
                 .filter(|_| self.state.user_echo_input != UserEcho::None),
             )
@@ -577,55 +576,24 @@ fn extract_line(text: Text<'_>) -> Option<Line<'_>> {
     lines.into_iter().find(|l| !l.spans.is_empty())
 }
 
-fn interleave<A, B, T>(a: A, b: B, swap_zero_equal: bool) -> impl Iterator<Item = T>
+fn interleave<A, B, I>(a: A, b: B) -> impl Iterator<Item = I>
 where
-    A: Iterator<Item = T>,
-    B: Iterator<Item = T>,
-    T: Ord,
+    A: Iterator<Item = I>,
+    B: Iterator<Item = I>,
+    I: Ord,
 {
-    let mut a = a.enumerate().peekable();
-    let mut b = b.enumerate().peekable();
+    let mut a = a.peekable();
+    let mut b = b.peekable();
     std::iter::from_fn(move || match (a.peek(), b.peek()) {
-        // My schizo logic
-        // If there's a system line and a user line both at index 0, user line go first.
-        (Some((0, ia)), Some((0, ib))) if swap_zero_equal => {
-            if ia == ib {
-                b.next().map(|t| t.1)
-            } else {
-                a.next().map(|t| t.1)
-            }
-        }
-        // Normal logic
-        (Some((_, ia)), Some((_, ib))) => {
+        (Some(ia), Some(ib)) => {
             if ia <= ib {
-                a.next().map(|t| t.1)
+                a.next()
             } else {
-                b.next().map(|t| t.1)
+                b.next()
             }
         }
-        (Some(_), None) => a.next().map(|t| t.1),
-        (None, Some(_)) => b.next().map(|t| t.1),
+        (Some(_), None) => a.next(),
+        (None, Some(_)) => b.next(),
         (None, None) => None,
     })
 }
-
-// fn interleave<I>(mut a: Peekable<I>, mut b: Peekable<I>, swap_zero_equal: bool) -> impl Iterator<Item = I::Item>
-// where
-//     I: Iterator,
-//     // I::Item: Clone,
-//     // I::Item: std::fmt::Debug,
-//     I::Item: std::cmp::Ord,
-// {
-//     std::iter::from_fn(move || match (a.peek(), b.peek()) {
-//         (Some(ia), Some(ib)) => {
-//             if ia <= ib {
-//                 a.next()
-//             } else {
-//                 b.next()
-//             }
-//         }
-//         (Some(_), None) => a.next(),
-//         (None, Some(_)) => b.next(),
-//         (None, None) => None,
-//     })
-// }
