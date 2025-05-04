@@ -1,9 +1,9 @@
 use int_enum::IntEnum;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Rect},
     style::{Style, Stylize},
     widgets::{Block, Borders, Clear, Row, Table, TableState},
-    Frame,
 };
 use ratatui_macros::row;
 use strum::{VariantArray, VariantNames};
@@ -37,7 +37,8 @@ pub trait PromptTable: VariantNames + Into<u8> + TryFrom<u8> {
     /// Returns a ratatui [Table] with static references to the names of each enum variant.
     ///
     /// Enum variant names can be overwritten with the attribute:
-    /// ```no_run
+    /// ```
+    /// # #[derive(strum::VariantNames)]
     /// # enum ExampleEnum {
     /// #[strum(serialize = "Exit App")]
     /// #     Meow,

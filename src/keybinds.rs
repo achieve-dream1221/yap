@@ -60,6 +60,6 @@ mod test {
 
     #[test]
     fn test_default_config_deser() {
-        toml::from_str(CONFIG_TOML).unwrap()
+        let keybinds: Keybinds = toml::from_str(CONFIG_TOML).unwrap();
     }
 }
