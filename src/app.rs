@@ -347,11 +347,9 @@ impl App {
         self.state == RunningState::Running
     }
     pub fn run(&mut self, mut terminal: Terminal<impl Backend>) -> Result<()> {
-        // if let Ok(size) = terminal.size() {
-        //     self.buffer.update_terminal_size(size);
-        // } else {
-        //     error!("Failed to query terminal size!");
-        // }
+        // Get initial size of buffer.
+        self.buffer.update_terminal_size(&mut terminal)?;
+
         while self.is_running() {
             let start = Instant::now();
             self.draw(&mut terminal)?;
@@ -388,14 +386,7 @@ impl App {
             Event::Quit => self.shutdown(),
 
             Event::Crossterm(CrosstermEvent::Resize) => {
-                terminal.autoresize()?;
-                if let Ok(size) = terminal.size() {
-                    self.buffer.update_terminal_size(size);
-                    // self.buffer.update_wrapped_line_count();
-                    // self.buffer.scroll_by(0);
-                } else {
-                    error!("Failed to query terminal size!");
-                }
+                self.buffer.update_terminal_size(terminal)?;
             }
             Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
             Event::Crossterm(CrosstermEvent::MouseScroll { up }) => {

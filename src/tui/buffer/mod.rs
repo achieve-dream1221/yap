@@ -17,7 +17,10 @@ use ratatui::{
 use ratatui_macros::{line, span};
 use tracing::{debug, error, info};
 
-use crate::traits::{ByteSuffixCheck, LineHelpers};
+use crate::{
+    errors::YapResult,
+    traits::{ByteSuffixCheck, LineHelpers},
+};
 
 mod buf_line;
 mod wrap;
@@ -458,9 +461,12 @@ impl Buffer {
         }
     }
 
-    pub fn update_terminal_size(&mut self, whole_terminal_size: Size) {
+    pub fn update_terminal_size(
+        &mut self,
+        terminal: &mut ratatui::Terminal<impl ratatui::prelude::Backend>,
+    ) -> YapResult<()> {
         self.last_terminal_size = {
-            let mut terminal_size = whole_terminal_size;
+            let mut terminal_size = terminal.size().unwrap();
             // `2` is the lines from the repeating_pattern_widget and the input buffer.
             // Might need to make more dynamic later?
             terminal_size.height = terminal_size.height.saturating_sub(2);
@@ -468,6 +474,7 @@ impl Buffer {
         };
         self.update_wrapped_line_heights();
         self.scroll_by(0);
+        Ok(())
     }
 
     // pub fn line_ending(&self) -> &str {
