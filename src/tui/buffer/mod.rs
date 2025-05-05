@@ -195,6 +195,8 @@ impl Buffer {
         }
     }
 
+    /// Consumes **post**-split by line endings slices,
+    /// either creating a new line or appending to the last one.
     fn consume_port_bytes<'a>(
         &mut self,
         trunc: &'a [u8],
@@ -207,13 +209,12 @@ impl Buffer {
             trunc.len() <= orig.len(),
             "truncated buffer can't be larger than original"
         );
-        let mut append_to_last = !self.last_line_completed;
+        let append_to_last = !self.last_line_completed;
         if orig.is_empty() {
             return;
         }
 
         if append_to_last {
-            append_to_last = false;
             let last_line = self.lines.last_mut().expect("can't append to nothing");
             let last_index = last_line.index_in_buffer();
 
@@ -352,9 +353,11 @@ impl Buffer {
 
         let buffer_slices = interleaved_points
             .tuple_windows()
+            // Filtering out some empty slices, unless they indicate a user event.
             .filter(|((start_index, _, was_user_line), (end_index, _, _))| {
                 start_index != end_index || *was_user_line
             })
+            // Building the parent slices (pre-newline splitting)
             .map(
                 |((start_index, timestamp, was_user_line), (end_index, _, _))| {
                     (
@@ -367,7 +370,6 @@ impl Buffer {
             );
 
         // let buffer_slices: Vec<_> = buffer_slices.collect();
-
         // debug!("{buffer_slices:#?}");
 
         // info!("Slicing raw buffer!");
@@ -380,10 +382,6 @@ impl Buffer {
                 continue;
             }
 
-            // debug!(
-            //     "({slice_start}, {slice_end}), {timestamp}, {was_user_line}, line_ending:{}",
-            //     line_ending.escape_debug()
-            // );
             // info!(
             //     "Getting {le} slices from [{slice_start}..{slice_end}], {timestamp}, {was_user_line}",
             //     le = line_ending.escape_debug()
@@ -395,11 +393,6 @@ impl Buffer {
                 //     orig_len = orig.len(),
                 //     start = orig_start + slice_start,
                 //     end = orig_end + slice_start,
-                // );
-                // debug!(
-                //     "({orig_start}, {orig_end}) ({}, {})",
-                //     orig_start + iters_len,
-                //     orig_end + iters_len
                 // );
                 self.raw_buffer.extend(orig);
                 self.consume_port_bytes(trunc, orig, new_index, Some(timestamp));
@@ -415,7 +408,7 @@ impl Buffer {
 
         assert_eq!(
             new_index, orig_buf_len,
-            "Iterators should have same total length as raw buffer"
+            "Iterator's slices should have same total length as raw buffer."
         );
 
         self.buffer_timestamps = timestamps;
@@ -454,18 +447,16 @@ impl Buffer {
         self.reconsume_raw_buffer();
     }
     fn buflines_iter(&self) -> impl Iterator<Item = &BufLine> {
-        self.lines
-            .iter()
-            .filter(|_| self.state.user_echo_input == UserEcho::None)
-            .chain(
-                interleave(
-                    self.lines.iter(),
-                    self.user_lines
-                        .iter()
-                        .filter(|l| self.state.user_echo_input.filter_user_line(l)),
-                )
-                .filter(|_| self.state.user_echo_input != UserEcho::None),
-            )
+        if self.state.user_echo_input == UserEcho::None {
+            Either::Left(self.lines.iter())
+        } else {
+            Either::Right(interleave(
+                self.lines.iter(),
+                self.user_lines
+                    .iter()
+                    .filter(|l| self.state.user_echo_input.filter_user_line(l)),
+            ))
+        }
     }
     pub fn lines_iter(&self) -> (impl Iterator<Item = Line>, u16) {
         // TODO styling based on line prefix
@@ -651,15 +642,15 @@ impl Buffer {
                     .saturating_sub(last_size.height as usize),
             );
     }
-    fn wrapped_line_count(&self) -> usize {
-        self.buflines_iter().map(|l| l.get_line_height()).sum()
-    }
+    // fn wrapped_line_count(&self) -> usize {
+    //     self.buflines_iter().map(|l| l.get_line_height()).sum()
+    // }
 
     /// Returns the total amount of lines that can be rendered,
     /// taking into account if text wrapping is enabled or not.
     pub fn combined_height(&self) -> usize {
         if self.state.text_wrapping {
-            self.wrapped_line_count()
+            self.buflines_iter().map(|l| l.get_line_height()).sum()
         } else {
             self.buflines_iter().count()
         }
@@ -699,11 +690,13 @@ impl Buffer {
 
 // TODO make tests for this idiot thing
 
-/// Returns an iterator over the given byte slice, seperated by (and excluding) the given line ending `&str`
+/// Returns an iterator over the given byte slice, seperated by (and excluding) the given line ending `&str`.
 ///
 /// String slice tuple is in order of `(exclusive, inclusive/original)`.
 ///
-/// Returns the whole slice back once if no line ending was found.
+/// `usize` tuple has the inclusive indices into the given slice.
+///
+/// If no line ending was found, emits the whole slice once.
 pub fn line_ending_iter<'a>(
     bytes: &'a [u8],
     line_ending: &'a str,
@@ -725,53 +718,31 @@ pub fn line_ending_iter<'a>(
 
     let mut last_index = 0;
 
-    let slices_iter = line_ending_pos_iter.map(move |(line_ending_index, is_final_entry)| {
-        if is_final_entry {
-            (
-                &bytes[last_index..],
-                &bytes[last_index..],
-                (last_index, bytes.len()),
-            )
-        } else {
-            // Copy of `last_index` since we're about to modify it,
-            // but we want to use the unmodified value.
-            let index_copy = last_index;
-            // Adding the length of the line ending to exclude it's presence
-            // from the next line.
-            last_index = line_ending_index + line_ending.len();
-            (
-                &bytes[index_copy..line_ending_index],
-                &bytes[index_copy..line_ending_index + line_ending.len()],
-                (index_copy, line_ending_index + line_ending.len()),
-            )
-        }
-    });
-
-    // let slices_iter =
-    //     line_ending_pos_iter.filter_map(move |(line_ending_index, is_final_entry)| {
-    //         let result = if is_final_entry && last_index == bytes.len() {
-    //             return None;
-    //         } else if is_final_entry {
-    //             (
-    //                 &bytes[last_index..],
-    //                 &bytes[last_index..],
-    //                 (last_index, bytes.len()),
-    //             )
-    //         } else {
-    //             // Copy of `last_index` since we're about to modify it,
-    //             // but we want to use the unmodified value.
-    //             let index_copy = last_index;
-    //             // Adding the length of the line ending to exclude it's presence
-    //             // from the next line.
-    //             last_index = line_ending_index + line_ending.len();
-    //             (
-    //                 &bytes[index_copy..line_ending_index],
-    //                 &bytes[index_copy..line_ending_index + line_ending.len()],
-    //                 (index_copy, line_ending_index + line_ending.len()),
-    //             )
-    //         };
-    //         Some(result)
-    //     });
+    let slices_iter =
+        line_ending_pos_iter.filter_map(move |(line_ending_index, is_final_entry)| {
+            let result = if is_final_entry && last_index == bytes.len() && bytes.len() != 0 {
+                return None;
+            } else if is_final_entry {
+                (
+                    &bytes[last_index..],
+                    &bytes[last_index..],
+                    (last_index, bytes.len()),
+                )
+            } else {
+                // Copy of `last_index` since we're about to modify it,
+                // but we want to use the unmodified value.
+                let index_copy = last_index;
+                // Adding the length of the line ending to exclude it's presence
+                // from the next line.
+                last_index = line_ending_index + line_ending.len();
+                (
+                    &bytes[index_copy..line_ending_index],
+                    &bytes[index_copy..line_ending_index + line_ending.len()],
+                    (index_copy, line_ending_index + line_ending.len()),
+                )
+            };
+            Some(result)
+        });
 
     slices_iter
 }
@@ -830,15 +801,13 @@ mod tests {
         let s = b"a\nb\nc\n";
         let it = line_ending_iter(s, "\n");
         let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 4);
+        assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"a");
         assert_eq!(res[0].1, b"a\n");
         assert_eq!(res[1].0, b"b");
         assert_eq!(res[1].1, b"b\n");
         assert_eq!(res[2].0, b"c");
         assert_eq!(res[2].1, b"c\n");
-        assert_eq!(res[3].0, b"");
-        assert_eq!(res[3].1, b"");
     }
 
     #[test]
@@ -893,15 +862,13 @@ mod tests {
         let s = b"foo\n\nbar\n";
         let it = line_ending_iter(s, "\n");
         let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 4);
+        assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"foo");
         assert_eq!(res[0].1, b"foo\n");
         assert_eq!(res[1].0, b"");
         assert_eq!(res[1].1, b"\n");
         assert_eq!(res[2].0, b"bar");
         assert_eq!(res[2].1, b"bar\n");
-        assert_eq!(res[3].0, b"");
-        assert_eq!(res[3].1, b"");
     }
 }
 
