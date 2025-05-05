@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use ansi_to_tui::IntoText;
 use chrono::{DateTime, Local};
+use compact_str::{CompactString, ToCompactString, format_compact};
 use memchr::memmem::Finder;
 use ratatui::{
     layout::Size,
@@ -20,42 +21,42 @@ use crate::traits::{ByteSuffixCheck, FirstChars, LineHelpers};
 #[derive(Debug)]
 pub struct BufLine {
     pub timestamp: DateTime<Local>,
-    timestamp_str: String,
+    timestamp_str: CompactString,
 
     #[cfg(debug_assertions)]
-    debug_info: String,
+    debug_info: CompactString,
 
     value: Line<'static>,
-    // maybe? depends on whats easier to chain bytes from, for the hex view later
-    // raw_value: Vec<u8>,
-    /// How many vertical lines are needed in the terminal to fully show this line.
-    rendered_line_height: usize,
-    // Might not be exactly accurate, but would be enough to place user input lines in proper space if needing to
-    pub(super) raw_buffer_index: usize,
 
+    /// How many vertical lines are needed in the terminal to fully show this line.
+    // Truncated from usize, since even the ratatui sizes are capped there.
+    rendered_line_height: u16,
+
+    pub(super) raw_buffer_index: usize,
+    // TODO turn into enum
     pub(super) is_bytes: bool,
     pub(super) is_macro: bool,
 }
 
-impl PartialEq for BufLine {
-    fn eq(&self, other: &Self) -> bool {
-        self.timestamp == other.timestamp
-    }
-}
+// impl PartialEq for BufLine {
+//     fn eq(&self, other: &Self) -> bool {
+//         self.timestamp == other.timestamp
+//     }
+// }
 
-impl Eq for BufLine {}
+// impl Eq for BufLine {}
 
-impl PartialOrd for BufLine {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.timestamp.partial_cmp(&other.timestamp)
-    }
-}
+// impl PartialOrd for BufLine {
+//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+//         self.timestamp.partial_cmp(&other.timestamp)
+//     }
+// }
 
-impl Ord for BufLine {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.timestamp.cmp(&other.timestamp)
-    }
-}
+// impl Ord for BufLine {
+//     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+//         self.timestamp.cmp(&other.timestamp)
+//     }
+// }
 
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
@@ -80,7 +81,7 @@ impl BufLine {
         }
 
         #[cfg(debug_assertions)]
-        let debug_info = format!(
+        let debug_info = format_compact!(
             "({start}..{end}, {len}) ",
             start = raw_buffer_index,
             end = raw_buffer_index + raw_value.len(),
@@ -88,7 +89,7 @@ impl BufLine {
         );
 
         let mut bufline = Self {
-            timestamp_str: now.format(time_format).to_string(),
+            timestamp_str: now.format(time_format).to_compact_string(),
             timestamp: now,
             #[cfg(debug_assertions)]
             debug_info,
@@ -120,7 +121,7 @@ impl BufLine {
         }
         #[cfg(debug_assertions)]
         {
-            let debug_info = format!(
+            let debug_info = format_compact!(
                 "({start}..{end}, {len}) ",
                 start = self.raw_buffer_index,
                 end = self.raw_buffer_index + raw_value.len(),
@@ -182,11 +183,11 @@ impl BufLine {
         // Paragraph::line_count comes from an unstable ratatui feature (unstable-rendered-line-info)
         // which may be changed/removed in the future. If so, I'll need to roll my own wrapping/find someone's to steal.
         let height = para.line_count(area_width.saturating_sub(1));
-        self.rendered_line_height = height;
+        self.rendered_line_height = (height as u16);
         height
     }
 
-    pub fn get_line_height(&self) -> usize {
+    pub fn get_line_height(&self) -> u16 {
         self.rendered_line_height
     }
 
@@ -223,9 +224,9 @@ impl BufLine {
         self.raw_buffer_index
     }
 
-    pub fn timestamp(&self) -> (DateTime<Local>, &str) {
-        (self.timestamp, &self.timestamp_str)
-    }
+    // pub fn timestamp(&self) -> (DateTime<Local>, &str) {
+    //     (self.timestamp, &self.timestamp_str)
+    // }
 
     // pub fn is_bytes(&self) -> bool {}
 

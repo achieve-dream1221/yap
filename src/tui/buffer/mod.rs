@@ -55,7 +55,7 @@ pub struct Buffer {
     raw_buffer: Vec<u8>,
     // Time-tagged indexes into `raw_buffer`, from each input from the port.
     buffer_timestamps: Vec<(usize, DateTime<Local>)>,
-    lines: Vec<BufLine>,
+    port_lines: Vec<BufLine>,
     user_lines: Vec<BufLine>,
     last_line_completed: bool,
 
@@ -106,7 +106,7 @@ impl Buffer {
         Self {
             raw_buffer: Vec::with_capacity(1024),
             buffer_timestamps: Vec::with_capacity(1024),
-            lines: Vec::with_capacity(1024),
+            port_lines: Vec::with_capacity(1024),
             user_lines: Vec::with_capacity(1024),
             last_terminal_size: Size::default(),
             state: BufferState {
@@ -215,7 +215,7 @@ impl Buffer {
         }
 
         if append_to_last {
-            let last_line = self.lines.last_mut().expect("can't append to nothing");
+            let last_line = self.port_lines.last_mut().expect("can't append to nothing");
             let last_index = last_line.index_in_buffer();
 
             let slice = &self.raw_buffer[last_index..start_index + trunc.len()];
@@ -267,7 +267,7 @@ impl Buffer {
             //         .join("")
             //         .escape_default()
             // );
-            self.lines.push(BufLine::new_with_line(
+            self.port_lines.push(BufLine::new_with_line(
                 line,
                 #[cfg(debug_assertions)]
                 orig,
@@ -313,7 +313,7 @@ impl Buffer {
         }
 
         // let _ = std::mem::take(&mut self.lines);
-        self.lines.clear();
+        self.port_lines.clear();
 
         // Taking these variables out of `self` temporarily to allow running &mut self methods while holding
         // references to these.
@@ -341,8 +341,9 @@ impl Buffer {
                 // If a user line isn't visible, ignore it when taking external new-lines into account.
                 .filter(|b| user_echo.filter_user_line(b))
                 .map(|b| (b.raw_buffer_index, b.timestamp, true)),
-            |device, user| match device.0.cmp(&user.0) {
-                Ordering::Equal => device.1 <= user.1,
+            // Interleaving by sorting in order of raw_buffer_index, if they're equal, then whichever has a sooner timestamp.
+            |port, user| match port.0.cmp(&user.0) {
+                Ordering::Equal => port.1 <= user.1,
                 Ordering::Less => true,
                 Ordering::Greater => false,
             },
@@ -418,7 +419,7 @@ impl Buffer {
 
     /// Updates each BufLine's render height with the new terminal width, returning the sum total at the end
     pub fn update_wrapped_line_heights(&mut self) -> usize {
-        self.lines.iter_mut().fold(0, |total, l| {
+        self.port_lines.iter_mut().fold(0, |total, l| {
             let new_height = l.update_line_height(
                 self.last_terminal_size.width,
                 self.state.timestamps_visible,
@@ -448,13 +449,18 @@ impl Buffer {
     }
     fn buflines_iter(&self) -> impl Iterator<Item = &BufLine> {
         if self.state.user_echo_input == UserEcho::None {
-            Either::Left(self.lines.iter())
+            Either::Left(self.port_lines.iter())
         } else {
-            Either::Right(interleave(
-                self.lines.iter(),
+            Either::Right(interleave_by(
+                self.port_lines.iter(),
                 self.user_lines
                     .iter()
                     .filter(|l| self.state.user_echo_input.filter_user_line(l)),
+                |port, user| match port.raw_buffer_index.cmp(&user.raw_buffer_index) {
+                    Ordering::Equal => port.timestamp <= user.timestamp,
+                    Ordering::Less => true,
+                    Ordering::Greater => false,
+                },
             ))
         }
     }
@@ -488,9 +494,9 @@ impl Buffer {
                         .enumerate()
                     {
                         current_line_index = index;
-                        current_line_height = entries_lines;
+                        current_line_height = entries_lines as usize;
 
-                        lines_from_top += entries_lines;
+                        lines_from_top += entries_lines as usize;
                         if lines_from_top > vert_scroll {
                             break;
                         }
@@ -578,7 +584,7 @@ impl Buffer {
         }
     }
     pub fn clear(&mut self) {
-        self.lines.clear();
+        self.port_lines.clear();
         self.buffer_timestamps.clear();
         self.user_lines.clear();
         self.raw_buffer.clear();
@@ -650,14 +656,16 @@ impl Buffer {
     /// taking into account if text wrapping is enabled or not.
     pub fn combined_height(&self) -> usize {
         if self.state.text_wrapping {
-            self.buflines_iter().map(|l| l.get_line_height()).sum()
+            self.buflines_iter()
+                .map(|l| l.get_line_height() as usize)
+                .sum()
         } else {
             self.buflines_iter().count()
         }
     }
 
     pub fn port_lines_len(&self) -> usize {
-        self.lines.len()
+        self.port_lines.len()
     }
 
     pub fn update_terminal_size(
