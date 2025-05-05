@@ -4,12 +4,18 @@ use std::fmt;
 use crokey::KeyCombination;
 use serde::{Deserialize, Serialize};
 
-pub const TOGGLE_TEXTWRAP: &str = "toggle-textwrap";
-pub const TOGGLE_DTR: &str = "toggle-dtr";
-pub const TOGGLE_RTS: &str = "toggle-rts";
-pub const TOGGLE_TIMESTAMPS: &str = "toggle-timestamps";
-pub const SHOW_MACROS: &str = "show-macros";
-pub const SHOW_PORTSETTINGS: &str = "show-portsettings";
+pub mod methods {
+    pub const TOGGLE_TEXTWRAP: &str = "toggle-textwrap";
+    pub const TOGGLE_DTR: &str = "toggle-dtr";
+    pub const TOGGLE_RTS: &str = "toggle-rts";
+    pub const TOGGLE_TIMESTAMPS: &str = "toggle-timestamps";
+    pub const SHOW_MACROS: &str = "show-macros";
+    pub const SHOW_PORTSETTINGS: &str = "show-portsettings";
+    pub const SHOW_BEHAVIOR: &str = "show-behavior";
+
+    #[cfg(debug_assertions)]
+    pub const DEBUG_LINES: &str = "debug-lines";
+}
 
 static CONFIG_TOML: &str = r#"
 [keybindings]
@@ -19,7 +25,9 @@ ctrl-p = "toggle-rts"
 ctrl-e = "esp-bootloader"
 ctrl-t = "toggle-timestamps"
 ctrl-m = "show-macros"
+ctrl-b = "show-behavior"
 'ctrl-.' = "show-portsettings"
+ctrl-d = "debug-lines"
 
 [macros]
 F19 = ["Restart"]

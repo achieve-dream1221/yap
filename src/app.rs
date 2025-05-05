@@ -37,10 +37,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
-    keybinds::{
-        Keybinds, SHOW_MACROS, SHOW_PORTSETTINGS, TOGGLE_DTR, TOGGLE_RTS, TOGGLE_TEXTWRAP,
-        TOGGLE_TIMESTAMPS,
-    },
+    keybinds::{Keybinds, methods::*},
     macros::{Macro, MacroContent, MacroRef, Macros, MacrosPrompt},
     notifications::{
         EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
@@ -640,6 +637,7 @@ impl App {
                 Menu::Terminal(TerminalPrompt::DisconnectPrompt) => self.shutdown(),
                 Menu::Terminal(TerminalPrompt::None) => {
                     self.dismiss_popup();
+                    self.table_state.select(Some(0));
                     self.menu = TerminalPrompt::DisconnectPrompt.into();
                 }
                 _ => self.shutdown(),
@@ -740,12 +738,17 @@ impl App {
     }
     fn run_method_from_string(&mut self, method: &str) -> Result<()> {
         let m = method;
+        let pretty_bool = |b: bool| {
+            if b { "On" } else { "Off" }
+        };
         match m {
             _ if m == TOGGLE_TEXTWRAP => {
                 self.buffer
                     .set_line_wrap(self.settings.behavior.wrap_text.flip());
                 self.settings.save().unwrap();
-                self.notifs.notify("Toggled Text Wrapping", Color::Gray);
+                let state = pretty_bool(self.settings.behavior.wrap_text);
+                self.notifs
+                    .notify(format!("Toggled Text Wrapping {state}"), Color::Gray);
             }
             _ if m == TOGGLE_DTR => {
                 self.serial.toggle_signals(true, false).unwrap();
@@ -772,7 +775,19 @@ impl App {
                 self.buffer
                     .show_timestamps(self.settings.behavior.timestamps);
                 self.settings.save().unwrap();
-                self.notifs.notify("Toggled Timestamps", Color::Gray);
+                let state = pretty_bool(self.settings.behavior.timestamps);
+                self.notifs
+                    .notify(format!("Toggled Timestamps {state}"), Color::Gray);
+            }
+
+            #[cfg(debug_assertions)]
+            _ if m == DEBUG_LINES => {
+                self.buffer.debug_lines.flip();
+                self.buffer
+                    .show_timestamps(self.settings.behavior.timestamps);
+                let state = if self.buffer.debug_lines { "On" } else { "Off" };
+                self.notifs
+                    .notify(format!("Toggled Debug Lines {state}"), Color::Gray);
             }
 
             _ if m == SHOW_MACROS => {
@@ -784,6 +799,17 @@ impl App {
                     self.popup_table_state.select(Some(0));
                     self.popup_single_line_state.active = false;
                 }
+                self.tx
+                    .send(Tick::Scroll.into())
+                    .map_err(|e| e.to_string())
+                    .unwrap();
+            }
+
+            _ if m == SHOW_BEHAVIOR => {
+                self.popup = Some(PopupMenu::BehaviorSettings);
+                self.popup_single_line_state.active = false;
+                self.popup_table_state.select(Some(0));
+
                 self.tx
                     .send(Tick::Scroll.into())
                     .map_err(|e| e.to_string())
@@ -802,7 +828,11 @@ impl App {
                     .map_err(|e| e.to_string())
                     .unwrap();
             }
-            unknown => warn!("Unknown keybind: {unknown}"),
+            unknown => {
+                warn!("Unknown keybind: {unknown}");
+                self.notifs
+                    .notify(format!("Unknown keybind: \"{unknown}\""), Color::Yellow);
+            }
         };
         Ok(())
     }
@@ -1146,9 +1176,16 @@ impl App {
         match self.popup {
             None => (),
             Some(PopupMenu::PortSettings) => {
+                // TODO
+                let should_reconsume = if cfg!(debug_assertions) {};
+
                 self.settings.last_port_settings = self.scratch.port.clone();
 
+                // TODO combine
                 self.buffer.line_ending = self.scratch.port.line_ending.clone();
+
+                self.buffer.reconsume_raw_buffer();
+
                 self.serial
                     .update_settings(self.scratch.port.clone())
                     .unwrap();
@@ -1294,6 +1331,14 @@ impl App {
                 match DisconnectPrompt::try_from(index).unwrap() {
                     DisconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
                     DisconnectPrompt::Exit => self.shutdown(),
+                    DisconnectPrompt::PortSettings => {
+                        // TODO i hate this, consolidate this.
+                        self.menu = Menu::Terminal(TerminalPrompt::None);
+                        self.dismiss_popup();
+                        self.popup = Some(PopupMenu::PortSettings);
+                        self.popup_table_state.select_first();
+                        self.tx.send(Tick::Scroll.into()).unwrap();
+                    }
                     DisconnectPrompt::Disconnect => {
                         self.serial.disconnect().unwrap();
                         // Refresh port listings

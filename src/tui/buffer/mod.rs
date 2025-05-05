@@ -1,4 +1,4 @@
-use std::{borrow::Cow, iter::Peekable};
+use std::{borrow::Cow, cmp::Ordering, collections::BTreeSet, iter::Peekable};
 
 use ansi_to_tui::IntoText;
 use buf_line::BufLine;
@@ -15,7 +15,7 @@ use ratatui::{
     },
 };
 use ratatui_macros::{line, span};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     errors::YapResult,
@@ -37,10 +37,23 @@ pub struct BufferState {
     stuck_to_bottom: bool,
 }
 
+impl UserEcho {
+    fn filter_user_line(&self, buf_line: &BufLine) -> bool {
+        match self {
+            UserEcho::None => false,
+            UserEcho::All => true,
+            UserEcho::NoBytes => !buf_line.is_bytes,
+            UserEcho::NoMacros => !buf_line.is_macro,
+            UserEcho::NoMacrosOrBytes => !buf_line.is_bytes && !buf_line.is_macro,
+        }
+    }
+}
+
 // TODO have separate vector for user lines, and re-render the raw buffer when turning user lines on and off?
 
 pub struct Buffer {
     raw_buffer: Vec<u8>,
+    buffer_timestamps: Vec<(usize, DateTime<Local>)>,
     lines: Vec<BufLine>,
     user_lines: Vec<BufLine>,
     last_line_completed: bool,
@@ -54,6 +67,8 @@ pub struct Buffer {
     // TODO separate line ending for TX'd text?
     pub line_ending: String,
     // line_ending_finder: Finder<'static>,
+    #[cfg(debug_assertions)]
+    pub debug_lines: bool,
 }
 
 #[derive(
@@ -89,6 +104,7 @@ impl Buffer {
     ) -> Self {
         Self {
             raw_buffer: Vec::with_capacity(1024),
+            buffer_timestamps: Vec::with_capacity(1024),
             lines: Vec::with_capacity(1024),
             user_lines: Vec::with_capacity(1024),
             last_terminal_size: Size::default(),
@@ -102,12 +118,15 @@ impl Buffer {
             },
             line_ending: line_ending.to_owned(),
             last_line_completed: true,
+            #[cfg(debug_assertions)]
+            debug_lines: false,
         }
     }
     // pub fn append_str(&mut self, str: &str) {
     // }
 
     pub fn append_user_bytes(&mut self, bytes: &[u8], is_macro: bool) {
+        let now = Local::now();
         let text: Span = bytes.iter().map(|b| format!("{:02X}", b)).join(" ").into();
         let text = text.dark_gray().italic().bold();
 
@@ -117,28 +136,33 @@ impl Buffer {
 
         // line.spans.insert(0, user_span.clone());
         // line.style_all_spans(Color::DarkGray.into());
-        self.user_lines.push(BufLine::new_with_line(
+        let user_buf_line = BufLine::new_with_line(
             line,
-            self.lines
-                .last()
-                .map(|l| l.raw_buffer_index)
-                .unwrap_or_default(), // .max(1)
+            #[cfg(debug_assertions)]
+            bytes,
+            self.raw_buffer.len(), // .max(1)
             self.last_terminal_size.width,
             self.state.timestamps_visible,
+            #[cfg(debug_assertions)]
+            self.debug_lines,
+            now,
             true,
             is_macro,
-        ));
+        );
+        self.last_line_completed = self.state.user_echo_input.filter_user_line(&user_buf_line)
+            || self.raw_buffer.has_byte_suffix(self.line_ending.as_bytes());
+        self.user_lines.push(user_buf_line);
         // TODO make this more dynamic with the macro hiding
-        self.last_line_completed = true;
     }
 
     pub fn append_user_text(&mut self, text: &str, is_macro: bool) {
+        let now = Local::now();
         let mm = text.escape_debug().to_string();
 
         let user_span = span!(Color::DarkGray;"USER> ");
         // let Text { lines, .. } = text;
         // TODO HANDLE MULTI-LINE USER INPUT AAAA
-        for (trunc, orig) in line_ending_iter(mm.as_bytes(), &self.line_ending) {
+        for (trunc, orig, _indices) in line_ending_iter(mm.as_bytes(), &self.line_ending) {
             let mut line = match trunc.into_line_lossy(None, Style::new()) {
                 Ok(line) => line,
                 Err(_) => {
@@ -149,98 +173,134 @@ impl Buffer {
 
             line.spans.insert(0, user_span.clone());
             line.style_all_spans(Color::DarkGray.into());
-            self.user_lines.push(BufLine::new_with_line(
+            let user_buf_line = BufLine::new_with_line(
                 line,
-                self.lines
-                    .last()
-                    .map(|l| l.raw_buffer_index)
-                    .unwrap_or_default(), // .max(1)
+                #[cfg(debug_assertions)]
+                orig,
+                self.raw_buffer.len(), // .max(1)
                 self.last_terminal_size.width,
                 self.state.timestamps_visible,
+                #[cfg(debug_assertions)]
+                self.debug_lines,
+                now,
                 false,
                 is_macro,
-            ));
+            );
+            // Used to be out of the for loop.
+            self.last_line_completed = self.state.user_echo_input.filter_user_line(&user_buf_line)
+                || self.raw_buffer.has_byte_suffix(self.line_ending.as_bytes());
+
+            self.user_lines.push(user_buf_line);
         }
-        // TODO make this more dynamic with the macro hiding
-        self.last_line_completed = true;
+    }
+
+    fn consume_port_bytes<'a>(
+        &mut self,
+        trunc: &'a [u8],
+        orig: &'a [u8],
+        start_index: usize,
+        known_time: Option<DateTime<Local>>,
+    ) {
+        // debug!("{trunc:?}, {orig:?}");
+        assert!(
+            trunc.len() <= orig.len(),
+            "truncated buffer can't be larger than original"
+        );
+        let mut append_to_last = !self.last_line_completed;
+        if orig.is_empty() {
+            return;
+        }
+
+        if append_to_last {
+            append_to_last = false;
+            let last_line = self.lines.last_mut().expect("can't append to nothing");
+            let last_index = last_line.index_in_buffer();
+
+            let slice = &self.raw_buffer[last_index..start_index + trunc.len()];
+            // info!("AAAFG: {:?}", slice);
+            let line = match slice.into_line_lossy(None, Style::new()) {
+                Ok(line) => line,
+                Err(_) => {
+                    error!("ansi-to-tui failed to parse input! Using unstyled text.");
+                    Line::from(String::from_utf8_lossy(slice).to_string())
+                }
+            };
+
+            last_line.update_line(
+                line,
+                #[cfg(debug_assertions)]
+                orig,
+                self.last_terminal_size.width,
+                self.state.timestamps_visible,
+                #[cfg(debug_assertions)]
+                self.debug_lines,
+            );
+        } else {
+            let line = match trunc.into_line_lossy(None, Style::new()) {
+                Ok(line) => line,
+                Err(_) => {
+                    error!("ansi-to-tui failed to parse input! Using unstyled text.");
+                    Line::from(String::from_utf8_lossy(trunc).to_string())
+                }
+            };
+
+            // if !line.is_styled() {
+            //     assert!(line.spans.len() <= 1);
+            // }
+
+            self.lines.push(BufLine::new_with_line(
+                line,
+                #[cfg(debug_assertions)]
+                orig,
+                start_index,
+                self.last_terminal_size.width,
+                self.state.timestamps_visible,
+                #[cfg(debug_assertions)]
+                self.debug_lines,
+                known_time.unwrap_or_else(Local::now),
+                false,
+                false,
+            ));
+        };
+        self.last_line_completed = {
+            // let last_line = self.lines.last().expect("expected at least one line");
+            let expected_ending = self.line_ending.as_bytes();
+            self.raw_buffer.has_byte_suffix(expected_ending)
+        };
     }
 
     // Forced to use Vec<u8> for now
     pub fn append_rx_bytes(&mut self, bytes: &mut Vec<u8>) {
-        let mut append_to_last = !self.last_line_completed;
-
+        let now = Local::now();
         // debug!("{lines:?}");
         // debug!("{:#?}", self.lines);
 
-        for (trunc, orig) in line_ending_iter(bytes, &self.line_ending) {
-            if orig.is_empty() {
-                // debug!("empty orig!");
-                continue;
-            }
-
+        for (trunc, orig, indices) in line_ending_iter(bytes, self.line_ending.clone().as_str()) {
             let index = self.raw_buffer.len();
             self.raw_buffer.extend(orig);
-
-            if append_to_last {
-                append_to_last = false;
-                let last_line = self.lines.last_mut().expect("can't append to nothing");
-                let last_index = last_line.index_in_buffer();
-
-                let slice = &self.raw_buffer[last_index..index + trunc.len()];
-                // info!("AAAFG: {:?}", slice);
-                let line = match slice.into_line_lossy(None, Style::new()) {
-                    Ok(line) => line,
-                    Err(_) => {
-                        error!("ansi-to-tui failed to parse input! Using unstyled text.");
-                        Line::from(String::from_utf8_lossy(slice).to_string())
-                    }
-                };
-
-                last_line.update_line(
-                    line,
-                    self.last_terminal_size.width,
-                    self.state.timestamps_visible,
-                );
-            } else {
-                let line = match trunc.into_line_lossy(None, Style::new()) {
-                    Ok(line) => line,
-                    Err(_) => {
-                        error!("ansi-to-tui failed to parse input! Using unstyled text.");
-                        Line::from(String::from_utf8_lossy(trunc).to_string())
-                    }
-                };
-
-                // if !line.is_styled() {
-                //     assert!(line.spans.len() <= 1);
-                // }
-
-                self.lines.push(BufLine::new_with_line(
-                    line,
-                    index,
-                    self.last_terminal_size.width,
-                    self.state.timestamps_visible,
-                    false,
-                    false,
-                ));
-            };
+            self.buffer_timestamps.push((index, now));
+            self.consume_port_bytes(trunc, orig, index, Some(now));
         }
-
-        self.last_line_completed = {
-            // let last_line = self.lines.last().expect("expected at least one line");
-            let expected_ending = self.line_ending.as_bytes();
-            bytes.has_byte_suffix(expected_ending)
-        };
     }
+
     /// Updates each BufLine's render height with the new terminal width, returning the sum total at the end
     pub fn update_wrapped_line_heights(&mut self) -> usize {
         self.lines.iter_mut().fold(0, |total, l| {
-            let new_height =
-                l.update_line_height(self.last_terminal_size.width, self.state.timestamps_visible);
+            let new_height = l.update_line_height(
+                self.last_terminal_size.width,
+                self.state.timestamps_visible,
+                #[cfg(debug_assertions)]
+                self.debug_lines,
+            );
 
             total + new_height
         }) + self.user_lines.iter_mut().fold(0, |total, l| {
-            let new_height =
-                l.update_line_height(self.last_terminal_size.width, self.state.timestamps_visible);
+            let new_height = l.update_line_height(
+                self.last_terminal_size.width,
+                self.state.timestamps_visible,
+                #[cfg(debug_assertions)]
+                self.debug_lines,
+            );
 
             total + new_height
         })
@@ -251,6 +311,7 @@ impl Buffer {
     }
     pub fn set_user_lines(&mut self, user_echo: UserEcho) {
         self.state.user_echo_input = user_echo;
+        self.reconsume_raw_buffer();
     }
     fn buflines_iter(&self) -> impl Iterator<Item = &BufLine> {
         self.lines
@@ -261,13 +322,7 @@ impl Buffer {
                     self.lines.iter(),
                     self.user_lines
                         .iter()
-                        .filter(|l| match self.state.user_echo_input {
-                            UserEcho::None => false,
-                            UserEcho::All => true,
-                            UserEcho::NoBytes => !l.is_bytes,
-                            UserEcho::NoMacros => !l.is_macro,
-                            UserEcho::NoMacrosOrBytes => !l.is_bytes && !l.is_macro,
-                        }),
+                        .filter(|l| self.state.user_echo_input.filter_user_line(l)),
                 )
                 .filter(|_| self.state.user_echo_input != UserEcho::None),
             )
@@ -368,7 +423,13 @@ impl Buffer {
             self.buflines_iter()
                 .skip(entries_to_skip)
                 .take(entries_to_take)
-                .map(|l| l.as_line(self.state.timestamps_visible)),
+                .map(|l| {
+                    l.as_line(
+                        self.state.timestamps_visible,
+                        #[cfg(debug_assertions)]
+                        self.debug_lines,
+                    )
+                }),
             wrapped_scroll,
         )
     }
@@ -387,6 +448,7 @@ impl Buffer {
     }
     pub fn clear(&mut self) {
         self.lines.clear();
+        self.buffer_timestamps.clear();
         self.user_lines.clear();
         self.raw_buffer.clear();
         self.last_line_completed = true;
@@ -486,6 +548,133 @@ impl Buffer {
         self.scroll_by(0);
         count
     }
+
+    pub fn reconsume_raw_buffer(&mut self) {
+        if self.raw_buffer.is_empty() {
+            warn!("Can't reconsume an empty buffer!");
+            return;
+        }
+        let old_lines = std::mem::take(&mut self.lines);
+
+        let timestamps = std::mem::take(&mut self.buffer_timestamps);
+
+        // let bullshit: BTreeSet<_> = timestamps
+        //     .iter()
+        //     .map(|(index, timestamp)| (*index, *timestamp))
+        //     .chain(
+        //         old_lines
+        //             .into_iter()
+        //             .map(|b| (b.raw_buffer_index, b.timestamp)),
+        //     )
+        //     .collect();
+
+        let buffer_len = self.raw_buffer.len();
+        let buffer = std::mem::replace(&mut self.raw_buffer, Vec::with_capacity(buffer_len));
+
+        let user_lines = std::mem::take(&mut self.user_lines);
+        let line_ending = self.line_ending.clone();
+        let user_echo = self.state.user_echo_input;
+        self.last_line_completed = true;
+
+        let interleaved_points = interleave_by(
+            timestamps
+                .iter()
+                .map(|(index, timestamp)| (*index, *timestamp, false))
+                // Add a "finale" element to capture any remaining buffer, always placed at the end.
+                .chain(std::iter::once((buffer_len, Local::now(), false))),
+            user_lines
+                .iter()
+                .filter(|b| user_echo.filter_user_line(b))
+                .map(|b| (b.raw_buffer_index, b.timestamp, true)),
+            |device, user| match device.0.cmp(&user.0) {
+                Ordering::Equal => device.1 <= user.1,
+                Ordering::Less => true,
+                Ordering::Greater => false,
+            },
+        );
+
+        let mut new_index = 0;
+        debug!("total len: {buffer_len}");
+        // for (start_index, timestamp, is_user) in mrrr {
+        //     debug!("{index}..{start_index}, {timestamp}, {is_user}");
+        //     index = start_index;
+        // }
+
+        let buffer_slices = interleaved_points
+            .tuple_windows()
+            .filter(|((start_index, _, was_user_line), (end_index, _, _))| {
+                start_index != end_index || *was_user_line
+            })
+            .map(
+                |((start_index, timestamp, was_user_line), (end_index, _, _))| {
+                    (
+                        &buffer[start_index..end_index],
+                        timestamp,
+                        was_user_line,
+                        (start_index, end_index),
+                    )
+                },
+            );
+
+        // let mut recession_indicator = None;
+
+        for (slice, timestamp, was_user_line, indices) in buffer_slices {
+            // if indices.0 == indices.1 {
+            // recession_indicator = Some(timestamp);
+            // continue;
+            // };
+            debug!("{indices:?}, {timestamp}, {was_user_line}");
+            self.raw_buffer.extend(slice);
+            // let timestamp = Some(recession_indicator.take().unwrap_or(timestamp));
+            for (trunc, orig, indices) in line_ending_iter(slice, &line_ending) {
+                // debug!("{trunc:?}");
+                self.consume_port_bytes(trunc, orig, new_index, Some(timestamp));
+            }
+            new_index += slice.len();
+
+            // If this was where a user line we allow to render is,
+            // then we'll finish this line early if it's not already finished.
+            if was_user_line {
+                self.last_line_completed = true;
+            }
+        }
+
+        assert_eq!(
+            buffer_len,
+            self.raw_buffer.len(),
+            "Buffer size should not have changed during reconsumption."
+        );
+
+        // let indices: Vec<usize> = ;
+
+        // for (trunc, orig, indices) in line_ending_iter(&buffer, self.line_ending.clone().as_str()) {
+        //     // Find the timestamp for where this slice started in old_lines
+        //     // let known_time = timestamps
+        //     //     .iter()
+        //     //     .filter(|(index, timestamp)| index <= &indices.0)
+        //     //     .max_by_key(|(index, timestamp)| index)
+        //     //     .map(|(index, timestamp)| *timestamp);
+
+        //     // let (known_time, force_completed) = timestamps
+        //     //     .iter()
+        //     //     .map(|(index, timestamp)| (index, timestamp, false))
+        //     // .filter(|(index, timestamp, force)| index <= &indices.0)
+        //     // .max_by_key(|(index, timestamp, force)| index)
+        //     //     .map(|(index, timestamp, force)| (*timestamp, false))
+        //     //     .unwrap();
+
+        //     if user_time {
+        //         self.last_line_completed = true;
+        //     }
+
+        //     self.consume_device_bytes(trunc, orig, indices.0, Some(*known_time));
+        // }
+
+        // self.raw_buffer = buffer;
+        self.buffer_timestamps = timestamps;
+        self.user_lines = user_lines;
+        self.scroll_by(0);
+    }
 }
 
 // TODO make tests for this idiot thing
@@ -498,10 +687,8 @@ impl Buffer {
 pub fn line_ending_iter<'a>(
     bytes: &'a [u8],
     line_ending: &'a str,
-) -> impl Iterator<Item = (&'a [u8], &'a [u8])> {
+) -> impl Iterator<Item = (&'a [u8], &'a [u8], (usize, usize))> {
     assert!(!line_ending.is_empty(), "line_ending can't be empty");
-    // TODO maybe do line ending splits at this level, so raw_buffer_index can be more accurate
-    // https://docs.rs/memchr/latest/memchr/memmem/index.html
 
     let line_ending = line_ending.as_bytes();
 
@@ -513,7 +700,11 @@ pub fn line_ending_iter<'a>(
 
     let slices_iter = line_ending_pos_iter.map(move |(line_ending_index, is_final_entry)| {
         if is_final_entry {
-            (&bytes[last_index..], &bytes[last_index..])
+            (
+                &bytes[last_index..],
+                &bytes[last_index..],
+                (last_index, bytes.len()),
+            )
         } else {
             // Copy of `last_index` since we're about to modify it,
             // but we want to use the unmodified value.
@@ -524,6 +715,7 @@ pub fn line_ending_iter<'a>(
             (
                 &bytes[index_copy..line_ending_index],
                 &bytes[index_copy..line_ending_index + line_ending.len()],
+                (index_copy, line_ending_index + line_ending.len()),
             )
         }
     });
@@ -576,24 +768,46 @@ fn extract_line(text: Text<'_>) -> Option<Line<'_>> {
     lines.into_iter().find(|l| !l.spans.is_empty())
 }
 
-fn interleave<A, B, I>(a: A, b: B) -> impl Iterator<Item = I>
+fn interleave<A, B, I>(left: A, right: B) -> impl Iterator<Item = I>
 where
     A: Iterator<Item = I>,
     B: Iterator<Item = I>,
     I: Ord,
 {
-    let mut a = a.peekable();
-    let mut b = b.peekable();
-    std::iter::from_fn(move || match (a.peek(), b.peek()) {
-        (Some(ia), Some(ib)) => {
-            if ia <= ib {
-                a.next()
+    let mut left = left.peekable();
+    let mut right = right.peekable();
+    std::iter::from_fn(move || match (left.peek(), right.peek()) {
+        (Some(li), Some(ri)) => {
+            if li <= ri {
+                left.next()
             } else {
-                b.next()
+                right.next()
             }
         }
-        (Some(_), None) => a.next(),
-        (None, Some(_)) => b.next(),
+        (Some(_), None) => left.next(),
+        (None, Some(_)) => right.next(),
+        (None, None) => None,
+    })
+}
+
+fn interleave_by<A, B, I, F>(left: A, right: B, mut decider: F) -> impl Iterator<Item = I>
+where
+    A: Iterator<Item = I>,
+    B: Iterator<Item = I>,
+    F: FnMut(&I, &I) -> bool,
+{
+    let mut left = left.peekable();
+    let mut right = right.peekable();
+    std::iter::from_fn(move || match (left.peek(), right.peek()) {
+        (Some(li), Some(ri)) => {
+            if decider(li, ri) {
+                left.next()
+            } else {
+                right.next()
+            }
+        }
+        (Some(_), None) => left.next(),
+        (None, Some(_)) => right.next(),
         (None, None) => None,
     })
 }

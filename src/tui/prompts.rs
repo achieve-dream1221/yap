@@ -28,6 +28,8 @@ pub enum Test {
 #[repr(u8)]
 pub enum DisconnectPrompt {
     Disconnect,
+    #[strum(serialize = "Open Port Settings")]
+    PortSettings,
     #[strum(serialize = "Exit App")]
     Exit,
     Cancel,
