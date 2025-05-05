@@ -332,7 +332,7 @@ impl Buffer {
         // or have BufLine.value be an enum for String/ratatui::Line
         // and then match against at in BufLine::as_line()
         let last_size = &self.last_terminal_size;
-        let total_lines = self.line_count();
+        let total_lines = self.combined_height();
         let more_lines_than_height = total_lines > last_size.height as usize;
 
         // let lines_iter = ;
@@ -474,7 +474,7 @@ impl Buffer {
                 self.state.stuck_to_bottom = false;
             }
             // Scroll all the way down
-            i32::MIN => self.state.vert_scroll = self.line_count(),
+            i32::MIN => self.state.vert_scroll = self.combined_height(),
 
             // Scroll up
             x if up > 0 => {
@@ -488,13 +488,13 @@ impl Buffer {
         }
 
         let last_size = &self.last_terminal_size;
-        let total_lines = self.line_count();
+        let total_lines = self.combined_height();
         let more_lines_than_height = total_lines > last_size.height as usize;
 
         if up > 0 && more_lines_than_height {
             self.state.stuck_to_bottom = false;
-        } else if self.state.vert_scroll + last_size.height as usize >= self.line_count() {
-            self.state.vert_scroll = self.line_count();
+        } else if self.state.vert_scroll + last_size.height as usize >= self.combined_height() {
+            self.state.vert_scroll = self.combined_height();
             self.state.stuck_to_bottom = true;
         }
 
@@ -506,7 +506,10 @@ impl Buffer {
             .state
             .scrollbar_state
             .position(self.state.vert_scroll)
-            .content_length(self.line_count().saturating_sub(last_size.height as usize));
+            .content_length(
+                self.combined_height()
+                    .saturating_sub(last_size.height as usize),
+            );
     }
     fn wrapped_line_count(&self) -> usize {
         self.buflines_iter().map(|l| l.get_line_height()).sum()
@@ -514,12 +517,16 @@ impl Buffer {
 
     /// Returns the total amount of lines that can be rendered,
     /// taking into account if text wrapping is enabled or not.
-    pub fn line_count(&self) -> usize {
+    pub fn combined_height(&self) -> usize {
         if self.state.text_wrapping {
             self.wrapped_line_count()
         } else {
             self.buflines_iter().count()
         }
+    }
+
+    pub fn port_lines_len(&self) -> usize {
+        self.lines.len()
     }
 
     pub fn update_terminal_size(

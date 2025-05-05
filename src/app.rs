@@ -1748,34 +1748,35 @@ impl App {
             self.serial_healthy,
         );
 
-        // #[cfg(debug_assertions)]
-        // {
-        //     let line = Line::raw(format!(
-        //         "Entries: {} | Lines: {}",
-        //         self.buffer.lines.len(),
-        //         self.buffer.line_count()
-        //     ))
-        //     .right_aligned();
-        //     frame.render_widget(
-        //         line,
-        //         line_area.inner(Margin {
-        //             horizontal: 3,
-        //             vertical: 0,
-        //         }),
-        //     );
-        // }
+        #[cfg(debug_assertions)]
+        {
+            let line = Line::raw(format!(
+                "Entries: {} | Lines: {}",
+                self.buffer.port_lines_len(),
+                self.buffer.combined_height()
+            ))
+            .right_aligned();
+            frame.render_widget(
+                line,
+                line_area.inner(Margin {
+                    horizontal: 3,
+                    vertical: 0,
+                }),
+            );
+        }
 
-        // #[cfg(not(debug_assertions))]
-        // {
-        //     let line = Line::raw(format!("Lines: {}", self.buffer.lines.len())).right_aligned();
-        //     frame.render_widget(
-        //         line,
-        //         line_area.inner(Margin {
-        //             horizontal: 3,
-        //             vertical: 0,
-        //         }),
-        //     );
-        // }
+        #[cfg(not(debug_assertions))]
+        {
+            let line =
+                Line::raw(format!("Lines: {}", self.buffer.port_lines_len())).right_aligned();
+            frame.render_widget(
+                line,
+                line_area.inner(Margin {
+                    horizontal: 3,
+                    vertical: 0,
+                }),
+            );
+        }
 
         {
             let port_status_guard = self.serial.port_status.load();
