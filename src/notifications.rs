@@ -14,6 +14,7 @@ use crate::app::{Event, Tick};
 
 pub struct Notifications {
     pub inner: Option<Notification>,
+    replaced: (usize, Option<String>),
     tx: Sender<Event>,
 }
 
@@ -33,7 +34,11 @@ impl Notification {
 
 impl Notifications {
     pub fn new(tx: Sender<Event>) -> Self {
-        Self { inner: None, tx }
+        Self {
+            inner: None,
+            replaced: (0, None),
+            tx,
+        }
     }
     pub fn notify<S: AsRef<str>>(&mut self, text: S, color: Color) {
         let text: &str = text.as_ref();
@@ -41,6 +46,13 @@ impl Notifications {
         if text.is_empty() {
             return;
         }
+        self.replaced = if self.inner.is_none() {
+            (0, None)
+        } else {
+            let amount = self.replaced.0 + 1;
+            let text = format!("[+{amount}]");
+            (amount, Some(text))
+        };
         self.inner = Some(Notification {
             text: text.to_owned(),
             color,
@@ -128,6 +140,14 @@ impl Widget for &Notifications {
 
             let inner_area = block.inner(center_area);
             let text = Line::raw(&notification.text).centered();
+            if notification.replaced
+                && text.width() < inner_area.width as usize
+                && self.replaced.0 > 0
+            {
+                let replaced_amount_text =
+                    Line::raw(self.replaced.1.as_ref().unwrap()).right_aligned();
+                replaced_amount_text.render(inner_area, buf);
+            }
             text.render(inner_area, buf);
 
             block.render(block_area, buf);
