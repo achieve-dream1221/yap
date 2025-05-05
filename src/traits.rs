@@ -19,9 +19,10 @@ pub trait LastIndex {
     fn last_index_eq_or_greater(&self, index: usize) -> bool;
     /// Returns the index of the last element in the collection.
     ///
-    /// Returns `0` if the collection is empty.
+    /// **Panics** if the collection is empty.
     fn last_index(&self) -> usize {
-        self.last_index_checked().unwrap_or(0)
+        self.last_index_checked()
+            .expect("empty collection; no final element exists")
     }
     /// Returns the index of the last element in the collection.
     ///
