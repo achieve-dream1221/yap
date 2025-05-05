@@ -53,6 +53,7 @@ impl UserEcho {
 
 pub struct Buffer {
     raw_buffer: Vec<u8>,
+    // Time-tagged indexes into `raw_buffer`, from each input from the port.
     buffer_timestamps: Vec<(usize, DateTime<Local>)>,
     lines: Vec<BufLine>,
     user_lines: Vec<BufLine>,
@@ -225,11 +226,19 @@ impl Buffer {
                     Line::from(String::from_utf8_lossy(slice).to_string())
                 }
             };
-
+            // debug!(
+            //     "buf_index: {last_index}, update: {line}",
+            //     line = line
+            //         .spans
+            //         .iter()
+            //         .map(|s| s.content.as_ref())
+            //         .join("")
+            //         .escape_default()
+            // );
             last_line.update_line(
                 line,
                 #[cfg(debug_assertions)]
-                orig,
+                slice,
                 self.last_terminal_size.width,
                 self.state.timestamps_visible,
                 #[cfg(debug_assertions)]
@@ -248,6 +257,15 @@ impl Buffer {
             //     assert!(line.spans.len() <= 1);
             // }
 
+            // debug!(
+            //     "buf_index: {start_index}, new: {line}",
+            //     line = line
+            //         .spans
+            //         .iter()
+            //         .map(|s| s.content.as_ref())
+            //         .join("")
+            //         .escape_default()
+            // );
             self.lines.push(BufLine::new_with_line(
                 line,
                 #[cfg(debug_assertions)]
@@ -272,15 +290,137 @@ impl Buffer {
     // Forced to use Vec<u8> for now
     pub fn append_rx_bytes(&mut self, bytes: &mut Vec<u8>) {
         let now = Local::now();
+        let mut index = self.raw_buffer.len();
+        self.buffer_timestamps.push((index, now));
         // debug!("{lines:?}");
         // debug!("{:#?}", self.lines);
 
         for (trunc, orig, indices) in line_ending_iter(bytes, self.line_ending.clone().as_str()) {
-            let index = self.raw_buffer.len();
+            index = self.raw_buffer.len();
             self.raw_buffer.extend(orig);
-            self.buffer_timestamps.push((index, now));
             self.consume_port_bytes(trunc, orig, index, Some(now));
         }
+    }
+
+    /// Clears `self.lines` and reiterates through the whole `raw_buffer` again.
+    ///
+    /// Avoid running when possible, isn't cheap to run.
+    pub fn reconsume_raw_buffer(&mut self) {
+        if self.raw_buffer.is_empty() {
+            warn!("Can't reconsume an empty buffer!");
+            return;
+        }
+
+        // let _ = std::mem::take(&mut self.lines);
+        self.lines.clear();
+
+        // Taking these variables out of `self` temporarily to allow running &mut self methods while holding
+        // references to these.
+        let timestamps = std::mem::take(&mut self.buffer_timestamps);
+        let user_lines = std::mem::take(&mut self.user_lines);
+        let orig_buf_len = self.raw_buffer.len();
+        let buffer = std::mem::replace(&mut self.raw_buffer, Vec::with_capacity(orig_buf_len));
+        let line_ending = self.line_ending.clone();
+        let user_echo = self.state.user_echo_input.clone();
+
+        // No lines to append to.
+        self.last_line_completed = true;
+
+        // Getting all time-tagged indices in the buffer where either
+        // 1. Data came in through the port
+        // 2. The user sent data
+        let interleaved_points = interleave_by(
+            timestamps
+                .iter()
+                .map(|(index, timestamp)| (*index, *timestamp, false))
+                // Add a "finale" element to capture any remaining buffer, always placed at the end.
+                .chain(std::iter::once((orig_buf_len, Local::now(), false))),
+            user_lines
+                .iter()
+                // If a user line isn't visible, ignore it when taking external new-lines into account.
+                .filter(|b| user_echo.filter_user_line(b))
+                .map(|b| (b.raw_buffer_index, b.timestamp, true)),
+            |device, user| match device.0.cmp(&user.0) {
+                Ordering::Equal => device.1 <= user.1,
+                Ordering::Less => true,
+                Ordering::Greater => false,
+            },
+        );
+
+        let mut new_index = 0;
+        debug!("total len: {orig_buf_len}");
+
+        let buffer_slices = interleaved_points
+            .tuple_windows()
+            .filter(|((start_index, _, was_user_line), (end_index, _, _))| {
+                start_index != end_index || *was_user_line
+            })
+            .map(
+                |((start_index, timestamp, was_user_line), (end_index, _, _))| {
+                    (
+                        &buffer[start_index..end_index],
+                        timestamp,
+                        was_user_line,
+                        (start_index, end_index),
+                    )
+                },
+            );
+
+        // let buffer_slices: Vec<_> = buffer_slices.collect();
+
+        // debug!("{buffer_slices:#?}");
+
+        // info!("Slicing raw buffer!");
+        for (slice, timestamp, was_user_line, (slice_start, slice_end)) in buffer_slices {
+            // debug!("{slice:#?}");
+            // If this was where a user line we allow to render is,
+            // then we'll finish this line early if it's not already finished.
+            if was_user_line {
+                self.last_line_completed = true;
+                continue;
+            }
+
+            // debug!(
+            //     "({slice_start}, {slice_end}), {timestamp}, {was_user_line}, line_ending:{}",
+            //     line_ending.escape_debug()
+            // );
+            // info!(
+            //     "Getting {le} slices from [{slice_start}..{slice_end}], {timestamp}, {was_user_line}",
+            //     le = line_ending.escape_debug()
+            // );
+            for (trunc, orig, (orig_start, orig_end)) in line_ending_iter(slice, &line_ending) {
+                // info!(
+                //     "trunc: {trunc_len}, orig: {orig_len}. [{start}..{end}]",
+                //     trunc_len = trunc.len(),
+                //     orig_len = orig.len(),
+                //     start = orig_start + slice_start,
+                //     end = orig_end + slice_start,
+                // );
+                // debug!(
+                //     "({orig_start}, {orig_end}) ({}, {})",
+                //     orig_start + iters_len,
+                //     orig_end + iters_len
+                // );
+                self.raw_buffer.extend(orig);
+                self.consume_port_bytes(trunc, orig, new_index, Some(timestamp));
+                new_index += orig.len();
+            }
+        }
+
+        assert_eq!(
+            orig_buf_len,
+            self.raw_buffer.len(),
+            "Buffer size should not have changed during reconsumption."
+        );
+
+        assert_eq!(
+            new_index, orig_buf_len,
+            "Iterators should have same total length as raw buffer"
+        );
+
+        self.buffer_timestamps = timestamps;
+        self.user_lines = user_lines;
+        self.scroll_by(0);
     }
 
     /// Updates each BufLine's render height with the new terminal width, returning the sum total at the end
@@ -554,133 +694,6 @@ impl Buffer {
         let count = self.update_wrapped_line_heights();
         self.scroll_by(0);
         count
-    }
-
-    pub fn reconsume_raw_buffer(&mut self) {
-        if self.raw_buffer.is_empty() {
-            warn!("Can't reconsume an empty buffer!");
-            return;
-        }
-        let old_lines = std::mem::take(&mut self.lines);
-
-        let timestamps = std::mem::take(&mut self.buffer_timestamps);
-
-        // let bullshit: BTreeSet<_> = timestamps
-        //     .iter()
-        //     .map(|(index, timestamp)| (*index, *timestamp))
-        //     .chain(
-        //         old_lines
-        //             .into_iter()
-        //             .map(|b| (b.raw_buffer_index, b.timestamp)),
-        //     )
-        //     .collect();
-
-        let buffer_len = self.raw_buffer.len();
-        let buffer = std::mem::replace(&mut self.raw_buffer, Vec::with_capacity(buffer_len));
-
-        let user_lines = std::mem::take(&mut self.user_lines);
-        let line_ending = self.line_ending.clone();
-        let user_echo = self.state.user_echo_input;
-        self.last_line_completed = true;
-
-        let interleaved_points = interleave_by(
-            timestamps
-                .iter()
-                .map(|(index, timestamp)| (*index, *timestamp, false))
-                // Add a "finale" element to capture any remaining buffer, always placed at the end.
-                .chain(std::iter::once((buffer_len, Local::now(), false))),
-            user_lines
-                .iter()
-                .filter(|b| user_echo.filter_user_line(b))
-                .map(|b| (b.raw_buffer_index, b.timestamp, true)),
-            |device, user| match device.0.cmp(&user.0) {
-                Ordering::Equal => device.1 <= user.1,
-                Ordering::Less => true,
-                Ordering::Greater => false,
-            },
-        );
-
-        let mut new_index = 0;
-        debug!("total len: {buffer_len}");
-        // for (start_index, timestamp, is_user) in mrrr {
-        //     debug!("{index}..{start_index}, {timestamp}, {is_user}");
-        //     index = start_index;
-        // }
-
-        let buffer_slices = interleaved_points
-            .tuple_windows()
-            .filter(|((start_index, _, was_user_line), (end_index, _, _))| {
-                start_index != end_index || *was_user_line
-            })
-            .map(
-                |((start_index, timestamp, was_user_line), (end_index, _, _))| {
-                    (
-                        &buffer[start_index..end_index],
-                        timestamp,
-                        was_user_line,
-                        (start_index, end_index),
-                    )
-                },
-            );
-
-        // let mut recession_indicator = None;
-
-        for (slice, timestamp, was_user_line, indices) in buffer_slices {
-            // if indices.0 == indices.1 {
-            // recession_indicator = Some(timestamp);
-            // continue;
-            // };
-            debug!("{indices:?}, {timestamp}, {was_user_line}");
-            self.raw_buffer.extend(slice);
-            // let timestamp = Some(recession_indicator.take().unwrap_or(timestamp));
-            for (trunc, orig, indices) in line_ending_iter(slice, &line_ending) {
-                // debug!("{trunc:?}");
-                self.consume_port_bytes(trunc, orig, new_index, Some(timestamp));
-            }
-            new_index += slice.len();
-
-            // If this was where a user line we allow to render is,
-            // then we'll finish this line early if it's not already finished.
-            if was_user_line {
-                self.last_line_completed = true;
-            }
-        }
-
-        assert_eq!(
-            buffer_len,
-            self.raw_buffer.len(),
-            "Buffer size should not have changed during reconsumption."
-        );
-
-        // let indices: Vec<usize> = ;
-
-        // for (trunc, orig, indices) in line_ending_iter(&buffer, self.line_ending.clone().as_str()) {
-        //     // Find the timestamp for where this slice started in old_lines
-        //     // let known_time = timestamps
-        //     //     .iter()
-        //     //     .filter(|(index, timestamp)| index <= &indices.0)
-        //     //     .max_by_key(|(index, timestamp)| index)
-        //     //     .map(|(index, timestamp)| *timestamp);
-
-        //     // let (known_time, force_completed) = timestamps
-        //     //     .iter()
-        //     //     .map(|(index, timestamp)| (index, timestamp, false))
-        //     // .filter(|(index, timestamp, force)| index <= &indices.0)
-        //     // .max_by_key(|(index, timestamp, force)| index)
-        //     //     .map(|(index, timestamp, force)| (*timestamp, false))
-        //     //     .unwrap();
-
-        //     if user_time {
-        //         self.last_line_completed = true;
-        //     }
-
-        //     self.consume_device_bytes(trunc, orig, indices.0, Some(*known_time));
-        // }
-
-        // self.raw_buffer = buffer;
-        self.buffer_timestamps = timestamps;
-        self.user_lines = user_lines;
-        self.scroll_by(0);
     }
 }
 
