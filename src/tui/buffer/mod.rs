@@ -3,7 +3,7 @@ use std::{borrow::Cow, cmp::Ordering, collections::BTreeSet, iter::Peekable};
 use ansi_to_tui::IntoText;
 use buf_line::BufLine;
 use chrono::{DateTime, Local};
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use memchr::memmem::Finder;
 use ratatui::{
     layout::Size,
@@ -690,7 +690,7 @@ impl Buffer {
 ///
 /// String slice tuple is in order of `(exclusive, inclusive/original)`.
 ///
-/// Returns `None` if there were no matching line endings found.
+/// Returns the whole slice back once if no line ending was found.
 pub fn line_ending_iter<'a>(
     bytes: &'a [u8],
     line_ending: &'a str,
@@ -699,7 +699,14 @@ pub fn line_ending_iter<'a>(
 
     let line_ending = line_ending.as_bytes();
 
-    let line_ending_pos_iter = memchr::memmem::find_iter(bytes, line_ending)
+    let line_ending_pos_iter = if line_ending.len() == 1 {
+        Either::Left(memchr::memchr_iter(line_ending[0], bytes))
+    } else {
+        Either::Right(memchr::memmem::find_iter(bytes, line_ending))
+    };
+
+    let line_ending_pos_iter = line_ending_pos_iter
+        .into_iter()
         .map(|line_ending_index| (line_ending_index, false))
         .chain(std::iter::once((bytes.len(), true)));
 
@@ -727,7 +734,162 @@ pub fn line_ending_iter<'a>(
         }
     });
 
+    // let slices_iter =
+    //     line_ending_pos_iter.filter_map(move |(line_ending_index, is_final_entry)| {
+    //         let result = if is_final_entry && last_index == bytes.len() {
+    //             return None;
+    //         } else if is_final_entry {
+    //             (
+    //                 &bytes[last_index..],
+    //                 &bytes[last_index..],
+    //                 (last_index, bytes.len()),
+    //             )
+    //         } else {
+    //             // Copy of `last_index` since we're about to modify it,
+    //             // but we want to use the unmodified value.
+    //             let index_copy = last_index;
+    //             // Adding the length of the line ending to exclude it's presence
+    //             // from the next line.
+    //             last_index = line_ending_index + line_ending.len();
+    //             (
+    //                 &bytes[index_copy..line_ending_index],
+    //                 &bytes[index_copy..line_ending_index + line_ending.len()],
+    //                 (index_copy, line_ending_index + line_ending.len()),
+    //             )
+    //         };
+    //         Some(result)
+    //     });
+
     slices_iter
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_single_line() {
+        let s = b"hello";
+        let it = line_ending_iter(s, "\n");
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].0, b"hello");
+        assert_eq!(res[0].1, b"hello");
+        assert_eq!(res[0].2, (0, 5));
+    }
+
+    #[test]
+    fn test_simple_lines() {
+        let s = b"foo\nbar\nbaz";
+        let it = line_ending_iter(s, "\n");
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0].0, b"foo");
+        assert_eq!(res[0].1, b"foo\n");
+        assert_eq!(res[0].2, (0, 4));
+        assert_eq!(res[1].0, b"bar");
+        assert_eq!(res[1].1, b"bar\n");
+        assert_eq!(res[1].2, (4, 8));
+        assert_eq!(res[2].0, b"baz");
+        assert_eq!(res[2].1, b"baz");
+        assert_eq!(res[2].2, (8, 11));
+    }
+
+    #[test]
+    fn test_few_bytes() {
+        let s = b"a";
+        let it = line_ending_iter(s, "\n");
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].0, b"a");
+        assert_eq!(res[0].1, b"a");
+
+        let s = b"";
+        let it = line_ending_iter(s, "\n");
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].0, b"");
+        assert_eq!(res[0].1, b"");
+    }
+
+    #[test]
+    fn test_trailing_newline() {
+        let s = b"a\nb\nc\n";
+        let it = line_ending_iter(s, "\n");
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 4);
+        assert_eq!(res[0].0, b"a");
+        assert_eq!(res[0].1, b"a\n");
+        assert_eq!(res[1].0, b"b");
+        assert_eq!(res[1].1, b"b\n");
+        assert_eq!(res[2].0, b"c");
+        assert_eq!(res[2].1, b"c\n");
+        assert_eq!(res[3].0, b"");
+        assert_eq!(res[3].1, b"");
+    }
+
+    #[test]
+    fn test_starting_newline() {
+        let s = b"\rb\nc\n";
+        let it = line_ending_iter(s, "\r");
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0].0, b"");
+        assert_eq!(res[0].1, b"\r");
+        assert_eq!(res[1].0, b"b\nc\n");
+        assert_eq!(res[1].1, b"b\nc\n");
+    }
+
+    #[test]
+    fn test_crlf() {
+        let s = b"one\r\ntwo\r\nthree";
+        let it = line_ending_iter(s, "\r\n");
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0].0, b"one");
+        assert_eq!(res[0].1, b"one\r\n");
+        assert_eq!(res[1].0, b"two");
+        assert_eq!(res[1].1, b"two\r\n");
+        assert_eq!(res[2].0, b"three");
+        assert_eq!(res[2].1, b"three");
+    }
+
+    #[test]
+    #[should_panic(expected = "line_ending can't be empty")]
+    fn test_line_ending_empty() {
+        let s = b"test";
+        let _ = line_ending_iter(s, "");
+    }
+
+    #[test]
+    fn test_multi_byte_line_ending() {
+        let s = b"abcXYZdefXYZghi";
+        let it = line_ending_iter(s, "XYZ");
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0].0, b"abc");
+        assert_eq!(res[0].1, b"abcXYZ");
+        assert_eq!(res[1].0, b"def");
+        assert_eq!(res[1].1, b"defXYZ");
+        assert_eq!(res[2].0, b"ghi");
+        assert_eq!(res[2].1, b"ghi");
+    }
+
+    #[test]
+    fn test_multiple_consecutive_line_endings() {
+        let s = b"foo\n\nbar\n";
+        let it = line_ending_iter(s, "\n");
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 4);
+        assert_eq!(res[0].0, b"foo");
+        assert_eq!(res[0].1, b"foo\n");
+        assert_eq!(res[1].0, b"");
+        assert_eq!(res[1].1, b"\n");
+        assert_eq!(res[2].0, b"bar");
+        assert_eq!(res[2].1, b"bar\n");
+        assert_eq!(res[3].0, b"");
+        assert_eq!(res[3].1, b"");
+    }
 }
 
 // pub fn colored_line<'a, L: Into<Line<'a>>>(text: L) -> Line<'a> {
