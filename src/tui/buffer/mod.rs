@@ -200,7 +200,7 @@ impl Buffer {
         // let Text { lines, .. } = text;
         // TODO HANDLE MULTI-LINE USER INPUT AAAA
         for (trunc, orig, _indices) in line_ending_iter(mm.as_bytes(), &self.line_ending) {
-            let mut line = match trunc.into_line_lossy(None, Style::new()) {
+            let mut line = match trunc.into_line_lossy(Style::new()) {
                 Ok(line) => line,
                 Err(_) => {
                     error!("ansi-to-tui failed to parse input! Using unstyled text.");
@@ -258,7 +258,7 @@ impl Buffer {
 
             let slice = &self.raw_buffer[last_index..start_index + trunc.len()];
             // info!("AAAFG: {:?}", slice);
-            let line = match slice.into_line_lossy(None, Style::new()) {
+            let line = match slice.into_line_lossy(Style::new()) {
                 Ok(line) => line,
                 Err(_) => {
                     error!("ansi-to-tui failed to parse input! Using unstyled text.");
@@ -276,7 +276,7 @@ impl Buffer {
             // );
             last_line.update_line(line, slice, self.last_terminal_size.width, &self.rendering);
         } else {
-            let line = match trunc.into_line_lossy(None, Style::new()) {
+            let line = match trunc.into_line_lossy(Style::new()) {
                 Ok(line) => line,
                 Err(_) => {
                     error!("ansi-to-tui failed to parse input! Using unstyled text.");
