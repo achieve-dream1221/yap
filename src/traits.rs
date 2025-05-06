@@ -7,6 +7,8 @@ use ratatui::{
     text::{Line, Span},
 };
 
+use crate::tui::buffer::LineEnding;
+
 /// Trait that provides simple methods to get the last valid index of a collection or slice.
 pub trait LastIndex {
     /// Returns `true` if the given index matches the index of the last element in the collection.
@@ -63,6 +65,10 @@ pub trait ByteSuffixCheck {
     ///
     /// Returns `false` if there's any mismatch, or if the checked collection is shorter than the suffix.
     fn has_byte_suffix(&self, expected: &[u8]) -> bool;
+    /// Returns `true` if the collection ends with the supplied line ending.
+    ///
+    /// Returns `false` if there's any mismatch, if the checked collection is shorter than the suffix, or if the line ending is None.
+    fn has_line_ending(&self, line_ending: &LineEnding) -> bool;
 }
 impl ByteSuffixCheck for [u8] {
     fn has_byte_suffix(&self, expected: &[u8]) -> bool {
@@ -72,6 +78,14 @@ impl ByteSuffixCheck for [u8] {
             let start = self.len() - expected.len();
 
             &self[start..] == expected
+        }
+    }
+    fn has_line_ending(&self, line_ending: &LineEnding) -> bool {
+        match line_ending {
+            LineEnding::None => false,
+            LineEnding::MultiByte(cs, _) | LineEnding::Byte(cs) => {
+                self.has_byte_suffix(cs.as_bytes())
+            }
         }
     }
 }

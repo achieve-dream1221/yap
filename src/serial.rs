@@ -367,15 +367,15 @@ impl SerialHandle {
             .map_err(|_| YapError::NoSerialWorker)
     }
     /// Sends the supplied bytes through the connected Serial device.
-    pub fn send_bytes(&self, mut input: Vec<u8>, line_ending: Option<&str>) -> YapResult<()> {
-        if let Some(ending) = line_ending.map(str::as_bytes) {
+    pub fn send_bytes(&self, mut input: Vec<u8>, line_ending: Option<&[u8]>) -> YapResult<()> {
+        if let Some(ending) = line_ending {
             input.extend(ending.iter());
         }
         self.command_tx
             .send(SerialCommand::TxBuffer(input))
             .map_err(|_| YapError::NoSerialWorker)
     }
-    pub fn send_str(&self, input: &str, line_ending: &str) -> YapResult<()> {
+    pub fn send_str(&self, input: &str, line_ending: &[u8]) -> YapResult<()> {
         // debug!("Outputting to serial: {input}");
         let buffer = input.as_bytes().to_owned();
         self.send_bytes(buffer, Some(line_ending))

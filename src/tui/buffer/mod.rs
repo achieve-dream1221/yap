@@ -1,8 +1,9 @@
 use std::{borrow::Cow, cmp::Ordering, collections::BTreeSet, iter::Peekable};
 
 use ansi_to_tui::IntoText;
-use buf_line::BufLine;
+use buf_line::{BufLine, LineType};
 use chrono::{DateTime, Local};
+use compact_str::CompactString;
 use itertools::{Either, Itertools};
 use memchr::memmem::Finder;
 use ratatui::{
@@ -19,6 +20,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     errors::YapResult,
+    settings::Rendering,
     traits::{ByteSuffixCheck, LineHelpers},
 };
 
@@ -28,10 +30,6 @@ mod wrap;
 // use crate::app::{LINE_ENDINGS, LINE_ENDINGS_DEFAULT};
 
 pub struct BufferState {
-    text_wrapping: bool,
-    // TODO maybe make this private and provide a function that auto-runs the render length and scroll..?
-    timestamps_visible: bool,
-    user_echo_input: UserEcho,
     vert_scroll: usize,
     scrollbar_state: ScrollbarState,
     stuck_to_bottom: bool,
@@ -42,14 +40,59 @@ impl UserEcho {
         match self {
             UserEcho::None => false,
             UserEcho::All => true,
-            UserEcho::NoBytes => !buf_line.is_bytes,
-            UserEcho::NoMacros => !buf_line.is_macro,
-            UserEcho::NoMacrosOrBytes => !buf_line.is_bytes && !buf_line.is_macro,
+            UserEcho::NoBytes => !buf_line.line_type.is_bytes(),
+            UserEcho::NoMacros => !buf_line.line_type.is_macro(),
+            UserEcho::NoMacrosOrBytes => {
+                !buf_line.line_type.is_bytes() && !buf_line.line_type.is_macro()
+            }
         }
     }
 }
 
 // TODO have separate vector for user lines, and re-render the raw buffer when turning user lines on and off?
+
+#[derive(Debug, Clone)]
+pub enum LineEnding {
+    None,
+    Byte(CompactString),
+    MultiByte(CompactString, Finder<'static>),
+}
+
+// impl AsRef<[u8]> for LineEnding {
+//     fn as_ref(&self) -> &[u8] {
+//         match self {
+//             LineEnding::None => &[],
+//             LineEnding::Byte(cs) => cs.as_bytes(),
+//             LineEnding::MultiByte(cs, _) => cs.as_bytes(),
+//         }
+//     }
+// }
+
+impl AsRef<str> for LineEnding {
+    fn as_ref(&self) -> &str {
+        match self {
+            LineEnding::None => "",
+            LineEnding::Byte(cs) => cs.as_str(),
+            LineEnding::MultiByte(cs, _) => cs.as_str(),
+        }
+    }
+}
+
+impl From<&str> for LineEnding {
+    fn from(value: &str) -> Self {
+        if value.is_empty() {
+            LineEnding::None
+        } else if value.len() == 1 {
+            let cs = CompactString::from(value);
+            assert_eq!(cs.len(), 1, "Inner should only contain one byte.");
+            LineEnding::Byte(cs)
+        } else {
+            let cs = CompactString::from(value);
+            let finder = Finder::new(cs.as_bytes()).into_owned();
+            LineEnding::MultiByte(cs, finder)
+        }
+    }
+}
 
 pub struct Buffer {
     raw_buffer: Vec<u8>,
@@ -65,11 +108,11 @@ pub struct Buffer {
     // pub color_rules
     pub state: BufferState,
 
+    rendering: Rendering,
+
     // TODO separate line ending for TX'd text?
-    pub line_ending: String,
+    line_ending: LineEnding,
     // line_ending_finder: Finder<'static>,
-    #[cfg(debug_assertions)]
-    pub debug_lines: bool,
 }
 
 #[derive(
@@ -97,12 +140,7 @@ pub enum UserEcho {
 impl Buffer {
     // TODO lower sources of truth for all this.
     // Rc<Something> with the settings that's shared around?
-    pub fn new(
-        line_ending: &str,
-        text_wrapping: bool,
-        timestamps_visible: bool,
-        user_echo: UserEcho,
-    ) -> Self {
+    pub fn new(line_ending: &str, rendering: Rendering) -> Self {
         Self {
             raw_buffer: Vec::with_capacity(1024),
             buffer_timestamps: Vec::with_capacity(1024),
@@ -113,14 +151,10 @@ impl Buffer {
                 vert_scroll: 0,
                 scrollbar_state: ScrollbarState::default(),
                 stuck_to_bottom: false,
-                text_wrapping,
-                timestamps_visible,
-                user_echo_input: user_echo,
             },
-            line_ending: line_ending.to_owned(),
+            rendering,
+            line_ending: line_ending.into(),
             last_line_completed: true,
-            #[cfg(debug_assertions)]
-            debug_lines: false,
         }
     }
     // pub fn append_str(&mut self, str: &str) {
@@ -139,19 +173,21 @@ impl Buffer {
         // line.style_all_spans(Color::DarkGray.into());
         let user_buf_line = BufLine::new_with_line(
             line,
-            #[cfg(debug_assertions)]
             bytes,
             self.raw_buffer.len(), // .max(1)
             self.last_terminal_size.width,
-            self.state.timestamps_visible,
-            #[cfg(debug_assertions)]
-            self.debug_lines,
+            &self.rendering,
             now,
-            true,
-            is_macro,
+            LineType::User {
+                is_bytes: true,
+                is_macro,
+            },
         );
-        self.last_line_completed = self.state.user_echo_input.filter_user_line(&user_buf_line)
-            || self.raw_buffer.has_byte_suffix(self.line_ending.as_bytes());
+        self.last_line_completed = self
+            .rendering
+            .echo_user_input
+            .filter_user_line(&user_buf_line)
+            || self.raw_buffer.has_line_ending(&self.line_ending);
         self.user_lines.push(user_buf_line);
         // TODO make this more dynamic with the macro hiding
     }
@@ -176,20 +212,22 @@ impl Buffer {
             line.style_all_spans(Color::DarkGray.into());
             let user_buf_line = BufLine::new_with_line(
                 line,
-                #[cfg(debug_assertions)]
                 orig,
                 self.raw_buffer.len(), // .max(1)
                 self.last_terminal_size.width,
-                self.state.timestamps_visible,
-                #[cfg(debug_assertions)]
-                self.debug_lines,
+                &self.rendering,
                 now,
-                false,
-                is_macro,
+                LineType::User {
+                    is_bytes: false,
+                    is_macro,
+                },
             );
             // Used to be out of the for loop.
-            self.last_line_completed = self.state.user_echo_input.filter_user_line(&user_buf_line)
-                || self.raw_buffer.has_byte_suffix(self.line_ending.as_bytes());
+            self.last_line_completed = self
+                .rendering
+                .echo_user_input
+                .filter_user_line(&user_buf_line)
+                || self.raw_buffer.has_line_ending(&self.line_ending);
 
             self.user_lines.push(user_buf_line);
         }
@@ -236,15 +274,7 @@ impl Buffer {
             //         .join("")
             //         .escape_default()
             // );
-            last_line.update_line(
-                line,
-                #[cfg(debug_assertions)]
-                slice,
-                self.last_terminal_size.width,
-                self.state.timestamps_visible,
-                #[cfg(debug_assertions)]
-                self.debug_lines,
-            );
+            last_line.update_line(line, slice, self.last_terminal_size.width, &self.rendering);
         } else {
             let line = match trunc.into_line_lossy(None, Style::new()) {
                 Ok(line) => line,
@@ -269,23 +299,15 @@ impl Buffer {
             // );
             self.port_lines.push(BufLine::new_with_line(
                 line,
-                #[cfg(debug_assertions)]
                 orig,
                 start_index,
                 self.last_terminal_size.width,
-                self.state.timestamps_visible,
-                #[cfg(debug_assertions)]
-                self.debug_lines,
+                &self.rendering,
                 known_time.unwrap_or_else(Local::now),
-                false,
-                false,
+                LineType::Port,
             ));
         };
-        self.last_line_completed = {
-            // let last_line = self.lines.last().expect("expected at least one line");
-            let expected_ending = self.line_ending.as_bytes();
-            self.raw_buffer.has_byte_suffix(expected_ending)
-        };
+        self.last_line_completed = self.raw_buffer.has_line_ending(&self.line_ending);
     }
 
     // Forced to use Vec<u8> for now
@@ -296,7 +318,7 @@ impl Buffer {
         // debug!("{lines:?}");
         // debug!("{:#?}", self.lines);
 
-        for (trunc, orig, indices) in line_ending_iter(bytes, self.line_ending.clone().as_str()) {
+        for (trunc, orig, indices) in line_ending_iter(bytes, &self.line_ending.clone()) {
             index = self.raw_buffer.len();
             self.raw_buffer.extend(orig);
             self.consume_port_bytes(trunc, orig, index, Some(now));
@@ -322,7 +344,7 @@ impl Buffer {
         let orig_buf_len = self.raw_buffer.len();
         let buffer = std::mem::replace(&mut self.raw_buffer, Vec::with_capacity(orig_buf_len));
         let line_ending = self.line_ending.clone();
-        let user_echo = self.state.user_echo_input.clone();
+        let user_echo = self.rendering.echo_user_input.clone();
 
         // No lines to append to.
         self.last_line_completed = true;
@@ -420,42 +442,43 @@ impl Buffer {
     /// Updates each BufLine's render height with the new terminal width, returning the sum total at the end
     pub fn update_wrapped_line_heights(&mut self) -> usize {
         self.port_lines.iter_mut().fold(0, |total, l| {
-            let new_height = l.update_line_height(
-                self.last_terminal_size.width,
-                self.state.timestamps_visible,
-                #[cfg(debug_assertions)]
-                self.debug_lines,
-            );
+            let new_height = l.update_line_height(self.last_terminal_size.width, &self.rendering);
 
             total + new_height
         }) + self.user_lines.iter_mut().fold(0, |total, l| {
-            let new_height = l.update_line_height(
-                self.last_terminal_size.width,
-                self.state.timestamps_visible,
-                #[cfg(debug_assertions)]
-                self.debug_lines,
-            );
+            let new_height = l.update_line_height(self.last_terminal_size.width, &self.rendering);
 
             total + new_height
         })
     }
-    pub fn set_line_wrap(&mut self, wrap: bool) {
-        self.state.text_wrapping = wrap;
+    pub fn update_line_ending(&mut self, line_ending: &str) {
+        if self.line_ending.as_ref() != line_ending {
+            self.line_ending = line_ending.into();
+            self.reconsume_raw_buffer();
+        }
+    }
+    pub fn update_render_settings(&mut self, rendering: Rendering) {
+        let old = std::mem::replace(&mut self.rendering, rendering);
+        let should_reconsume = old.echo_user_input != self.rendering.echo_user_input;
+        let should_rewrap_lines = (old.timestamps != self.rendering.timestamps)
+            || (old.show_indices != self.rendering.show_indices);
+        if should_reconsume {
+            self.reconsume_raw_buffer();
+        } else if should_rewrap_lines {
+            self.update_wrapped_line_heights();
+        }
+
         self.scroll_by(0);
     }
-    pub fn set_user_lines(&mut self, user_echo: UserEcho) {
-        self.state.user_echo_input = user_echo;
-        self.reconsume_raw_buffer();
-    }
     fn buflines_iter(&self) -> impl Iterator<Item = &BufLine> {
-        if self.state.user_echo_input == UserEcho::None {
+        if self.rendering.echo_user_input == UserEcho::None {
             Either::Left(self.port_lines.iter())
         } else {
             Either::Right(interleave_by(
                 self.port_lines.iter(),
                 self.user_lines
                     .iter()
-                    .filter(|l| self.state.user_echo_input.filter_user_line(l)),
+                    .filter(|l| self.rendering.echo_user_input.filter_user_line(l)),
                 |port, user| match port.raw_buffer_index.cmp(&user.raw_buffer_index) {
                     Ordering::Equal => port.timestamp <= user.timestamp,
                     Ordering::Less => true,
@@ -481,7 +504,7 @@ impl Buffer {
 
         if more_lines_than_height {
             let desired_visible_lines = last_size.height as usize;
-            if self.state.text_wrapping {
+            if self.rendering.wrap_text {
                 let vert_scroll = self.state.vert_scroll;
                 let (spillover_index, spillover_lines_visible, spilt_line_total_height) = {
                     let mut current_line_index: usize = 0;
@@ -560,13 +583,7 @@ impl Buffer {
             self.buflines_iter()
                 .skip(entries_to_skip)
                 .take(entries_to_take)
-                .map(|l| {
-                    l.as_line(
-                        self.state.timestamps_visible,
-                        #[cfg(debug_assertions)]
-                        self.debug_lines,
-                    )
-                }),
+                .map(|l| l.as_line(&self.rendering)),
             wrapped_scroll,
         )
     }
@@ -577,7 +594,7 @@ impl Buffer {
         let para = Paragraph::new(lines)
             .block(Block::new().borders(Borders::RIGHT))
             .scroll((vert_scroll, 0));
-        if self.state.text_wrapping {
+        if self.rendering.wrap_text {
             para.wrap(Wrap { trim: false })
         } else {
             para
@@ -655,7 +672,7 @@ impl Buffer {
     /// Returns the total amount of lines that can be rendered,
     /// taking into account if text wrapping is enabled or not.
     pub fn combined_height(&self) -> usize {
-        if self.state.text_wrapping {
+        if self.rendering.wrap_text {
             self.buflines_iter()
                 .map(|l| l.get_line_height() as usize)
                 .sum()
@@ -684,19 +701,26 @@ impl Buffer {
         Ok(())
     }
 
-    // pub fn line_ending(&self) -> &str {
-    //     &self.line_ending
-    // }
-
-    pub fn show_timestamps(&mut self, visible: bool) -> usize {
-        self.state.timestamps_visible = visible;
-        let count = self.update_wrapped_line_heights();
-        self.scroll_by(0);
-        count
+    pub fn rx_tx_ending_bytes(&self) -> &[u8] {
+        self.line_ending.as_ref().as_bytes()
     }
 }
 
 // TODO make tests for this idiot thing
+
+pub fn line_ending_iter<'a>(
+    bytes: &'a [u8],
+    line_ending: &'a LineEnding,
+) -> impl Iterator<Item = (&'a [u8], &'a [u8], (usize, usize))> {
+    line_ending_iter_inner(
+        bytes,
+        match line_ending {
+            LineEnding::None => ("", None),
+            LineEnding::Byte(cs) => (cs, None),
+            LineEnding::MultiByte(cs, finder) => (cs, Some(finder)),
+        },
+    )
+}
 
 /// Returns an iterator over the given byte slice, seperated by (and excluding) the given line ending `&str`.
 ///
@@ -705,19 +729,29 @@ impl Buffer {
 /// `usize` tuple has the inclusive indices into the given slice.
 ///
 /// If no line ending was found, emits the whole slice once.
-pub fn line_ending_iter<'a>(
+pub fn line_ending_iter_inner<'a>(
     bytes: &'a [u8],
-    line_ending: &'a str,
+    line_ending: (&'a str, Option<&'a Finder>),
 ) -> impl Iterator<Item = (&'a [u8], &'a [u8], (usize, usize))> {
-    assert!(!line_ending.is_empty(), "line_ending can't be empty");
+    let (le_str, finder_opt) = line_ending;
+    assert!(!le_str.is_empty(), "line_ending can't be empty");
 
-    let line_ending = line_ending.as_bytes();
-
-    let line_ending_pos_iter = if line_ending.len() == 1 {
-        Either::Left(memchr::memchr_iter(line_ending[0], bytes))
+    let line_ending_pos_iter = if let Some(finder) = finder_opt {
+        assert_ne!(
+            le_str.len(),
+            1,
+            "not allowing slower Finder search with one-byte ending"
+        );
+        Either::Left(finder.find_iter(bytes))
+    } else if le_str.len() == 1 {
+        Either::Right(memchr::memchr_iter(le_str.as_bytes()[0], bytes))
     } else {
-        Either::Right(memchr::memmem::find_iter(bytes, line_ending))
+        Either::Left(memchr::memmem::find_iter(bytes, le_str.as_bytes()))
     };
+
+    // let line_ending_pos_iter = if line_ending.len() == 1 {
+    // } else {
+    // };
 
     let line_ending_pos_iter = line_ending_pos_iter
         .into_iter()
@@ -742,11 +776,11 @@ pub fn line_ending_iter<'a>(
                 let index_copy = last_index;
                 // Adding the length of the line ending to exclude it's presence
                 // from the next line.
-                last_index = line_ending_index + line_ending.len();
+                last_index = line_ending_index + le_str.len();
                 (
                     &bytes[index_copy..line_ending_index],
-                    &bytes[index_copy..line_ending_index + line_ending.len()],
-                    (index_copy, line_ending_index + line_ending.len()),
+                    &bytes[index_copy..line_ending_index + le_str.len()],
+                    (index_copy, line_ending_index + le_str.len()),
                 )
             };
             Some(result)
@@ -758,11 +792,12 @@ pub fn line_ending_iter<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use memchr::memmem::Finder;
 
     #[test]
     fn test_single_line() {
         let s = b"hello";
-        let it = line_ending_iter(s, "\n");
+        let it = line_ending_iter_inner(s, ("\n", None));
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].0, b"hello");
@@ -773,7 +808,7 @@ mod tests {
     #[test]
     fn test_simple_lines() {
         let s = b"foo\nbar\nbaz";
-        let it = line_ending_iter(s, "\n");
+        let it = line_ending_iter_inner(s, ("\n", None));
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"foo");
@@ -790,14 +825,14 @@ mod tests {
     #[test]
     fn test_few_bytes() {
         let s = b"a";
-        let it = line_ending_iter(s, "\n");
+        let it = line_ending_iter_inner(s, ("\n", None));
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].0, b"a");
         assert_eq!(res[0].1, b"a");
 
         let s = b"";
-        let it = line_ending_iter(s, "\n");
+        let it = line_ending_iter_inner(s, ("\n", None));
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].0, b"");
@@ -807,7 +842,7 @@ mod tests {
     #[test]
     fn test_trailing_newline() {
         let s = b"a\nb\nc\n";
-        let it = line_ending_iter(s, "\n");
+        let it = line_ending_iter_inner(s, ("\n", None));
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"a");
@@ -821,7 +856,7 @@ mod tests {
     #[test]
     fn test_starting_newline() {
         let s = b"\rb\nc\n";
-        let it = line_ending_iter(s, "\r");
+        let it = line_ending_iter_inner(s, ("\r", None));
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 2);
         assert_eq!(res[0].0, b"");
@@ -833,7 +868,7 @@ mod tests {
     #[test]
     fn test_crlf() {
         let s = b"one\r\ntwo\r\nthree";
-        let it = line_ending_iter(s, "\r\n");
+        let it = line_ending_iter_inner(s, ("\r\n", None));
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"one");
@@ -848,13 +883,13 @@ mod tests {
     #[should_panic(expected = "line_ending can't be empty")]
     fn test_line_ending_empty() {
         let s = b"test";
-        let _ = line_ending_iter(s, "");
+        let _ = line_ending_iter_inner(s, ("", None));
     }
 
     #[test]
     fn test_multi_byte_line_ending() {
         let s = b"abcXYZdefXYZghi";
-        let it = line_ending_iter(s, "XYZ");
+        let it = line_ending_iter_inner(s, ("XYZ", None));
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"abc");
@@ -868,7 +903,7 @@ mod tests {
     #[test]
     fn test_multiple_consecutive_line_endings() {
         let s = b"foo\n\nbar\n";
-        let it = line_ending_iter(s, "\n");
+        let it = line_ending_iter_inner(s, ("\n", None));
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"foo");
@@ -877,6 +912,83 @@ mod tests {
         assert_eq!(res[1].1, b"\n");
         assert_eq!(res[2].0, b"bar");
         assert_eq!(res[2].1, b"bar\n");
+    }
+
+    #[test]
+    #[should_panic(expected = "not allowing slower Finder search with one-byte ending")]
+    fn test_find_one_byte_with_finder() {
+        let s = b"apple,banana,grape";
+        let finder = Finder::new(b",");
+        let it = line_ending_iter_inner(s, (",", Some(&finder)));
+        let _res: Vec<_> = it.collect();
+        // assert_eq!(res.len(), 3);
+        // assert_eq!(res[0].0, b"apple");
+        // assert_eq!(res[0].1, b"apple,");
+        // assert_eq!(res[1].0, b"banana");
+        // assert_eq!(res[1].1, b"banana,");
+        // assert_eq!(res[2].0, b"grape");
+        // assert_eq!(res[2].1, b"grape");
+    }
+
+    #[test]
+    fn test_find_multi_byte_with_finder() {
+        let s = b"abc123def123ghi";
+        let finder = Finder::new(b"123");
+        let it = line_ending_iter_inner(s, ("123", Some(&finder)));
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0].0, b"abc");
+        assert_eq!(res[0].1, b"abc123");
+        assert_eq!(res[1].0, b"def");
+        assert_eq!(res[1].1, b"def123");
+        assert_eq!(res[2].0, b"ghi");
+        assert_eq!(res[2].1, b"ghi");
+    }
+
+    #[test]
+    fn test_finder_trailing_sep() {
+        let s = b"abc123";
+        let finder = Finder::new(b"123");
+        let it = line_ending_iter_inner(s, ("123", Some(&finder)));
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].0, b"abc");
+        assert_eq!(res[0].1, b"abc123");
+    }
+
+    #[test]
+    fn test_finder_no_match() {
+        let s = b"abcdefgh";
+        let finder = Finder::new(b"xyz");
+        let it = line_ending_iter_inner(s, ("xyz", Some(&finder)));
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].0, b"abcdefgh");
+        assert_eq!(res[0].1, b"abcdefgh");
+    }
+
+    #[test]
+    fn test_finder_empty_input() {
+        let s = b"";
+        let finder = Finder::new(b"xyz");
+        let it = line_ending_iter_inner(s, ("xyz", Some(&finder)));
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].0, b"");
+        assert_eq!(res[0].1, b"");
+    }
+
+    #[test]
+    fn test_finder_multiple_consecutive() {
+        let s = b"xaaxaaxyzaaxyz";
+        let finder = Finder::new(b"xyz");
+        let it = line_ending_iter_inner(s, ("xyz", Some(&finder)));
+        let res: Vec<_> = it.collect();
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0].0, b"xaaxaa");
+        assert_eq!(res[0].1, b"xaaxaaxyz");
+        assert_eq!(res[1].0, b"aa");
+        assert_eq!(res[1].1, b"aaxyz");
     }
 }
 

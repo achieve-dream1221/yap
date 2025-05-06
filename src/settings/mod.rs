@@ -28,11 +28,13 @@ use crate::{serial::PortSettings, tui::buffer::UserEcho};
 pub mod ser;
 
 #[serde_inline_default]
-#[derive(Debug, Serialize, Deserialize, Derivative)]
+#[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
 #[derivative(Default)]
 pub struct Settings {
     #[serde(skip)]
     pub path: PathBuf,
+    #[serde(default)]
+    pub rendering: Rendering,
     #[serde(default)]
     pub behavior: Behavior,
     #[serde(default)]
@@ -42,12 +44,41 @@ pub struct Settings {
 }
 
 #[serde_inline_default]
-#[derive(Debug, Serialize, Deserialize, Derivative)]
+#[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
 #[derivative(Default)]
 pub struct Misc {
     #[serde_inline_default(String::from("debug"))]
     #[derivative(Default(value = "String::from(\"debug\")"))]
     pub log_level: String,
+}
+
+// TODO allow setting nicknames to devices?????
+
+// TODO add Reset to Defaults somewhere in the UI
+
+// TODO have flattened buffer behavior struct that gets sent to it on each change.
+
+#[serde_inline_default]
+#[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
+#[derivative(Default)]
+pub struct Rendering {
+    #[serde_inline_default(UserEcho::All)]
+    #[derivative(Default(value = "UserEcho::All"))]
+    #[table(values = [UserEcho::None, UserEcho::All, UserEcho::NoBytes, UserEcho::NoMacros, UserEcho::NoMacrosOrBytes])]
+    /// Show user input in buffer after sending.
+    pub echo_user_input: UserEcho,
+
+    #[serde(default)]
+    /// Show timestamps next to each incoming line.
+    pub timestamps: bool,
+
+    #[serde(default)]
+    /// Show buffer index and length next to line.
+    pub show_indices: bool,
+
+    #[serde(default)]
+    /// Wrap text longer than the screen.
+    pub wrap_text: bool,
 }
 
 #[serde_inline_default]
@@ -62,20 +93,6 @@ pub struct Behavior {
     #[serde(default)]
     /// Persist Fake Shell's command history across sessions (TODO).
     pub retain_history: bool,
-
-    #[serde_inline_default(UserEcho::All)]
-    #[derivative(Default(value = "UserEcho::All"))]
-    #[table(values = [UserEcho::None, UserEcho::All, UserEcho::NoBytes, UserEcho::NoMacros, UserEcho::NoMacrosOrBytes])]
-    /// Show user input in buffer after sending.
-    pub echo_user_input: UserEcho,
-
-    #[serde(default)]
-    /// Show timestamps next to each incoming line.
-    pub timestamps: bool,
-
-    #[serde(default)]
-    /// Wrap text longer than the screen.
-    pub wrap_text: bool,
 
     #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]

@@ -46,7 +46,7 @@ use crate::{
         MOCK_PORT_NAME, PortSettings, PrintablePortInfo, ReconnectType, Reconnections, SerialEvent,
         SerialHandle,
     },
-    settings::{Behavior, Settings},
+    settings::{Behavior, Rendering, Settings},
     traits::{LastIndex, LineHelpers, ToggleBool},
     tui::{
         buffer::Buffer,
@@ -150,6 +150,7 @@ pub enum RunningState {
 #[strum(serialize_all = "title_case")]
 pub enum PopupMenu {
     PortSettings,
+    RenderingSettings,
     BehaviorSettings,
     // #[cfg(feature = "espflash")]
     // EspFlash,
@@ -201,7 +202,6 @@ pub struct App {
     // Might be worth an enum instead?
     // Or a SerialStatus struct with current_port_info and health status
     serial_healthy: bool,
-    scratch: ScratchSpace,
     carousel: CarouselHandle,
     carousel_thread: Takeable<JoinHandle<()>>,
 
@@ -222,6 +222,7 @@ pub struct App {
     macros_tx_queue: VecDeque<(Option<KeyCombination>, MacroRef)>,
 
     settings: Settings,
+    scratch: Settings,
     keybinds: Keybinds,
 }
 
@@ -290,12 +291,7 @@ impl App {
         );
 
         let line_ending = &settings.last_port_settings.line_ending;
-        let buffer = Buffer::new(
-            &line_ending,
-            settings.behavior.wrap_text,
-            settings.behavior.timestamps,
-            settings.behavior.echo_user_input,
-        );
+        let buffer = Buffer::new(&line_ending, settings.rendering.clone());
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection(PortSelectionElement::Ports),
@@ -314,11 +310,6 @@ impl App {
             serial: serial_handle,
             serial_thread: Takeable::new(serial_thread),
             serial_healthy: false,
-            scratch: ScratchSpace {
-                // TODO reconsider, since this should be loaded anyway?
-                port: settings.last_port_settings.clone(),
-                behavior: settings.behavior.clone(),
-            },
 
             user_input,
 
@@ -333,6 +324,7 @@ impl App {
             // failed_send_at: Instant::now(),
             macros: Macros::new(),
             macros_tx_queue: VecDeque::new(),
+            scratch: settings.clone(),
             settings,
             keybinds: Keybinds::new(),
             notifs: Notifications::new(tx.clone()),
@@ -551,7 +543,7 @@ impl App {
             MacroContent::Empty => (),
             MacroContent::Bytes { content, preview } => {
                 self.serial
-                    .send_bytes(content.clone(), Some(self.buffer.line_ending.as_str()))
+                    .send_bytes(content.clone(), Some(self.buffer.rx_tx_ending_bytes()))
                     .unwrap();
 
                 debug!("{}", format!("Sending Macro Bytes: {:02X?}", content));
@@ -559,7 +551,7 @@ impl App {
             }
             MacroContent::Text(text) => {
                 self.serial
-                    .send_str(text, self.buffer.line_ending.as_str())
+                    .send_str(text, self.buffer.rx_tx_ending_bytes())
                     .unwrap();
                 self.buffer.append_user_text(text, true);
 
@@ -743,10 +735,11 @@ impl App {
         };
         match m {
             _ if m == TOGGLE_TEXTWRAP => {
+                self.settings.rendering.wrap_text.flip();
                 self.buffer
-                    .set_line_wrap(self.settings.behavior.wrap_text.flip());
+                    .update_render_settings(self.settings.rendering.clone());
                 self.settings.save().unwrap();
-                let state = pretty_bool(self.settings.behavior.wrap_text);
+                let state = pretty_bool(self.settings.rendering.wrap_text);
                 self.notifs
                     .notify(format!("Toggled Text Wrapping {state}"), Color::Gray);
             }
@@ -771,23 +764,24 @@ impl App {
             // self.serial.esp_restart(None);
             // }
             _ if m == TOGGLE_TIMESTAMPS => {
-                self.settings.behavior.timestamps.flip();
+                self.settings.rendering.timestamps.flip();
                 self.buffer
-                    .show_timestamps(self.settings.behavior.timestamps);
+                    .update_render_settings(self.settings.rendering.clone());
                 self.settings.save().unwrap();
-                let state = pretty_bool(self.settings.behavior.timestamps);
+                let state = pretty_bool(self.settings.rendering.timestamps);
                 self.notifs
                     .notify(format!("Toggled Timestamps {state}"), Color::Gray);
             }
 
-            #[cfg(debug_assertions)]
-            _ if m == DEBUG_LINES => {
-                self.buffer.debug_lines.flip();
+            _ if m == TOGGLE_INDICES => {
+                self.settings.rendering.show_indices.flip();
                 self.buffer
-                    .show_timestamps(self.settings.behavior.timestamps);
-                let state = if self.buffer.debug_lines { "On" } else { "Off" };
-                self.notifs
-                    .notify(format!("Toggled Debug Lines {state}"), Color::Gray);
+                    .update_render_settings(self.settings.rendering.clone());
+                let state = pretty_bool(self.settings.rendering.show_indices);
+                self.notifs.notify(
+                    format!("Toggled Line Indices + Length {state}"),
+                    Color::Gray,
+                );
             }
 
             _ if m == SHOW_MACROS => {
@@ -807,6 +801,17 @@ impl App {
 
             _ if m == SHOW_BEHAVIOR => {
                 self.popup = Some(PopupMenu::BehaviorSettings);
+                self.popup_single_line_state.active = false;
+                self.popup_table_state.select(Some(0));
+
+                self.tx
+                    .send(Tick::Scroll.into())
+                    .map_err(|e| e.to_string())
+                    .unwrap();
+            }
+
+            _ if m == SHOW_RENDERING => {
+                self.popup = Some(PopupMenu::RenderingSettings);
                 self.popup_single_line_state.active = false;
                 self.popup_table_state.select(Some(0));
 
@@ -840,11 +845,9 @@ impl App {
     fn esc_pressed(&mut self) {
         match self.popup {
             None => (),
-            Some(PopupMenu::BehaviorSettings) => {
-                self.dismiss_popup();
-                return;
-            }
-            Some(PopupMenu::PortSettings) => {
+            Some(PopupMenu::BehaviorSettings)
+            | Some(PopupMenu::PortSettings)
+            | Some(PopupMenu::RenderingSettings) => {
                 self.dismiss_popup();
                 return;
             }
@@ -880,6 +883,7 @@ impl App {
             None => (),
             Some(popup) if self.popup_single_line_state.active => {
                 match popup {
+                    // Currently Macros is the only one that can be content-less.
                     PopupMenu::Macros if self.macros.is_empty() => return,
                     _ => (),
                 }
@@ -889,7 +893,7 @@ impl App {
             Some(PopupMenu::PortSettings) => {
                 match self
                     .scratch
-                    .port
+                    .last_port_settings
                     .handle_input(ArrowKey::Up, &mut self.popup_table_state)
                     .unwrap()
                 {
@@ -900,9 +904,19 @@ impl App {
                     (_, _, _) => (),
                 }
             }
-            Some(PopupMenu::Macros) if self.macros.categories_selector.active => {
-                self.popup_single_line_state.active = true;
-                self.macros.categories_selector.active = false;
+            Some(PopupMenu::RenderingSettings) => {
+                match self
+                    .scratch
+                    .rendering
+                    .handle_input(ArrowKey::Up, &mut self.popup_table_state)
+                    .unwrap()
+                {
+                    (_, true, _) | (_, _, true) => {
+                        self.popup_table_state.select(None);
+                        self.popup_single_line_state.active = true;
+                    }
+                    (_, _, _) => (),
+                }
             }
             Some(PopupMenu::BehaviorSettings) => {
                 match self
@@ -917,6 +931,10 @@ impl App {
                     }
                     (_, _, _) => (),
                 }
+            }
+            Some(PopupMenu::Macros) if self.macros.categories_selector.active => {
+                self.popup_single_line_state.active = true;
+                self.macros.categories_selector.active = false;
             }
             Some(PopupMenu::Macros) if self.popup_table_state.selected() == Some(0) => {
                 self.popup_table_state.select(None);
@@ -958,20 +976,34 @@ impl App {
                 self.macros.categories_selector.active = false;
                 self.popup_table_state.select_first();
             }
-            Some(PopupMenu::Macros) if self.popup_single_line_state.active => {
-                self.popup_single_line_state.active = false;
-                self.macros.categories_selector.active = true;
-            }
-
             Some(popup) if self.popup_single_line_state.active => {
                 self.popup_single_line_state.active = false;
                 self.popup_table_state.select_first();
             }
+            Some(PopupMenu::Macros) if self.popup_single_line_state.active => {
+                self.popup_single_line_state.active = false;
+                self.macros.categories_selector.active = true;
+            }
+            Some(PopupMenu::Macros)
+                if self.popup_table_state.selected()
+                    >= Some(self.macros.len().saturating_sub(1)) =>
+            {
+                self.popup_table_state.select(None);
+                self.popup_single_line_state.active = true;
+            }
+            Some(PopupMenu::Macros) => match &self.macros.ui_state {
+                MacrosPrompt::None => {
+                    self.popup_desc_scroll = -2;
+                    self.scroll_menu_down();
+                }
+                _ => (),
+            },
+
             Some(PopupMenu::PortSettings) => {
                 self.popup_desc_scroll = -2;
                 match self
                     .scratch
-                    .port
+                    .last_port_settings
                     .handle_input(ArrowKey::Down, &mut self.popup_table_state)
                     .unwrap()
                 {
@@ -997,20 +1029,21 @@ impl App {
                     (_, _, _) => (),
                 }
             }
-            Some(PopupMenu::Macros)
-                if self.popup_table_state.selected()
-                    >= Some(self.macros.len().saturating_sub(1)) =>
-            {
-                self.popup_table_state.select(None);
-                self.popup_single_line_state.active = true;
-            }
-            Some(PopupMenu::Macros) => match &self.macros.ui_state {
-                MacrosPrompt::None => {
-                    self.popup_desc_scroll = -2;
-                    self.scroll_menu_down();
+            Some(PopupMenu::RenderingSettings) => {
+                self.popup_desc_scroll = -2;
+                match self
+                    .scratch
+                    .rendering
+                    .handle_input(ArrowKey::Down, &mut self.popup_table_state)
+                    .unwrap()
+                {
+                    (_, true, _) | (_, _, true) => {
+                        self.popup_table_state.select(None);
+                        self.popup_single_line_state.active = true;
+                    }
+                    (_, _, _) => (),
                 }
-                _ => (),
-            },
+            }
         }
         if self.popup.is_some() {
             return;
@@ -1056,11 +1089,17 @@ impl App {
             }
             Some(PopupMenu::PortSettings) => {
                 self.scratch
-                    .port
+                    .last_port_settings
                     .handle_input(ArrowKey::Left, &mut self.popup_table_state)
                     .unwrap();
             }
             Some(PopupMenu::BehaviorSettings) => {
+                self.scratch
+                    .behavior
+                    .handle_input(ArrowKey::Left, &mut self.popup_table_state)
+                    .unwrap();
+            }
+            Some(PopupMenu::RenderingSettings) => {
                 self.scratch
                     .behavior
                     .handle_input(ArrowKey::Left, &mut self.popup_table_state)
@@ -1096,14 +1135,19 @@ impl App {
             }
             Some(PopupMenu::PortSettings) => {
                 self.scratch
-                    .port
+                    .last_port_settings
                     .handle_input(ArrowKey::Right, &mut self.popup_table_state)
                     .unwrap();
             }
-
             Some(PopupMenu::BehaviorSettings) => {
                 self.scratch
                     .behavior
+                    .handle_input(ArrowKey::Right, &mut self.popup_table_state)
+                    .unwrap();
+            }
+            Some(PopupMenu::RenderingSettings) => {
+                self.scratch
+                    .rendering
                     .handle_input(ArrowKey::Right, &mut self.popup_table_state)
                     .unwrap();
             }
@@ -1176,18 +1220,12 @@ impl App {
         match self.popup {
             None => (),
             Some(PopupMenu::PortSettings) => {
-                // TODO
-                let should_reconsume = if cfg!(debug_assertions) {};
-
-                self.settings.last_port_settings = self.scratch.port.clone();
-
-                // TODO combine
-                self.buffer.line_ending = self.scratch.port.line_ending.clone();
-
-                self.buffer.reconsume_raw_buffer();
+                self.settings.last_port_settings = self.scratch.last_port_settings.clone();
+                self.buffer
+                    .update_line_ending(&self.scratch.last_port_settings.line_ending);
 
                 self.serial
-                    .update_settings(self.scratch.port.clone())
+                    .update_settings(self.scratch.last_port_settings.clone())
                     .unwrap();
 
                 self.settings.save().unwrap();
@@ -1197,16 +1235,21 @@ impl App {
             }
             Some(PopupMenu::BehaviorSettings) => {
                 self.settings.behavior = self.scratch.behavior.clone();
-                // TODO update_settings methods?
-                self.buffer
-                    .show_timestamps(self.settings.behavior.timestamps);
-                self.buffer.set_line_wrap(self.settings.behavior.wrap_text);
-                self.buffer
-                    .set_user_lines(self.settings.behavior.echo_user_input);
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
                 self.notifs.notify("Behavior settings saved!", Color::Green);
+                return;
+            }
+            Some(PopupMenu::RenderingSettings) => {
+                self.settings.rendering = self.scratch.rendering.clone();
+                self.buffer
+                    .update_render_settings(self.settings.rendering.clone());
+
+                self.settings.save().unwrap();
+                self.dismiss_popup();
+                self.notifs
+                    .notify("Rendering settings saved!", Color::Green);
                 return;
             }
             Some(PopupMenu::Macros) => {
@@ -1263,13 +1306,13 @@ impl App {
                             COMMON_BAUD[self.baud_selection_state.current_index]
                         };
 
-                    self.scratch.port.baud_rate = baud_rate;
+                    self.scratch.last_port_settings.baud_rate = baud_rate;
 
-                    self.settings.last_port_settings = self.scratch.port.clone();
+                    self.settings.last_port_settings = self.scratch.last_port_settings.clone();
                     self.settings.save().unwrap();
 
                     self.serial
-                        .connect(&info, self.scratch.port.clone())
+                        .connect(&info, self.scratch.last_port_settings.clone())
                         .unwrap();
 
                     self.menu = Menu::Terminal(TerminalPrompt::None);
@@ -1293,14 +1336,14 @@ impl App {
 
                     if self.settings.behavior.fake_shell {
                         self.serial
-                            .send_str(user_input, self.buffer.line_ending.as_str())
+                            .send_str(user_input, self.buffer.rx_tx_ending_bytes())
                             .unwrap();
                         self.buffer.append_user_text(user_input, false);
                         self.user_input.history.push(user_input);
 
                         self.user_input.clear();
                     } else {
-                        self.serial.send_str(user_input, "").unwrap();
+                        // self.serial.send_str(user_input, "").unwrap();
                         todo!("not ready yet");
                         // self.buffer.append_user_text(user_input);
                     }
@@ -1508,17 +1551,22 @@ impl App {
                 // TODO find more clear way than checking this length
                 PopupMenu::PortSettings => PortSettings::DOCSTRINGS.len(),
                 PopupMenu::BehaviorSettings => Behavior::DOCSTRINGS.len(),
+                PopupMenu::RenderingSettings => Rendering::DOCSTRINGS.len(),
             };
 
             let height = match popup {
                 PopupMenu::Macros => macros_table_area.height,
-                PopupMenu::PortSettings | PopupMenu::BehaviorSettings => settings_area.height,
+                PopupMenu::PortSettings
+                | PopupMenu::BehaviorSettings
+                | PopupMenu::RenderingSettings => settings_area.height,
             };
 
             match popup {
                 PopupMenu::PortSettings => {
                     frame.render_stateful_widget(
-                        self.scratch.port.as_table(&mut self.popup_table_state),
+                        self.scratch
+                            .last_port_settings
+                            .as_table(&mut self.popup_table_state),
                         settings_area,
                         &mut self.popup_table_state,
                     );
@@ -1551,6 +1599,30 @@ impl App {
                         .popup_table_state
                         .selected()
                         .map(|i| Behavior::DOCSTRINGS[i])
+                        .unwrap_or(&"");
+                    render_scrolling_line(
+                        text,
+                        frame,
+                        scrolling_text_area,
+                        &mut self.popup_desc_scroll,
+                    );
+                    frame.render_widget(
+                        Line::raw("Esc: Cancel | Enter: Save")
+                            .all_spans_styled(Color::DarkGray.into())
+                            .centered(),
+                        hint_text_area,
+                    );
+                }
+                PopupMenu::RenderingSettings => {
+                    frame.render_stateful_widget(
+                        self.scratch.rendering.as_table(&mut self.popup_table_state),
+                        settings_area,
+                        &mut self.popup_table_state,
+                    );
+                    let text: &str = self
+                        .popup_table_state
+                        .selected()
+                        .map(|i| Rendering::DOCSTRINGS[i])
                         .unwrap_or(&"");
                     render_scrolling_line(
                         text,
@@ -2060,10 +2132,11 @@ impl App {
         }
     }
     fn refresh_scratch(&mut self) {
-        self.scratch = ScratchSpace {
-            behavior: self.settings.behavior.clone(),
-            port: self.serial.port_settings.load().as_ref().clone(),
-        }
+        // self.scratch = ScratchSpace {
+        //     behavior: self.settings.behavior.clone(),
+        //     port: self.serial.port_settings.load().as_ref().clone(),
+        // }
+        self.scratch = self.settings.clone();
     }
     fn dismiss_popup(&mut self) {
         self.refresh_scratch();

@@ -2,7 +2,7 @@
 
 use std::{
     net::TcpStream,
-    sync::{mpsc, Mutex},
+    sync::{Mutex, mpsc},
 };
 
 use app::{App, CrosstermEvent};
@@ -15,9 +15,9 @@ use ratatui::crossterm::{
 };
 
 use serialport::{SerialPortInfo, SerialPortType};
-use tracing::{debug, error, info, level_filters::LevelFilter, Level};
+use tracing::{Level, debug, error, info, level_filters::LevelFilter};
 use tracing_appender::non_blocking::WorkerGuard;
-use tui::buffer::line_ending_iter;
+use tui::buffer::line_ending_iter_inner;
 
 mod app;
 mod errors;

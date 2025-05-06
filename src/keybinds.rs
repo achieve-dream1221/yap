@@ -9,12 +9,11 @@ pub mod methods {
     pub const TOGGLE_DTR: &str = "toggle-dtr";
     pub const TOGGLE_RTS: &str = "toggle-rts";
     pub const TOGGLE_TIMESTAMPS: &str = "toggle-timestamps";
+    pub const TOGGLE_INDICES: &str = "toggle-indices";
     pub const SHOW_MACROS: &str = "show-macros";
     pub const SHOW_PORTSETTINGS: &str = "show-portsettings";
     pub const SHOW_BEHAVIOR: &str = "show-behavior";
-
-    #[cfg(debug_assertions)]
-    pub const DEBUG_LINES: &str = "debug-lines";
+    pub const SHOW_RENDERING: &str = "show-rendering";
 }
 
 static CONFIG_TOML: &str = r#"
@@ -27,7 +26,7 @@ ctrl-t = "toggle-timestamps"
 ctrl-m = "show-macros"
 ctrl-b = "show-behavior"
 'ctrl-.' = "show-portsettings"
-ctrl-d = "debug-lines"
+ctrl-d = "toggle-indices"
 
 [macros]
 F19 = ["Restart"]

@@ -16,15 +16,17 @@ use ratatui::{
 use ratatui_macros::{line, span};
 use tracing::debug;
 
-use crate::traits::{ByteSuffixCheck, FirstChars, LineHelpers};
+use crate::{
+    settings::Rendering,
+    traits::{ByteSuffixCheck, FirstChars, LineHelpers},
+};
 
 #[derive(Debug)]
 pub struct BufLine {
     pub timestamp: DateTime<Local>,
     timestamp_str: CompactString,
 
-    #[cfg(debug_assertions)]
-    debug_info: CompactString,
+    index_info: CompactString,
 
     value: Line<'static>,
 
@@ -34,8 +36,7 @@ pub struct BufLine {
 
     pub(super) raw_buffer_index: usize,
     // TODO turn into enum
-    pub(super) is_bytes: bool,
-    pub(super) is_macro: bool,
+    pub(super) line_type: LineType,
 }
 
 // impl PartialEq for BufLine {
@@ -58,18 +59,44 @@ pub struct BufLine {
 //     }
 // }
 
+// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// pub(super) struct UserLine {
+//     pub(super) is_bytes: bool,
+//     pub(super) is_macro: bool,
+// }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LineType {
+    Port,
+    User { is_bytes: bool, is_macro: bool },
+}
+
+impl LineType {
+    pub(super) fn is_bytes(&self) -> bool {
+        match *self {
+            LineType::User { is_bytes, .. } => is_bytes,
+            _ => false,
+        }
+    }
+
+    pub(super) fn is_macro(&self) -> bool {
+        match *self {
+            LineType::User { is_macro, .. } => is_macro,
+            _ => false,
+        }
+    }
+}
+
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
     pub fn new_with_line(
         mut line: Line<'static>,
-        #[cfg(debug_assertions)] raw_value: &[u8],
+        raw_value: &[u8],
         raw_buffer_index: usize,
         area_width: u16,
-        with_timestamp: bool,
-        #[cfg(debug_assertions)] debug_lines: bool,
+        rendering: &Rendering,
         now: DateTime<Local>,
-        is_bytes: bool,
-        is_macro: bool,
+        line_type: LineType,
     ) -> Self {
         let time_format = "[%H:%M:%S%.3f] ";
 
@@ -80,65 +107,39 @@ impl BufLine {
             determine_color(&mut line, &[]);
         }
 
-        #[cfg(debug_assertions)]
-        let debug_info = format_compact!(
-            "({start}..{end}, {len}) ",
-            start = raw_buffer_index,
-            end = raw_buffer_index + raw_value.len(),
-            len = raw_value.len(),
-        );
+        let index_info = index_info(raw_value, raw_buffer_index, line_type);
 
         let mut bufline = Self {
             timestamp_str: now.format(time_format).to_compact_string(),
             timestamp: now,
-            #[cfg(debug_assertions)]
-            debug_info,
+            index_info,
             value: line,
             raw_buffer_index,
             rendered_line_height: 0,
-            is_bytes,
-            is_macro,
+            line_type,
         };
-        bufline.update_line_height(
-            area_width,
-            with_timestamp,
-            #[cfg(debug_assertions)]
-            debug_lines,
-        );
+        bufline.update_line_height(area_width, rendering);
         bufline
     }
     pub fn update_line(
         &mut self,
         mut line: Line<'static>,
-        #[cfg(debug_assertions)] raw_value: &[u8],
+        full_line_slice: &[u8],
         area_width: u16,
-        with_timestamp: bool,
-        #[cfg(debug_assertions)] debug_lines: bool,
+        rendering: &Rendering,
     ) {
         if !line.is_styled() && !line.is_empty() {
             assert!(line.spans.len() <= 1);
             determine_color(&mut line, &[]);
         }
-        #[cfg(debug_assertions)]
-        {
-            let debug_info = format_compact!(
-                "({start}..{end}, {len}) ",
-                start = self.raw_buffer_index,
-                end = self.raw_buffer_index + raw_value.len(),
-                len = raw_value.len(),
-            );
-            self.debug_info = debug_info;
-        }
+
+        self.index_info = index_info(full_line_slice, self.raw_buffer_index, self.line_type);
 
         self.value = line;
         self.value.remove_unsavory_chars();
-        self.update_line_height(
-            area_width,
-            with_timestamp,
-            #[cfg(debug_assertions)]
-            debug_lines,
-        );
+        self.update_line_height(area_width, rendering);
     }
+
     // pub fn new(
     //     raw_value: &[u8],
     //     raw_buffer_index: usize,
@@ -167,18 +168,8 @@ impl BufLine {
     //     self.value.ends_with(line_ending)
     // }
 
-    pub fn update_line_height(
-        &mut self,
-        area_width: u16,
-        with_timestamp: bool,
-        #[cfg(debug_assertions)] debug_lines: bool,
-    ) -> usize {
-        let para = Paragraph::new(self.as_line(
-            with_timestamp,
-            #[cfg(debug_assertions)]
-            debug_lines,
-        ))
-        .wrap(Wrap { trim: false });
+    pub fn update_line_height(&mut self, area_width: u16, rendering: &Rendering) -> usize {
+        let para = Paragraph::new(self.as_line(rendering)).wrap(Wrap { trim: false });
         // TODO make the sub 1 for margin/scrollbar more sane/clear
         // Paragraph::line_count comes from an unstable ratatui feature (unstable-rendered-line-info)
         // which may be changed/removed in the future. If so, I'll need to roll my own wrapping/find someone's to steal.
@@ -192,28 +183,22 @@ impl BufLine {
     }
 
     /// Returns an owned `Line` that borrows from the current line's spans.
-    pub fn as_line(
-        &self,
-        with_timestamp: bool,
-        #[cfg(debug_assertions)] debug_lines: bool,
-    ) -> Line {
+    pub fn as_line(&self, rendering: &Rendering) -> Line {
         let borrowed_spans = self.value.borrowed_spans_iter();
 
-        #[cfg(debug_assertions)]
-        let debug_span_iter = std::iter::once(Span::styled(
-            Cow::Borrowed(self.debug_info.as_ref()),
+        let indices_span_iter = std::iter::once(Span::styled(
+            Cow::Borrowed(self.index_info.as_ref()),
             Style::new().dark_gray(),
         ))
-        .filter(|_| debug_lines);
+        .filter(|_| rendering.show_indices);
 
         let spans = std::iter::once(Span::styled(
             Cow::Borrowed(self.timestamp_str.as_ref()),
             Style::new().dark_gray(),
         ))
-        .filter(|_| with_timestamp);
+        .filter(|_| rendering.timestamps);
 
-        #[cfg(debug_assertions)]
-        let spans = spans.chain(debug_span_iter);
+        let spans = spans.chain(indices_span_iter);
 
         let spans = spans.chain(borrowed_spans);
 
@@ -256,6 +241,24 @@ fn determine_color(line: &mut Line, rules: &[u8]) {
             line.style = style;
             line.style_all_spans(style);
         }
+    }
+}
+
+fn index_info(full_line_slice: &[u8], start_index: usize, line_type: LineType) -> CompactString {
+    if let LineType::User { .. } = line_type {
+        format_compact!(
+            "({start:06}->{end:06}, {len:2}) ",
+            start = start_index,
+            end = start_index + full_line_slice.len(),
+            len = full_line_slice.len(),
+        )
+    } else {
+        format_compact!(
+            "({start:06}..{end:06}, {len:2}) ",
+            start = start_index,
+            end = start_index + full_line_slice.len(),
+            len = full_line_slice.len(),
+        )
     }
 }
 
