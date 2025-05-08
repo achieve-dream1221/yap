@@ -17,19 +17,6 @@ use crate::{keybinds::Keybinds, tui::single_line_selector::SingleLineSelectorSta
 mod macro_ref;
 pub use macro_ref::MacroRef;
 
-pub struct Macros {
-    pub all: BTreeSet<Macro>,
-
-    pub ui_state: MacrosPrompt,
-    // ["All Bytes", "All Strings", "All Macros", "OpenShock"]
-    //     Start here, at user's first category.  ^
-    pub categories_selector: SingleLineSelectorState,
-    pub input: Input,
-    // pub scrollbar_state: ScrollbarState,
-    // // maybe just take from macros
-    // pub categories: BTreeSet<String>,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum MacrosPrompt {
@@ -45,6 +32,19 @@ pub enum MacroCategorySelection<'a> {
     AllBytes,
     NoCategory,
     Category(&'a str),
+}
+
+pub struct Macros {
+    pub all: BTreeSet<Macro>,
+
+    pub ui_state: MacrosPrompt,
+    // ["All Bytes", "All Strings", "All Macros", "OpenShock"]
+    //     Start here, at user's first category.  ^
+    pub categories_selector: SingleLineSelectorState,
+    pub input: Input,
+    // pub scrollbar_state: ScrollbarState,
+    // // maybe just take from macros
+    // pub categories: BTreeSet<String>,
 }
 
 impl Macros {
@@ -92,20 +92,24 @@ impl Macros {
     pub fn is_empty(&self) -> bool {
         self.all.is_empty()
     }
-    pub fn len(&self) -> usize {
-        self.category_filtered_macros().count()
+    pub fn visible_len(&self) -> usize {
+        if self.is_empty() {
+            0
+        } else {
+            self.category_filtered_macros().count()
+        }
+    }
+    pub fn none_visible(&self) -> bool {
+        self.visible_len() == 0
     }
     fn selected_category(&self) -> MacroCategorySelection {
-        let sub_index_amount = if self.has_no_category_macros() { 3 } else { 2 };
         match self.categories_selector.current_index {
             0 => MacroCategorySelection::AllBytes,
             1 => MacroCategorySelection::AllStrings,
             2 => MacroCategorySelection::AllMacros,
             3 if self.has_no_category_macros() => MacroCategorySelection::NoCategory,
             index => MacroCategorySelection::Category(
-                self.categories()
-                    .nth(index - sub_index_amount)
-                    .unwrap_or(""),
+                self.categories().nth(index - 3).unwrap_or("?????"),
             ),
         }
     }
@@ -215,6 +219,26 @@ impl Macros {
         } else {
             Err(Some(nones))
         }
+    }
+
+    pub fn remove_macro(&mut self, macro_ref: &Macro) {
+        self.all.take(macro_ref).expect("expected removal of macro");
+
+        // let macro_binding = self.all.iter().find(|d| macro_ref.eq_macro(d)).unwrap();
+        // self.all.remove(macro_binding);
+    }
+
+    pub fn remove_macro_by_ref(&mut self, macro_ref: &MacroRef) {
+        let orig_len = self.all.len();
+        self.all.retain(|m| !macro_ref.eq_macro(m));
+        assert_eq!(
+            self.all.len(),
+            orig_len - 1,
+            "expected the removal of exactly one element"
+        );
+
+        // let macro_binding = self.all.iter().find(|d| macro_ref.eq_macro(d)).unwrap();
+        // self.all.remove(macro_binding);
     }
 }
 

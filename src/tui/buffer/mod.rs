@@ -423,17 +423,25 @@ impl Buffer {
             }
         }
 
+        // Asserting that our work seems correct.
         assert_eq!(
             orig_buf_len,
             self.raw_buffer.len(),
             "Buffer size should not have changed during reconsumption."
         );
-
         assert_eq!(
             new_index, orig_buf_len,
             "Iterator's slices should have same total length as raw buffer."
         );
+        self.port_lines.windows(2).for_each(|lines| {
+            assert!(
+                lines[0].raw_buffer_index < lines[1].raw_buffer_index,
+                "Port lines should be in exact ascending order by index."
+            )
+        });
 
+        // Returning variables we stole back to self.
+        // (excluding the raw buffer since that got reconsumed gradually back into self)
         self.buffer_timestamps = timestamps;
         self.user_lines = user_lines;
         self.scroll_by(0);

@@ -1,4 +1,3 @@
-use int_enum::IntEnum;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Rect},
@@ -24,7 +23,7 @@ pub enum Test {
 // TODO think about way to do keyboard shortcuts with these
 // https://docs.rs/strum_macros/latest/strum_macros/derive.EnumProperty.html
 // #[derive(Debug, strum::VariantNames, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
-#[derive(Debug, strum::VariantNames, IntEnum)]
+#[derive(Debug, strum::VariantNames, int_enum::IntEnum)]
 #[repr(u8)]
 pub enum DisconnectPrompt {
     Disconnect,
@@ -32,6 +31,12 @@ pub enum DisconnectPrompt {
     PortSettings,
     #[strum(serialize = "Exit App")]
     Exit,
+    Cancel,
+}
+#[derive(Debug, strum::VariantNames, int_enum::IntEnum)]
+#[repr(u8)]
+pub enum DeleteMacroPrompt {
+    Delete,
     Cancel,
 }
 
@@ -60,29 +65,45 @@ pub trait PromptTable: VariantNames + Into<u8> + TryFrom<u8> {
 
         option_table
     }
-    fn prompt_table_block<'a>(text: &'a str, border_style: Style) -> Table<'a> {
-        Self::prompt_table().block(
-            Block::default()
-                .title(text)
-                .borders(Borders::ALL)
-                .title_alignment(Alignment::Center)
-                .border_style(border_style)
-                .title_style(Style::new().reset()),
-        )
+    fn prompt_table_block<'a>(
+        top: Option<&'a str>,
+        bottom: Option<&'a str>,
+        border_style: Style,
+    ) -> Table<'a> {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title_alignment(Alignment::Center)
+            .border_style(border_style)
+            .title_style(Style::new().reset());
+        let block = if let Some(text) = top {
+            block.title_top(text)
+        } else {
+            block
+        };
+        let block = if let Some(text) = bottom {
+            block.title_top(text)
+        } else {
+            block
+        };
+        Self::prompt_table().block(block)
     }
     fn render_prompt_block_popup(
-        text: &str,
+        top: Option<&str>,
+        bottom: Option<&str>,
         border_style: Style,
         frame: &mut Frame,
         given_area: Rect,
         state: &mut TableState,
     ) {
-        let prompt = Self::prompt_table_block(text, border_style);
-        let min_width = text.width() + 16; // For margin of 8 on either side
+        let prompt = Self::prompt_table_block(top, bottom, border_style);
+        let top_width = top.map(str::len).unwrap_or_default();
+        let bottom_width = bottom.map(str::len).unwrap_or_default();
+
+        let min_width = top_width.max(bottom_width) + 16; // For margin of 8 on either side
         let min_height = Self::VARIANTS.len() + 2; // For block height
         let rect = Rect {
-            height: min_height as u16,
-            width: min_width as u16,
+            height: (min_height as u16).min(given_area.height),
+            width: (min_width as u16).min(given_area.width),
             x: (given_area.width.saturating_sub(min_width as u16)) / 2,
             y: (given_area.height.saturating_sub(min_height as u16)) / 2,
         };
