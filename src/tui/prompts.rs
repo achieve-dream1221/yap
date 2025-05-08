@@ -1,11 +1,11 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Rect},
-    style::{Style, Stylize},
+    style::{Color, Style, Stylize},
     widgets::{Block, Borders, Clear, Row, Table, TableState},
 };
-use ratatui_macros::row;
-use strum::{VariantArray, VariantNames};
+use ratatui_macros::{row, span};
+use strum::{EnumProperty, VariantArray, VariantNames};
 use unicode_width::UnicodeWidthStr;
 
 pub struct Prompt {}
@@ -23,7 +23,9 @@ pub enum Test {
 // TODO think about way to do keyboard shortcuts with these
 // https://docs.rs/strum_macros/latest/strum_macros/derive.EnumProperty.html
 // #[derive(Debug, strum::VariantNames, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
-#[derive(Debug, strum::VariantNames, int_enum::IntEnum)]
+#[derive(
+    Debug, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
+)]
 #[repr(u8)]
 pub enum DisconnectPrompt {
     Disconnect,
@@ -33,14 +35,17 @@ pub enum DisconnectPrompt {
     Exit,
     Cancel,
 }
-#[derive(Debug, strum::VariantNames, int_enum::IntEnum)]
+#[derive(
+    Debug, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
+)]
 #[repr(u8)]
 pub enum DeleteMacroPrompt {
+    #[strum(props(color = 0xFF0000))]
     Delete,
     Cancel,
 }
 
-pub trait PromptTable: VariantNames + Into<u8> + TryFrom<u8> {
+pub trait PromptTable: VariantNames + VariantArray + EnumProperty + Into<u8> + TryFrom<u8> {
     /// Returns a ratatui [Table] with static references to the names of each enum variant.
     ///
     /// Enum variant names can be overwritten with the attribute:
@@ -57,7 +62,19 @@ pub trait PromptTable: VariantNames + Into<u8> + TryFrom<u8> {
         // Fully Qualified:
         // <Self as self::VariantNames>::VARIANTS
         // (needed if I ever want to add strum::VariantsArray since it uses the same array name as VariantNames)
-        let rows: Vec<Row> = Self::VARIANTS.iter().map(|s| row![*s]).collect();
+        let str_iter = <Self as VariantNames>::VARIANTS.iter();
+        let variant_iter = <Self as VariantArray>::VARIANTS.iter();
+        let rows: Vec<Row> = variant_iter
+            .zip(str_iter)
+            .map(|(variant, name)| {
+                let style = if let Some(color) = variant.get_int("color") {
+                    Style::from(Color::from_u32(color as u32))
+                } else {
+                    Style::new()
+                };
+                row![span!(name)].style(style)
+            })
+            .collect();
 
         let option_table = Table::new(rows, [Constraint::Percentage(100)])
             .row_highlight_style(selected_style)
@@ -100,7 +117,7 @@ pub trait PromptTable: VariantNames + Into<u8> + TryFrom<u8> {
         let bottom_width = bottom.map(str::len).unwrap_or_default();
 
         let min_width = top_width.max(bottom_width) + 16; // For margin of 8 on either side
-        let min_height = Self::VARIANTS.len() + 2; // For block height
+        let min_height = <Self as VariantNames>::VARIANTS.len() + 2; // For block height
         let rect = Rect {
             height: (min_height as u16).min(given_area.height),
             width: (min_width as u16).min(given_area.width),
@@ -112,7 +129,7 @@ pub trait PromptTable: VariantNames + Into<u8> + TryFrom<u8> {
     }
 }
 
-impl<T: VariantNames + Into<u8> + TryFrom<u8>> PromptTable for T {}
+impl<T: VariantNames + VariantArray + EnumProperty + Into<u8> + TryFrom<u8>> PromptTable for T {}
 
 /// Returns a `Rect` with the provided percentage of the parent `Rect` and centered.
 pub fn centered_rect(percent_x: u16, percent_y: u16, parent: Rect) -> Rect {

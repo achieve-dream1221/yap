@@ -997,7 +997,7 @@ impl App {
                     }
                 }
                 MacrosPrompt::Delete => wrapping_prompt_scroll(
-                    DeleteMacroPrompt::VARIANTS.len(),
+                    <DeleteMacroPrompt as VariantArray>::VARIANTS.len(),
                     &mut self.table_state,
                     true,
                 ),
@@ -1018,7 +1018,7 @@ impl App {
             Menu::PortSelection(e) => self.menu = e.prev().into(),
             Menu::Terminal(TerminalPrompt::None) => self.user_input.scroll_history(true),
             Menu::Terminal(TerminalPrompt::DisconnectPrompt) => wrapping_prompt_scroll(
-                DisconnectPrompt::VARIANTS.len(),
+                <DisconnectPrompt as VariantArray>::VARIANTS.len(),
                 &mut self.table_state,
                 true,
             ),
@@ -1107,7 +1107,7 @@ impl App {
                 }
                 // Other menus have weirder behavior
                 MacrosPrompt::Delete => wrapping_prompt_scroll(
-                    DeleteMacroPrompt::VARIANTS.len(),
+                    <DeleteMacroPrompt as VariantArray>::VARIANTS.len(),
                     &mut self.table_state,
                     false,
                 ),
@@ -1147,7 +1147,7 @@ impl App {
             // },
             Menu::Terminal(TerminalPrompt::None) => self.user_input.scroll_history(false),
             Menu::Terminal(TerminalPrompt::DisconnectPrompt) => wrapping_prompt_scroll(
-                DisconnectPrompt::VARIANTS.len(),
+                <DisconnectPrompt as VariantArray>::VARIANTS.len(),
                 &mut self.table_state,
                 false,
             ),
@@ -1730,6 +1730,22 @@ impl App {
             | PopupMenu::RenderingSettings => settings_area.height,
         };
 
+        self.popup_scrollbar_state = self
+            .popup_scrollbar_state
+            .content_length(content_length.saturating_sub(height as usize));
+
+        self.popup_scrollbar_state = self
+            .popup_scrollbar_state
+            .position(self.popup_table_state.offset());
+        frame.render_stateful_widget(
+            scrollbar,
+            center_inner.offset(Offset { x: 1, y: 0 }).inner(Margin {
+                horizontal: 0,
+                vertical: 1,
+            }),
+            &mut self.popup_scrollbar_state,
+        );
+
         match popup {
             PopupMenu::PortSettings => {
                 frame.render_stateful_widget(
@@ -1883,7 +1899,7 @@ impl App {
                         MacrosPrompt::Create => (),
                         MacrosPrompt::Delete => {
                             DeleteMacroPrompt::render_prompt_block_popup(
-                                Some(&format!("Delete Macro: {}", macro_binding.title)),
+                                Some(&format!("Delete Macro: \"{}\"?", macro_binding.title)),
                                 None,
                                 Style::new().red(),
                                 frame,
@@ -1925,21 +1941,6 @@ impl App {
                 // };
             }
         }
-        self.popup_scrollbar_state = self
-            .popup_scrollbar_state
-            .content_length(content_length.saturating_sub(height as usize));
-
-        self.popup_scrollbar_state = self
-            .popup_scrollbar_state
-            .position(self.popup_table_state.offset());
-        frame.render_stateful_widget(
-            scrollbar,
-            center_inner.offset(Offset { x: 1, y: 0 }).inner(Margin {
-                horizontal: 0,
-                vertical: 1,
-            }),
-            &mut self.popup_scrollbar_state,
-        );
     }
 
     // #[instrument(skip(self))]
