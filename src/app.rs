@@ -18,7 +18,7 @@ use ratatui::{
     layout::{Constraint, Layout, Margin, Offset, Rect, Size},
     prelude::Backend,
     style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span, Text, ToLine},
+    text::{Line, Span, Text, ToLine, ToSpan},
     widgets::{
         Block, Borders, Clear, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Table, TableState, Widget, Wrap,
@@ -29,6 +29,7 @@ use serialport::{SerialPortInfo, SerialPortType};
 use struct_table::{ArrowKey, StructTable};
 use strum::{VariantArray, VariantNames};
 use takeable::Takeable;
+use tinyvec::tiny_vec;
 use tracing::{debug, error, info, instrument, warn};
 use tui_big_text::{BigText, PixelSize};
 use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
@@ -38,7 +39,7 @@ use crate::{
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     keybinds::{Keybinds, methods::*},
-    macros::{Macro, MacroContent, MacroRef, Macros, MacrosPrompt},
+    macros::{Macro, MacroContent, MacroEditing, MacroRef, Macros, MacrosPrompt},
     notifications::{
         EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
     },
@@ -338,19 +339,23 @@ impl App {
     pub fn run(&mut self, mut terminal: Terminal<impl Backend>) -> Result<()> {
         // Get initial size of buffer.
         self.buffer.update_terminal_size(&mut terminal)?;
-
+        let mut max_draw = Duration::default();
+        let mut max_handle = Duration::default();
         while self.is_running() {
             let start = Instant::now();
             self.draw(&mut terminal)?;
             let end = Instant::now();
+            let end1 = end.saturating_duration_since(start);
+            max_draw = max_draw.max(end1);
             let msg = self.rx.recv()?;
             // debug!("{msg:?}");
             let start2 = Instant::now();
             self.handle_event(msg, &mut terminal)?;
+            let end2 = start2.elapsed();
+            max_handle = max_handle.max(end2);
             debug!(
-                "Frame took {:?} to draw, {:?} to handle ",
-                end.saturating_duration_since(start),
-                start2.elapsed()
+                "Frame took {:?} to draw (max: {max_draw:?}), {:?} to handle (max: {max_handle:?}) ",
+                end1, end2
             );
             // debug!("{msg:?}");
         }
@@ -410,7 +415,7 @@ impl App {
                     None => "",
                     // None => "Connected to port!",
                 };
-                self.notifs.notify(text, Color::Green);
+                self.notifs.notify_str(text, Color::Green);
             }
             Event::Serial(SerialEvent::Disconnected(reason)) => {
                 // self.menu = Menu::PortSelection;
@@ -424,7 +429,7 @@ impl App {
                         Reconnections::LooseChecks => "Attempting to reconnect (loose checks).",
                         Reconnections::StrictChecks => "Attempting to reconnect (strict checks).",
                     };
-                    self.notifs.notify(
+                    self.notifs.notify_str(
                         format!("Disconnected from port! {reconnect_text}"),
                         Color::Red,
                     );
@@ -535,9 +540,9 @@ impl App {
             (_, MacroContent::Empty) => {
                 ("Macro {macro_binding} is empty!".to_owned(), Color::Yellow)
             }
-            (Some(a), _) => (format!("Macro: {macro_binding} [{a}]"), Color::Green),
+            (Some(a), _) => (format!("{macro_binding} [{a}]"), Color::Green),
 
-            (None, _) => (format!("Macro: {macro_binding}"), Color::Green),
+            (None, _) => (format!("{macro_binding}"), Color::Green),
         };
 
         match &macro_binding.content {
@@ -560,7 +565,7 @@ impl App {
             }
         };
 
-        self.notifs.notify(notif_text, notif_color);
+        self.notifs.notify_str(notif_text, notif_color);
     }
     // TODO fuzz this
     fn handle_key_press(&mut self, key: KeyEvent) {
@@ -645,6 +650,19 @@ impl App {
                 self.popup_table_state.select(None);
                 self.popup_single_line_state.active = true;
             }
+            key!(ctrl - e)
+                if self.popup == Some(PopupMenu::Macros)
+                    && matches!(self.macros.ui_state, MacrosPrompt::None) =>
+            {
+                let Some(index) = self.popup_table_state.selected() else {
+                    return;
+                };
+                // begin editing macro
+                let macro_binding = self.macros.category_filtered_macros().nth(index).unwrap();
+                let macro_ref: MacroRef = macro_binding.into();
+                self.macros.ui_state =
+                    MacrosPrompt::AddEdit(MacroEditing::editing(macro_ref.clone()));
+            }
             // TODO ctrl+backspace remove a word
             key!(ctrl - pageup) | key!(shift - pageup) => self.buffer.scroll_by(i32::MAX),
             key!(ctrl - pagedown) | key!(shift - pagedown) => self.buffer.scroll_by(i32::MIN),
@@ -670,7 +688,7 @@ impl App {
                             self.popup_single_line_state.active = true;
                         }
                         self.notifs
-                            .notify(format!("Removed Macro: {}", macro_ref.title), Color::Red);
+                            .notify_str(format!("Removed Macro: {}", macro_ref.title), Color::Red);
                     }
                     _ => (),
                 }
@@ -699,7 +717,7 @@ impl App {
                     }
                     self.macros.ui_state = MacrosPrompt::None;
                     self.notifs
-                        .notify(format!("Removed Macro: {}", macro_ref.title), Color::Red);
+                        .notify_str(format!("Removed Macro: {}", macro_ref.title), Color::Red);
                 }
             }
             key!(pageup) => self.buffer.scroll_page_up(),
@@ -760,17 +778,30 @@ impl App {
                     Ok(somes) => {
                         let unsent = somes
                             .into_iter()
-                            .map(|km| format!("\"{}\"", km.title))
-                            .join(", ");
-                        self.notifs.notify(
-                            format!("Macro: {unsent} [{key_combo}] (Not Sent)"),
-                            Color::Yellow,
-                        );
+                            .map(|km| km.title.clone())
+                            .map(|s| Span::raw(s).italic())
+                            .map(|s| tiny_vec!([Span;3] => span!("\""), s, span!("\"")))
+                            // TODO fully qualified syntax
+                            .intersperse(tiny_vec!([Span;3] => span!(", ")))
+                            .flatten()
+                            .chain(std::iter::once(span!(format!(" [{key_combo}] (Not Sent)"))));
+                        self.notifs.notify(Line::from_iter(unsent), Color::Yellow);
                     }
                     Err(Some(nones)) => {
-                        let missed = nones.into_iter().map(|km| km.to_string()).join(", ");
-                        self.notifs
-                            .notify(format!("Macro search failed for: {missed}"), Color::Yellow);
+                        // let missed = nones.into_iter().map(|km| km.to_string()).join(", ");
+                        // self.notifs.notify_str(format!(" {missed}"), Color::Yellow);
+                        let missed_iter = nones
+                            .into_iter()
+                            .map(|km| km.title.clone())
+                            .map(|s| Span::raw(s).italic())
+                            .map(|s| tiny_vec!([Span;3] => span!("\""), s, span!("\"")))
+                            // TODO fully qualified syntax
+                            .intersperse(tiny_vec!([Span;3] => span!(", ")))
+                            .flatten();
+                        let missed = std::iter::once(span!(format!("Macro search failed for: ")))
+                            .chain(missed_iter);
+
+                        self.notifs.notify(Line::from_iter(missed), Color::Yellow);
                     }
                     // No macros found.
                     Err(None) => (),
@@ -791,7 +822,7 @@ impl App {
                 self.settings.save().unwrap();
                 let state = pretty_bool(self.settings.rendering.wrap_text);
                 self.notifs
-                    .notify(format!("Toggled Text Wrapping {state}"), Color::Gray);
+                    .notify_str(format!("Toggled Text Wrapping {state}"), Color::Gray);
             }
             _ if m == TOGGLE_DTR => {
                 self.serial.toggle_signals(true, false).unwrap();
@@ -820,7 +851,7 @@ impl App {
                 self.settings.save().unwrap();
                 let state = pretty_bool(self.settings.rendering.timestamps);
                 self.notifs
-                    .notify(format!("Toggled Timestamps {state}"), Color::Gray);
+                    .notify_str(format!("Toggled Timestamps {state}"), Color::Gray);
             }
 
             _ if m == TOGGLE_INDICES => {
@@ -828,7 +859,7 @@ impl App {
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
                 let state = pretty_bool(self.settings.rendering.show_indices);
-                self.notifs.notify(
+                self.notifs.notify_str(
                     format!("Toggled Line Indices + Length {state}"),
                     Color::Gray,
                 );
@@ -886,7 +917,7 @@ impl App {
             unknown => {
                 warn!("Unknown keybind: {unknown}");
                 self.notifs
-                    .notify(format!("Unknown keybind: \"{unknown}\""), Color::Yellow);
+                    .notify_str(format!("Unknown keybind: \"{unknown}\""), Color::Yellow);
             }
         };
         Ok(())
@@ -987,7 +1018,7 @@ impl App {
                 self.popup_single_line_state.active = true;
                 self.macros.categories_selector.active = false;
             }
-            Some(PopupMenu::Macros) => match &self.macros.ui_state {
+            Some(PopupMenu::Macros) => match &mut self.macros.ui_state {
                 MacrosPrompt::None => {
                     if self.popup_table_state.selected() == Some(0) {
                         self.popup_table_state.select(None);
@@ -1001,6 +1032,9 @@ impl App {
                     &mut self.table_state,
                     true,
                 ),
+                MacrosPrompt::AddEdit(editing) => {
+                    editing.selected_element.rotate_prev();
+                }
                 _ => (),
             },
         }
@@ -1093,7 +1127,7 @@ impl App {
                 }
             }
 
-            Some(PopupMenu::Macros) => match &self.macros.ui_state {
+            Some(PopupMenu::Macros) => match &mut self.macros.ui_state {
                 // If normal macros menu, normal scroll behavior
                 MacrosPrompt::None => {
                     if self.popup_table_state.selected()
@@ -1111,6 +1145,9 @@ impl App {
                     &mut self.table_state,
                     false,
                 ),
+                MacrosPrompt::AddEdit(editing) => {
+                    editing.selected_element.rotate_next();
+                }
                 _ => (),
             },
         }
@@ -1259,7 +1296,7 @@ impl App {
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
-                self.notifs.notify("Port settings saved!", Color::Green);
+                self.notifs.notify_str("Port settings saved!", Color::Green);
                 return;
             }
             Some(PopupMenu::BehaviorSettings) => {
@@ -1267,7 +1304,8 @@ impl App {
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
-                self.notifs.notify("Behavior settings saved!", Color::Green);
+                self.notifs
+                    .notify_str("Behavior settings saved!", Color::Green);
                 return;
             }
             Some(PopupMenu::RenderingSettings) => {
@@ -1278,7 +1316,7 @@ impl App {
                 self.settings.save().unwrap();
                 self.dismiss_popup();
                 self.notifs
-                    .notify("Rendering settings saved!", Color::Green);
+                    .notify_str("Rendering settings saved!", Color::Green);
                 return;
             }
             Some(PopupMenu::Macros) => {
@@ -1290,10 +1328,10 @@ impl App {
                 };
                 let macro_binding = self.macros.category_filtered_macros().nth(index).unwrap();
                 let macro_ref: MacroRef = macro_binding.into();
-                match self.macros.ui_state {
+                match &self.macros.ui_state {
                     MacrosPrompt::None if ctrl_pressed || shift_pressed => {
                         if !self.serial_healthy {
-                            self.notifs.notify("Port isn't ready!", Color::Red);
+                            self.notifs.notify_str("Port isn't ready!", Color::Red);
                             return;
                         }
                         // Putting macro content into buffer.
@@ -1312,12 +1350,12 @@ impl App {
                     }
                     MacrosPrompt::None => {
                         if !self.serial_healthy {
-                            self.notifs.notify("Port isn't ready!", Color::Red);
+                            self.notifs.notify_str("Port isn't ready!", Color::Red);
                             return;
                         }
                         match &macro_binding.content {
                             MacroContent::Empty => {
-                                self.notifs.notify("Macro is empty!", Color::Yellow)
+                                self.notifs.notify_str("Macro is empty!", Color::Yellow)
                             }
                             MacroContent::Bytes { .. } | MacroContent::Text(_) => {
                                 self.macros_tx_queue.push_back((None, macro_binding.into()));
@@ -1337,7 +1375,7 @@ impl App {
                                     self.popup_table_state.select(None);
                                     self.popup_single_line_state.active = true;
                                 }
-                                self.notifs.notify(
+                                self.notifs.notify_str(
                                     format!("Removed Macro: {}", macro_ref.title),
                                     Color::Red,
                                 );
@@ -1346,7 +1384,7 @@ impl App {
                         }
                     }
 
-                    MacrosPrompt::Create => (),
+                    MacrosPrompt::AddEdit(meow) => (),
                     MacrosPrompt::Keybind => (),
                 }
             }
@@ -1872,6 +1910,27 @@ impl App {
 
                 frame.render_stateful_widget(table, macros_table_area, &mut self.popup_table_state);
 
+                frame.render_widget(
+                    Line::raw("Ctrl+N: New")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(),
+                    new_seperator,
+                );
+
+                frame.render_widget(
+                    Line::raw("Del: Remove | Ctrl+E: Edit")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(),
+                    line_area,
+                );
+
+                frame.render_widget(
+                    Line::raw("Esc: Close | Enter: Send")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(), // .dark_gray()
+                    hint_text_area,
+                );
+
                 if let Some(index) = self.popup_table_state.selected() {
                     // let text: &str = self
                     //     .popup_table_state
@@ -1894,9 +1953,9 @@ impl App {
                         &mut self.popup_desc_scroll,
                     );
 
-                    match self.macros.ui_state {
+                    match &self.macros.ui_state {
                         MacrosPrompt::None => (),
-                        MacrosPrompt::Create => (),
+                        MacrosPrompt::AddEdit(meow) => meow.render(frame, area),
                         MacrosPrompt::Delete => {
                             DeleteMacroPrompt::render_prompt_block_popup(
                                 Some(&format!("Delete Macro: \"{}\"?", macro_binding.title)),
@@ -1922,20 +1981,6 @@ impl App {
                         );
                     }
                 }
-
-                frame.render_widget(
-                    Line::raw("Del: Remove | Ctrl+N: New")
-                        .all_spans_styled(Color::DarkGray.into())
-                        .centered(),
-                    line_area,
-                );
-
-                frame.render_widget(
-                    Line::raw("Esc: Close | Enter: Send")
-                        .all_spans_styled(Color::DarkGray.into())
-                        .centered(), // .dark_gray()
-                    hint_text_area,
-                );
                 // match prompt {
                 //     _ => (),
                 // };

@@ -4309,6 +4309,7 @@ dependencies = [
  "takeable",
  "textwrap",
  "thiserror 2.0.12",
+ "tinyvec",
  "toml",
  "tracing",
  "tracing-appender",

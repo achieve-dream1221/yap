@@ -1,26 +1,29 @@
 use std::{
+    borrow::Cow,
     sync::mpsc::Sender,
     time::{Duration, Instant},
 };
 
+use compact_str::{CompactString, format_compact};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear},
 };
 use ratatui_macros::horizontal;
 use tracing::debug;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Event, Tick};
 
 pub struct Notifications {
     pub inner: Option<Notification>,
-    replaced: (usize, Option<String>),
+    replaced_amount: (usize, Option<CompactString>),
     tx: Sender<Event>,
 }
 
 #[derive(Debug)]
 pub struct Notification {
-    pub text: String,
+    pub line: Line<'static>,
     pub color: Color,
     pub shown_at: Instant,
     pub replaced: bool,
@@ -36,25 +39,29 @@ impl Notifications {
     pub fn new(tx: Sender<Event>) -> Self {
         Self {
             inner: None,
-            replaced: (0, None),
+            replaced_amount: (0, None),
             tx,
         }
     }
-    pub fn notify<S: AsRef<str>>(&mut self, text: S, color: Color) {
+    pub fn notify(&mut self, line: Line<'static>, color: Color) {
+        self.notify_inner(line.centered(), color);
+    }
+    pub fn notify_str<S: AsRef<str>>(&mut self, text: S, color: Color) {
         let text: &str = text.as_ref();
-        debug!("Notification: \"{text}\", Color: {color}");
-        if text.is_empty() {
-            return;
-        }
-        self.replaced = if self.inner.is_none() {
+        let line: Line = Span::raw(Cow::Owned(text.to_string())).into_centered_line();
+        self.notify_inner(line, color);
+    }
+    fn notify_inner(&mut self, line: Line<'static>, color: Color) {
+        debug!("Notification: \"{line}\", Color: {color}");
+        self.replaced_amount = if self.inner.is_none() {
             (0, None)
         } else {
-            let amount = self.replaced.0 + 1;
-            let text = format!("[+{amount}]");
+            let amount = self.replaced_amount.0 + 1;
+            let text = format_compact!("[+{amount}]");
             (amount, Some(text))
         };
         self.inner = Some(Notification {
-            text: text.to_owned(),
+            line,
             color,
             shown_at: Instant::now(),
             replaced: self.inner.is_some(),
@@ -89,20 +96,30 @@ impl Widget for &Notifications {
         };
 
         let center_area = {
-            let mut new_area = area.clone();
-            new_area.height = 2;
+            let mut top_lines = area.clone();
+            top_lines.height = 2;
             // new_area.width = area.width.saturating_div(2);
-            let [_, new_area, _] = if area.width > MIN_NOTIF_WIDTH {
-                horizontal![*=2,*=5,*=2].areas(new_area)
+            let [_, centered_area, _] = if area.width > MIN_NOTIF_WIDTH {
+                horizontal![*=2,*=5,*=2].areas(top_lines)
             } else {
-                horizontal![*=1,*=5,*=1].areas(new_area)
+                horizontal![*=1,*=5,*=1].areas(top_lines)
             };
-            // new_area.x += (area.width.saturating_sub(new_area.width)) / 2;
+            let mut new_width = centered_area
+                .width
+                .max(notification.line.width() as u16 + 4);
+            new_width = new_width.min(area.width);
+            let mut new_area = centered_area;
+            new_area.width = new_width;
+            if centered_area.width != new_width {
+                new_area.x = (area.width.saturating_sub(new_width)) / 2;
+            }
             new_area
         };
         let expand_area = {
             let mut new_area = center_area.clone();
-            new_area.width = center_area.width + 2;
+            if new_area.width != area.width {
+                new_area.width = center_area.width + 2;
+            }
             new_area.height = 3;
             new_area.x = new_area.x.saturating_sub(1);
             // new_area.x += (area.width.saturating_sub(new_area.width)) / 2;
@@ -134,18 +151,22 @@ impl Widget for &Notifications {
 
         if block_area.height > 0 {
             Clear::render(Clear, block_area, buf);
-            let block = Block::new()
-                .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
+            let mut block = Block::new()
+                .borders(Borders::BOTTOM)
                 .border_style(Style::from(notification.color));
 
+            if area.width.saturating_sub(center_area.width) >= 2 {
+                block = block.borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT);
+            }
+
             let inner_area = block.inner(center_area);
-            let text = Line::raw(&notification.text).centered();
+            let text = &notification.line;
             if notification.replaced
                 && text.width() < inner_area.width as usize
-                && self.replaced.0 > 0
+                && self.replaced_amount.0 > 0
             {
                 let replaced_amount_text =
-                    Line::raw(self.replaced.1.as_ref().unwrap()).right_aligned();
+                    Line::raw(self.replaced_amount.1.as_ref().unwrap()).right_aligned();
                 replaced_amount_text.render(inner_area, buf);
             }
             text.render(inner_area, buf);

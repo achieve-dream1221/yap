@@ -3,6 +3,7 @@ use std::{
     fmt,
 };
 
+use compact_str::CompactString;
 use crokey::KeyCombination;
 use ratatui::{
     layout::Constraint,
@@ -15,13 +16,16 @@ use tui_input::Input;
 use crate::{keybinds::Keybinds, tui::single_line_selector::SingleLineSelectorState};
 
 mod macro_ref;
-pub use macro_ref::MacroRef;
+mod tui;
 
-#[derive(Debug, PartialEq, Eq)]
+pub use macro_ref::MacroRef;
+pub use tui::MacroEditing;
+
+#[derive(Debug)]
 #[repr(u8)]
 pub enum MacrosPrompt {
     None,
-    Create,
+    AddEdit(MacroEditing),
     Delete,
     Keybind,
 }
@@ -34,6 +38,8 @@ pub enum MacroCategorySelection<'a> {
     Category(&'a str),
 }
 
+// TODO search when typing
+
 pub struct Macros {
     pub all: BTreeSet<Macro>,
 
@@ -41,7 +47,8 @@ pub struct Macros {
     // ["All Bytes", "All Strings", "All Macros", "OpenShock"]
     //     Start here, at user's first category.  ^
     pub categories_selector: SingleLineSelectorState,
-    pub input: Input,
+    // TODO search
+    pub search_input: Input,
     // pub scrollbar_state: ScrollbarState,
     // // maybe just take from macros
     // pub categories: BTreeSet<String>,
@@ -84,7 +91,7 @@ impl Macros {
             all: test_macros,
             // tx_queue: Vec::new(),
             ui_state: MacrosPrompt::None,
-            input: Input::default(),
+            search_input: Input::default(),
             categories_selector: SingleLineSelectorState::new().with_selected(2),
             // categories: BTreeSet::new(),
         }
@@ -240,12 +247,19 @@ impl Macros {
         // let macro_binding = self.all.iter().find(|d| macro_ref.eq_macro(d)).unwrap();
         // self.all.remove(macro_binding);
     }
+    // pub fn begin_editing(&mut self, macro_ref: &MacroRef) {
+    //     self.ui_state = MacrosPrompt::AddEdit(MacroEditing {
+    //         inner_ref: Some(macro_ref.clone()),
+    //         ..Default::default()
+    //     });
+
+    // }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Macro {
-    pub title: String,
-    pub category: Option<String>,
+    pub title: CompactString,
+    pub category: Option<CompactString>,
     // pub keybinding: Option<KeyCombination>,
     pub content: MacroContent,
     // preview_hidden: bool,
@@ -287,11 +301,15 @@ impl fmt::Display for Macro {
 //     }
 // }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MacroContent {
+    #[default]
     Empty,
     Text(String),
-    Bytes { content: Vec<u8>, preview: String },
+    Bytes {
+        content: Vec<u8>,
+        preview: String,
+    },
 }
 
 impl MacroContent {

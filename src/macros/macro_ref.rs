@@ -1,13 +1,14 @@
 use std::fmt;
 
+use compact_str::{CompactString, ToCompactString, format_compact};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::Macro;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MacroRef {
-    pub category: Option<String>,
-    pub title: String,
+    pub category: Option<CompactString>,
+    pub title: CompactString,
 }
 
 impl From<&Macro> for MacroRef {
@@ -63,11 +64,11 @@ impl<'de> Deserialize<'de> for MacroRef {
 
         let (category, title) = match parts.len() {
             2 => (
-                Some(parts[0].trim().to_string()),
-                parts[1].trim().to_string(),
+                Some(parts[0].trim().to_compact_string()),
+                parts[1].trim().to_compact_string(),
             ),
-            1 => (None, parts[0].trim().to_string()),
-            _ => (None, String::new()),
+            1 => (None, parts[0].trim().to_compact_string()),
+            _ => return Err(serde::de::Error::custom("invalid format for MacroRef")),
         };
 
         Ok(MacroRef { category, title })
@@ -80,7 +81,7 @@ impl Serialize for MacroRef {
         S: Serializer,
     {
         let s = if let Some(ref cat) = self.category {
-            format!("{}|{}", cat, self.title)
+            format_compact!("{}|{}", cat, self.title)
         } else {
             self.title.clone()
         };
