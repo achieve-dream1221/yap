@@ -1030,6 +1030,7 @@ impl App {
         self.popup_desc_scroll = -2;
         match &self.popup {
             None => (),
+            // If categories selected, try to select first visible macro.
             Some(popup) if self.macros.categories_selector.active => {
                 match popup {
                     PopupMenu::Macros if self.macros.none_visible() => return,
@@ -1038,11 +1039,13 @@ impl App {
                 self.macros.categories_selector.active = false;
                 self.popup_table_state.select_first();
             }
+            // If popup selector chosen on Macro screen, select the Macro Categories
             // Has to be above the catch-all below
             Some(PopupMenu::Macros) if self.popup_single_line_state.active => {
                 self.popup_single_line_state.active = false;
                 self.macros.categories_selector.active = true;
             }
+            // If on any other screen, just select the first element.
             Some(popup) if self.popup_single_line_state.active => {
                 self.popup_single_line_state.active = false;
                 self.popup_table_state.select_first();
@@ -1091,6 +1094,7 @@ impl App {
             }
 
             Some(PopupMenu::Macros) => match &self.macros.ui_state {
+                // If normal macros menu, normal scroll behavior
                 MacrosPrompt::None => {
                     if self.popup_table_state.selected()
                         >= Some(self.macros.visible_len().saturating_sub(1))
@@ -1101,6 +1105,7 @@ impl App {
                         self.scroll_menu_down();
                     }
                 }
+                // Other menus have weirder behavior
                 MacrosPrompt::Delete => wrapping_prompt_scroll(
                     DeleteMacroPrompt::VARIANTS.len(),
                     &mut self.table_state,
@@ -1558,6 +1563,13 @@ impl App {
             return;
         };
 
+        let popup_color = match popup {
+            PopupMenu::Macros => Color::Green,
+            PopupMenu::RenderingSettings => Color::Red,
+            PopupMenu::BehaviorSettings => Color::Blue,
+            PopupMenu::PortSettings => Color::Cyan,
+        };
+
         let macros_visible_amt = self.macros.visible_len();
 
         match (
@@ -1614,7 +1626,7 @@ impl App {
         );
         frame.render_widget(Clear, center_area);
 
-        let block = Block::bordered().border_style(Style::new().cyan());
+        let block = Block::bordered().border_style(Style::from(popup_color));
 
         frame.render_widget(&block, center_area);
 
@@ -1688,12 +1700,18 @@ impl App {
         frame.render_widget(
             Block::new()
                 .borders(Borders::TOP)
-                .border_style(Style::new().cyan()),
+                .border_style(Style::from(popup_color)),
             line_area,
         );
 
+        let scrollbar_style = match (popup, &self.macros.ui_state) {
+            (PopupMenu::Macros, MacrosPrompt::None) => Style::new().reset(),
+            (PopupMenu::Macros, _) => Style::new().dark_gray(),
+            _ => Style::new().reset(),
+        };
+
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .style(Style::new().reset())
+            .style(scrollbar_style)
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"));
 
@@ -1711,22 +1729,6 @@ impl App {
             | PopupMenu::BehaviorSettings
             | PopupMenu::RenderingSettings => settings_area.height,
         };
-
-        self.popup_scrollbar_state = self
-            .popup_scrollbar_state
-            .content_length(content_length.saturating_sub(height as usize));
-
-        self.popup_scrollbar_state = self
-            .popup_scrollbar_state
-            .position(self.popup_table_state.offset());
-        frame.render_stateful_widget(
-            scrollbar,
-            center_inner.offset(Offset { x: 1, y: 0 }).inner(Margin {
-                horizontal: 0,
-                vertical: 1,
-            }),
-            &mut self.popup_scrollbar_state,
-        );
 
         match popup {
             PopupMenu::PortSettings => {
@@ -1821,7 +1823,7 @@ impl App {
                 frame.render_widget(
                     Block::new()
                         .borders(Borders::TOP)
-                        .border_style(Style::new().cyan()),
+                        .border_style(Style::from(popup_color)),
                     new_seperator,
                 );
                 // frame.render_widget(
