@@ -573,8 +573,6 @@ impl App {
         let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
 
-        // TODO vim-style hjkl menu scroll behaviors
-
         // let at_port_selection = matches!(self.menu, Menu::PortSelection);
         // TODO soon, redo this variable's name + use
         let mut at_port_selection = false;
@@ -625,6 +623,12 @@ impl App {
             // might replace with PartialEq, Eq on Menu later, not sure
             Menu::PortSelection(_) => at_port_selection = true,
         }
+        let vim_scrollable_menu: bool = match (self.menu, &self.popup, &self.macros.ui_state) {
+            (_, Some(PopupMenu::Macros), MacrosPrompt::Keybind) => false,
+            (_, Some(PopupMenu::Macros), MacrosPrompt::AddEdit(_)) => false,
+            (Menu::Terminal(TerminalPrompt::None), None, _) => false,
+            _ => true,
+        };
         // TODO split this up into more functions based on menu
         match key_combo {
             // Start of hardcoded keybinds.
@@ -736,6 +740,10 @@ impl App {
             // KeyCode::End => self
             //     .event_carousel
             //     .add_event(Event::TickSecond, Duration::from_secs(3)),
+            key!(h) if vim_scrollable_menu => self.left_pressed(),
+            key!(j) if vim_scrollable_menu => self.down_pressed(),
+            key!(k) if vim_scrollable_menu => self.up_pressed(),
+            key!(l) if vim_scrollable_menu => self.right_pressed(),
             key!(up) => self.up_pressed(),
             key!(down) => self.down_pressed(),
             key!(left) => self.left_pressed(),
