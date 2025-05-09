@@ -162,7 +162,11 @@ impl Buffer {
 
     pub fn append_user_bytes(&mut self, bytes: &[u8], is_macro: bool) {
         let now = Local::now();
-        let text: Span = bytes.iter().map(|b| format!("{:02X}", b)).join(" ").into();
+        let text: Span = bytes
+            .iter()
+            .map(|b| format!("\\x{:02X}", b))
+            .join("")
+            .into();
         let text = text.dark_gray().italic().bold();
 
         let user_span = span!(Color::DarkGray; "BYTE> ");

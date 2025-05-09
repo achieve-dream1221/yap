@@ -9,6 +9,7 @@ use std::{
 
 use arboard::Clipboard;
 use color_eyre::{eyre::Result, owo_colors::OwoColorize};
+use compact_str::{CompactString, ToCompactString};
 use crokey::{KeyCombination, key};
 use enum_rotate::EnumRotate;
 use itertools::Itertools;
@@ -39,7 +40,9 @@ use crate::{
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     keybinds::{Keybinds, methods::*},
-    macros::{Macro, MacroContent, MacroEditing, MacroRef, Macros, MacrosPrompt},
+    macros::{
+        Macro, MacroContent, MacroEditSelected, MacroEditing, MacroRef, Macros, MacrosPrompt,
+    },
     notifications::{
         EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
     },
@@ -415,7 +418,9 @@ impl App {
                     None => "",
                     // None => "Connected to port!",
                 };
-                self.notifs.notify_str(text, Color::Green);
+                if !text.is_empty() {
+                    self.notifs.notify_str(text, Color::Green);
+                }
             }
             Event::Serial(SerialEvent::Disconnected(reason)) => {
                 // self.menu = Menu::PortSelection;
@@ -570,6 +575,7 @@ impl App {
     // TODO fuzz this
     fn handle_key_press(&mut self, key: KeyEvent) {
         let key_combo = KeyCombination::from(key);
+        // debug!("{key_combo}");
         let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
 
@@ -578,18 +584,63 @@ impl App {
         let mut at_port_selection = false;
         let mut at_terminal = false;
         // Filter for when we decide to handle user *text input*.
-        match self.menu {
-            Menu::Terminal(TerminalPrompt::None) => {
-                if self.popup.is_none() {
-                    at_terminal = true;
+        // TODO move these into per-menu funcs.
+        match (&self.popup, &mut self.macros.ui_state) {
+            (Some(PopupMenu::Macros), MacrosPrompt::AddEdit(editing)) => {
+                match editing.selected_element {
+                    MacroEditSelected::Title | MacroEditSelected::Category
+                        if !editing.recording =>
+                    {
+                        editing
+                            .input
+                            .handle_event(&ratatui::crossterm::event::Event::Key(key));
+                    }
+                    MacroEditSelected::Content
+                        if matches!(editing.scratch_macro.content, MacroContent::Bytes { .. })
+                            && !editing.recording =>
+                    {
+                        // Only allow hex digits, space, and backspace/del/left/right events, filter out all else.
+                        let is_valid_hex_char = match key.code {
+                            KeyCode::Char(c) => c.is_ascii_hexdigit() || c == ' ',
+                            KeyCode::Backspace
+                            | KeyCode::Delete
+                            | KeyCode::Left
+                            | KeyCode::Right => true,
+                            _ => false,
+                        };
+                        if is_valid_hex_char {
+                            match editing
+                                .input
+                                .handle_event(&ratatui::crossterm::event::Event::Key(key))
+                            {
+                                Some(StateChanged { value: true, .. }) => {
+                                    _ = editing.validate_input_bytes(false);
+                                }
+                                None => (),
+                                _ => (),
+                            };
+                        }
+                    }
+                    MacroEditSelected::Content if !editing.recording => {
+                        editing
+                            .input
+                            .handle_event(&ratatui::crossterm::event::Event::Key(key));
+                    }
+                    _ => (),
                 }
+            }
+            _ => (),
+        }
+        match self.menu {
+            Menu::Terminal(TerminalPrompt::None) if self.popup.is_none() => {
+                at_terminal = true;
                 match key_combo {
                     // Consuming Ctrl+A so input_box.handle_event doesn't move my cursor.
                     key!(a) if ctrl_pressed => (),
                     key!(del) | key!(backspace) if self.user_input.all_text_selected => (),
 
                     // TODO move into UserInput impl?
-                    _ if self.popup.is_none() => match self
+                    _ => match self
                         .user_input
                         .input_box
                         .handle_event(&ratatui::crossterm::event::Event::Key(key))
@@ -610,6 +661,7 @@ impl App {
                     _ => (),
                 }
             }
+            Menu::Terminal(TerminalPrompt::None) => (),
             Menu::Terminal(TerminalPrompt::DisconnectPrompt) => (),
             Menu::PortSelection(PortSelectionElement::CustomBaud) => {
                 // filtering out just letters from being put into the custom baud entry
@@ -624,7 +676,7 @@ impl App {
             Menu::PortSelection(_) => at_port_selection = true,
         }
         let vim_scrollable_menu: bool = match (self.menu, &self.popup, &self.macros.ui_state) {
-            (_, Some(PopupMenu::Macros), MacrosPrompt::Keybind) => false,
+            // (_, Some(PopupMenu::Macros), MacrosPrompt::Keybind) => false,
             (_, Some(PopupMenu::Macros), MacrosPrompt::AddEdit(_)) => false,
             (Menu::Terminal(TerminalPrompt::None), None, _) => false,
             _ => true,
@@ -632,7 +684,7 @@ impl App {
         // TODO split this up into more functions based on menu
         match key_combo {
             // Start of hardcoded keybinds.
-            key!(q) if at_port_selection => self.shutdown(),
+            key!(q) if at_port_selection && self.popup.is_none() => self.shutdown(),
             key!(ctrl - shift - c) => self.shutdown(),
             // move into ctrl-c func?
             key!(ctrl - c) => match self.menu {
@@ -648,9 +700,11 @@ impl App {
                 self.user_input.all_text_selected = true;
             }
             key!(home) if self.popup.is_some() => {
-                // TODO make this not as hardcoded here.
+                match (&self.popup, &self.macros.ui_state) {
+                    (Some(PopupMenu::Macros), MacrosPrompt::AddEdit(_)) => return,
+                    _ => (),
+                }
                 self.macros.ui_state = MacrosPrompt::None;
-
                 self.popup_table_state.select(None);
                 self.popup_single_line_state.active = true;
             }
@@ -665,7 +719,13 @@ impl App {
                 let macro_binding = self.macros.category_filtered_macros().nth(index).unwrap();
                 let macro_ref: MacroRef = macro_binding.into();
                 self.macros.ui_state =
-                    MacrosPrompt::AddEdit(MacroEditing::editing(macro_ref.clone()));
+                    MacrosPrompt::AddEdit(MacroEditing::editing(macro_binding.clone()));
+            }
+            key!(ctrl - n)
+                if self.popup == Some(PopupMenu::Macros)
+                    && matches!(self.macros.ui_state, MacrosPrompt::None) =>
+            {
+                self.macros.ui_state = MacrosPrompt::AddEdit(MacroEditing::new());
             }
             // TODO ctrl+backspace remove a word
             key!(ctrl - pageup) | key!(shift - pageup) => self.buffer.scroll_by(i32::MAX),
@@ -675,6 +735,15 @@ impl App {
             }
             key!(delete) | key!(backspace) if self.user_input.all_text_selected => {
                 self.user_input.clear();
+            }
+            key!(delete) | key!(backspace)
+                if self.popup == Some(PopupMenu::Macros)
+                    && matches!(&self.macros.ui_state, MacrosPrompt::AddEdit(editing) if editing.recording) =>
+            {
+                let MacrosPrompt::AddEdit(editing) = &mut self.macros.ui_state else {
+                    unreachable!();
+                };
+                _ = editing.scratch_keybind.take();
             }
             key!(ctrl - delete) | key!(shift - delete) => {
                 let Some(index) = self.popup_table_state.selected() else {
@@ -749,12 +818,34 @@ impl App {
             key!(left) => self.left_pressed(),
             key!(right) => self.right_pressed(),
             key!(enter) => self.enter_pressed(ctrl_pressed, shift_pressed),
+            key!(shift - tab) | key!(shift - backtab)
+                if self.popup == Some(PopupMenu::Macros)
+                    && matches!(self.macros.ui_state, MacrosPrompt::AddEdit(_)) =>
+            {
+                self.up_pressed();
+            }
+            key!(tab)
+                if self.popup == Some(PopupMenu::Macros)
+                    && matches!(self.macros.ui_state, MacrosPrompt::AddEdit(_)) =>
+            {
+                self.down_pressed();
+            }
             key!(tab) if at_terminal && self.popup.is_none() => {
                 self.user_input.find_input_in_history();
             }
             // KeyCode::Tab => self.tab_pressed(),
             key!(esc) => self.esc_pressed(),
             key_combo => {
+                match (&self.popup, &mut self.macros.ui_state) {
+                    (Some(PopupMenu::Macros), MacrosPrompt::AddEdit(editing))
+                        if editing.recording =>
+                    {
+                        editing.scratch_keybind = Some(key_combo);
+                        return;
+                    }
+                    _ => (),
+                }
+
                 if let Some(method) = self
                     .keybinds
                     .method_from_key_combo(key_combo)
@@ -940,10 +1031,13 @@ impl App {
                 self.dismiss_popup();
                 return;
             }
-            Some(PopupMenu::Macros) => match &self.macros.ui_state {
+            Some(PopupMenu::Macros) => match &mut self.macros.ui_state {
                 MacrosPrompt::None => {
                     self.dismiss_popup();
                     return;
+                }
+                MacrosPrompt::AddEdit(editing) if editing.recording => {
+                    editing.recording = false;
                 }
                 _ => {
                     self.popup.replace(PopupMenu::Macros);
@@ -1041,7 +1135,46 @@ impl App {
                     true,
                 ),
                 MacrosPrompt::AddEdit(editing) => {
-                    editing.selected_element.rotate_prev();
+                    use MacroEditSelected as M;
+                    match (
+                        editing.selected_element,
+                        editing.selected_element.rotate_prev(),
+                    ) {
+                        (M::Category, M::Title) => {
+                            editing.scratch_macro.category = if editing.input.value().is_empty() {
+                                None
+                            } else {
+                                Some(editing.input.value().into())
+                            };
+                            editing.input = editing.scratch_macro.title.to_string().into();
+                        }
+                        (M::ContentType, M::Category) => {
+                            // editing.scratch_macro.title = editing.input.value().into();
+                            editing.input = editing
+                                .scratch_macro
+                                .category
+                                .as_ref()
+                                .map(CompactString::as_str)
+                                .unwrap_or("")
+                                .into();
+                        }
+                        (M::Content, M::ContentType) => {
+                            editing.consume_input();
+                        }
+                        (M::Keybind, M::Content) => {
+                            editing.input = editing
+                                .content_input()
+                                .map(|s| s.to_string())
+                                .unwrap_or("".to_string())
+                                .into();
+                            _ = editing.validate_input_bytes(false);
+                        }
+                        (M::Title, M::Finish) => {
+                            editing.input.reset();
+                        }
+
+                        _ => (),
+                    }
                 }
                 _ => (),
             },
@@ -1154,7 +1287,46 @@ impl App {
                     false,
                 ),
                 MacrosPrompt::AddEdit(editing) => {
-                    editing.selected_element.rotate_next();
+                    use MacroEditSelected as M;
+                    match (
+                        editing.selected_element,
+                        editing.selected_element.rotate_next(),
+                    ) {
+                        (M::Title, M::Category) => {
+                            editing.scratch_macro.title = editing.input.value().into();
+                            editing.input = editing
+                                .scratch_macro
+                                .category
+                                .as_ref()
+                                .map(CompactString::as_str)
+                                .unwrap_or("")
+                                .into();
+                        }
+                        (M::Category, M::ContentType) => {
+                            editing.scratch_macro.category = if editing.input.value().is_empty() {
+                                None
+                            } else {
+                                Some(editing.input.value().into())
+                            };
+                            editing.input.reset();
+                        }
+                        (M::ContentType, M::Content) => {
+                            editing.input = editing
+                                .content_input()
+                                .map(|s| s.to_string())
+                                .unwrap_or("".to_string())
+                                .into();
+                            _ = editing.validate_input_bytes(false);
+                        }
+                        (M::Content, M::Keybind) => {
+                            editing.consume_input();
+                        }
+                        (M::Finish, M::Title) => {
+                            editing.input = editing.scratch_macro.title.to_string().into();
+                        }
+
+                        _ => (),
+                    }
                 }
                 _ => (),
             },
@@ -1223,12 +1395,20 @@ impl App {
                     .handle_input(ArrowKey::Left, &mut self.popup_table_state)
                     .unwrap();
             }
-            Some(PopupMenu::Macros) => {
-                self.macros.categories_selector.prev();
-                if self.popup_table_state.selected().is_some() && !self.macros.none_visible() {
-                    self.popup_table_state.select_first();
+            Some(PopupMenu::Macros) => match &mut self.macros.ui_state {
+                MacrosPrompt::None => {
+                    self.macros.categories_selector.prev();
+                    if self.popup_table_state.selected().is_some() && !self.macros.none_visible() {
+                        self.popup_table_state.select_first();
+                    }
                 }
-            }
+                MacrosPrompt::AddEdit(editing)
+                    if editing.selected_element == MacroEditSelected::ContentType =>
+                {
+                    editing.swap_content_type();
+                }
+                _ => (),
+            },
         }
         if self.popup.is_some() {
             return;
@@ -1272,12 +1452,20 @@ impl App {
                     .handle_input(ArrowKey::Right, &mut self.popup_table_state)
                     .unwrap();
             }
-            Some(PopupMenu::Macros) => {
-                self.macros.categories_selector.next();
-                if self.popup_table_state.selected().is_some() && !self.macros.none_visible() {
-                    self.popup_table_state.select_first();
+            Some(PopupMenu::Macros) => match &mut self.macros.ui_state {
+                MacrosPrompt::None => {
+                    self.macros.categories_selector.next();
+                    if self.popup_table_state.selected().is_some() && !self.macros.none_visible() {
+                        self.popup_table_state.select_first();
+                    }
                 }
-            }
+                MacrosPrompt::AddEdit(editing)
+                    if editing.selected_element == MacroEditSelected::ContentType =>
+                {
+                    editing.swap_content_type();
+                }
+                _ => (),
+            },
         }
         if self.popup.is_some() {
             return;
@@ -1391,9 +1579,21 @@ impl App {
                             }
                         }
                     }
-
-                    MacrosPrompt::AddEdit(meow) => (),
-                    MacrosPrompt::Keybind => (),
+                    _ => (),
+                }
+                match &mut self.macros.ui_state {
+                    MacrosPrompt::AddEdit(editing) => {
+                        match (editing.selected_element, editing.recording) {
+                            (MacroEditSelected::Finish, _) => todo!(),
+                            (MacroEditSelected::Keybind, false) => editing.start_recording(),
+                            (MacroEditSelected::Keybind, true) => todo!(),
+                            _ => self.notifs.notify_str(
+                                "Select [Finish] or press `Ctrl+Enter` to save Macro.",
+                                Color::Yellow,
+                            ),
+                        }
+                    } // MacrosPrompt::Keybind => (),
+                    _ => (),
                 }
             }
         }
@@ -1973,8 +2173,7 @@ impl App {
                                 area,
                                 &mut self.table_state,
                             );
-                        }
-                        MacrosPrompt::Keybind => (),
+                        } // MacrosPrompt::Keybind => (),
                     }
                 } else {
                     if self.macros.is_empty() {

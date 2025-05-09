@@ -12,8 +12,8 @@ pub fn centered_rect_ratio(percent_x: u16, percent_y: u16, parent: Rect) -> Rect
     Rect {
         width,
         height,
-        x: (parent.width - width) / 2,
-        y: (parent.height - height) / 2,
+        x: (parent.width.saturating_sub(width)) / 2,
+        y: (parent.height.saturating_sub(height)) / 2,
     }
 }
 

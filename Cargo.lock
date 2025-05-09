@@ -253,6 +253,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "234113d19d0d7d613b40e86fb654acf958910802bcceab913a4f9e7cda03b1a4"
+dependencies = [
+ "memchr",
+ "regex-automata 0.4.9",
+ "serde",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4283,6 +4294,7 @@ dependencies = [
  "arboard",
  "arc-swap",
  "better-panic",
+ "bstr",
  "chrono",
  "color-eyre",
  "compact_str 0.9.0",
@@ -4291,6 +4303,7 @@ dependencies = [
  "enum-rotate",
  "espflash",
  "fs-err",
+ "hex",
  "human-panic",
  "int-enum",
  "itertools 0.14.0",

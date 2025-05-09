@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeSet, HashMap},
     fmt,
 };
@@ -19,15 +20,14 @@ mod macro_ref;
 mod tui;
 
 pub use macro_ref::MacroRef;
-pub use tui::MacroEditing;
+pub use tui::{MacroEditSelected, MacroEditing};
 
 #[derive(Debug)]
 #[repr(u8)]
 pub enum MacrosPrompt {
     None,
-    AddEdit(MacroEditing),
     Delete,
-    Keybind,
+    AddEdit(MacroEditing),
 }
 
 pub enum MacroCategorySelection<'a> {
@@ -256,13 +256,33 @@ impl Macros {
     // }
 }
 
-#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Macro {
     pub title: CompactString,
     pub category: Option<CompactString>,
     // pub keybinding: Option<KeyCombination>,
     pub content: MacroContent,
     // preview_hidden: bool,
+}
+
+impl Macro {
+    pub fn as_str(&self) -> Option<Cow<'_, str>> {
+        match &self.content {
+            MacroContent::Empty => None,
+            MacroContent::Text(text) => Some(Cow::Borrowed(text.as_str())),
+            MacroContent::Bytes { content, .. } => match std::str::from_utf8(content) {
+                Ok(s) => Some(Cow::Borrowed(s)),
+                Err(_) => None,
+            },
+        }
+    }
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match &self.content {
+            MacroContent::Empty => None,
+            MacroContent::Bytes { content, .. } => Some(&content),
+            MacroContent::Text(text) => Some(text.as_bytes()),
+        }
+    }
 }
 
 impl fmt::Display for Macro {
@@ -301,7 +321,7 @@ impl fmt::Display for Macro {
 //     }
 // }
 
-#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MacroContent {
     #[default]
     Empty,
@@ -316,9 +336,9 @@ impl MacroContent {
     fn new_bytes(content: Vec<u8>) -> Self {
         let hex_string = content
             .iter()
-            .map(|b| format!("0x{:02X}", b))
+            .map(|b| format!("\\x{:02X}", b))
             .collect::<Vec<_>>()
-            .join(" ");
+            .join("");
         Self::Bytes {
             content,
             preview: hex_string,

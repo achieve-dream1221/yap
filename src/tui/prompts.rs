@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Rect},
@@ -40,7 +42,7 @@ pub enum DisconnectPrompt {
 )]
 #[repr(u8)]
 pub enum DeleteMacroPrompt {
-    #[strum(props(color = 0xFF0000))]
+    #[strum(props(color = "red"))]
     Delete,
     Cancel,
 }
@@ -67,8 +69,8 @@ pub trait PromptTable: VariantNames + VariantArray + EnumProperty + Into<u8> + T
         let rows: Vec<Row> = variant_iter
             .zip(str_iter)
             .map(|(variant, name)| {
-                let style = if let Some(color) = variant.get_int("color") {
-                    Style::from(Color::from_u32(color as u32))
+                let style = if let Some(color) = variant.get_str("color") {
+                    Style::from(Color::from_str(color).unwrap())
                 } else {
                     Style::new()
                 };
