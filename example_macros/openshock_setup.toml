@@ -1,0 +1,30 @@
+name = "OpenShock Setup"
+
+[[macro]]
+name = "Factory Reset"
+content = "factoryreset"
+
+[[macro]]
+name = "Echo Off"
+content = "echo false"
+
+[[macro]]
+name = "Keep-Alive Off"
+category = "OpenShock Setup"
+content = "keepalive false"
+
+[[macro]]
+name = "Setup Authtoken"
+content = "authtoken "
+
+[[macro]]
+name = "Setup Networks"
+content = "networks "
+
+[[macro]]
+name = "CaiX Vib (ID 12345, 0.5s)"
+content = 'rftransmit {"model":"caixianlin","id":12345,"type":"vibrate","intensity":5,"durationMs":500}'
+
+[[macro]]
+name = "CaiX Vib (ID 12345, 1s)"
+content = 'rftransmit {"model":"caixianlin","id":12345,"type":"vibrate","intensity":5,"durationMs":1000}'

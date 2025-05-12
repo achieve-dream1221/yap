@@ -552,12 +552,18 @@ impl App {
             (None, _) => (format!("{macro_tag}"), Color::Green),
         };
 
+        let macro_line_ending = macro_content
+            .line_ending
+            .as_ref()
+            .map(CompactString::as_bytes)
+            .unwrap_or(self.buffer.rx_tx_ending_bytes());
+
         match macro_content {
             _ if macro_content.is_empty() => (),
             _ if macro_content.has_bytes => {
                 let content = macro_content.unescape_bytes();
                 self.serial
-                    .send_bytes(content.clone(), Some(self.buffer.rx_tx_ending_bytes()))
+                    .send_bytes(content.clone(), Some(macro_line_ending))
                     .unwrap();
 
                 debug!("{}", format!("Sending Macro Bytes: {:02X?}", content));
@@ -565,9 +571,9 @@ impl App {
             }
             _ => {
                 self.serial
-                    .send_str(&macro_content.inner, self.buffer.rx_tx_ending_bytes(), true)
+                    .send_str(&macro_content.content, macro_line_ending, true)
                     .unwrap();
-                self.buffer.append_user_text(&macro_content.inner, true);
+                self.buffer.append_user_text(&macro_content.content, true);
 
                 debug!(
                     "{}",
@@ -675,7 +681,6 @@ impl App {
             key!(delete) | key!(backspace) if self.user_input.all_text_selected => {
                 self.user_input.clear();
             }
-
             key!(pageup) => self.buffer.scroll_page_up(),
             key!(pagedown) => self.buffer.scroll_page_down(),
             // KeyCode::F(f_key) if ctrl_pressed && shift_pressed => {
@@ -727,9 +732,7 @@ impl App {
                     Ok(somes) if self.serial_healthy => {
                         if !somes.is_empty() {
                             self.macros_tx_queue.extend(
-                                somes
-                                    .into_iter()
-                                    .map(|(tag, string)| (Some(key_combo), tag.clone())),
+                                somes.into_iter().map(|tag| (Some(key_combo), tag.clone())),
                             );
                             self.tx.send(Tick::MacroTx.into()).unwrap();
                         }
@@ -737,7 +740,7 @@ impl App {
                     Ok(somes) => {
                         let unsent = somes
                             .into_iter()
-                            .map(|(tag, string)| tag.title.clone())
+                            .map(|tag| tag.name.clone())
                             .map(|s| Span::raw(s).italic())
                             .map(|s| tiny_vec!([Span;3] => span!("\""), s, span!("\"")))
                             // TODO fully qualified syntax
@@ -751,7 +754,7 @@ impl App {
                         // self.notifs.notify_str(format!(" {missed}"), Color::Yellow);
                         let missed_iter = nones
                             .into_iter()
-                            .map(|km| km.title.clone())
+                            .map(|km| km.name.clone())
                             .map(|s| Span::raw(s).italic())
                             .map(|s| tiny_vec!([Span;3] => span!("\""), s, span!("\"")))
                             // TODO fully qualified syntax
@@ -873,10 +876,21 @@ impl App {
                     .map_err(|e| e.to_string())
                     .unwrap();
             }
-            unknown => {
-                warn!("Unknown keybind: {unknown}");
+
+            _ if m == RELOAD_MACROS => {
+                self.macros
+                    .load_from_folder("../../example_macros")
+                    .unwrap();
                 self.notifs
-                    .notify_str(format!("Unknown keybind: \"{unknown}\""), Color::Yellow);
+                    .notify_str(format!("Reloaded Macros!"), Color::Green);
+            }
+
+            unknown => {
+                warn!("Unknown keybind action: {unknown}");
+                self.notifs.notify_str(
+                    format!("Unknown keybind action: \"{unknown}\""),
+                    Color::Yellow,
+                );
             }
         };
         Ok(())
@@ -1140,7 +1154,7 @@ impl App {
             }
             Some(PopupMenu::RenderingSettings) => {
                 self.scratch
-                    .behavior
+                    .rendering
                     .handle_input(ArrowKey::Left, &mut self.popup_table_state)
                     .unwrap();
             }
@@ -1799,7 +1813,7 @@ impl App {
                 //     Line::raw(" <     All Macros    > ").centered(),
                 //     categories_area,
                 // );
-                let categories_iter = ["All Bytes", "All Strings", "All Macros"]
+                let categories_iter = ["Has Bytes", "Strings Only", "All Macros"]
                     .iter()
                     .map(|s| *s)
                     .map(String::from)

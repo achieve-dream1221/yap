@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::str::FromStr;
 
 use crokey::KeyCombination;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+
+pub const MACRO_CHAIN_DELIMITER: &str = "~";
+pub const MACRO_CHAIN_DELIMITER_CHAR: char = '~';
 
 pub mod methods {
     pub const TOGGLE_TEXTWRAP: &str = "toggle-textwrap";
@@ -15,6 +19,7 @@ pub mod methods {
     pub const SHOW_PORTSETTINGS: &str = "show-portsettings";
     pub const SHOW_BEHAVIOR: &str = "show-behavior";
     pub const SHOW_RENDERING: &str = "show-rendering";
+    pub const RELOAD_MACROS: &str = "reload-macros";
 }
 
 static CONFIG_TOML: &str = r#"
@@ -22,7 +27,8 @@ static CONFIG_TOML: &str = r#"
 ctrl-w = "toggle-textwrap"
 ctrl-o = "toggle-dtr"
 ctrl-p = "toggle-rts"
-ctrl-e = "esp-bootloader"
+ctrl-e = "reload-macros"
+# ctrl-e = "esp-bootloader"
 ctrl-t = "toggle-timestamps"
 ctrl-m = "show-macros"
 ctrl-b = "show-behavior"
@@ -30,12 +36,12 @@ ctrl-b = "show-behavior"
 ctrl-d = "toggle-indices"
 
 [macros]
-F19 = ["Restart"]
-ctrl-r = ["Restart","Restart"]
-ctrl-f = ["Cum|Factory Reset"]
-ctrl-s = ["CaiX Vib (ID 12345, 0.5s)"]
-ctrl-g = ["OpenShock Setup|Echo Off"]
-ctrl-h = ["OpenShock Setup|Factory Reset","OpenShock Setup|Setup Authtoken","OpenShock Setup|Setup Networks"]
+F19 = "Restart"
+ctrl-r = "Restart~Restart"
+ctrl-f = "Cum|Factory Reset"
+ctrl-s = "CaiX Vib (ID 12345, 0.5s)"
+ctrl-g = "OpenShock Setup|Echo Off"
+ctrl-h = "OpenShock Setup|Factory Reset~OpenShock Setup|Setup Authtoken~OpenShock Setup|Setup Networks"
 "#;
 
 use serde::{Deserializer, Serializer};
@@ -47,7 +53,77 @@ use crate::macros::MacroNameTag;
 #[derive(Serialize, Deserialize)]
 pub struct Keybinds {
     pub keybindings: IndexMap<KeyCombination, String>,
+    #[serde(
+        serialize_with = "serialize_macros_map",
+        deserialize_with = "deserialize_macros_map"
+    )]
     pub macros: IndexMap<KeyCombination, Vec<MacroNameTag>>,
+}
+
+fn serialize_macros_map<S>(
+    map: &IndexMap<KeyCombination, Vec<MacroNameTag>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut map_ser = serializer.serialize_map(Some(map.len()))?;
+    for (k, v) in map {
+        let joined = v
+            .iter()
+            .map(|tag| tag.to_serialized_format())
+            .collect::<Vec<_>>()
+            .join(MACRO_CHAIN_DELIMITER);
+        map_ser.serialize_entry(k, &joined)?;
+    }
+    map_ser.end()
+}
+
+fn deserialize_macros_map<'de, D>(
+    deserializer: D,
+) -> Result<IndexMap<KeyCombination, Vec<MacroNameTag>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{MapAccess, Visitor};
+    use std::fmt;
+
+    struct MacrosMapVisitor;
+
+    impl<'de> Visitor<'de> for MacrosMapVisitor {
+        type Value = IndexMap<KeyCombination, Vec<MacroNameTag>>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a map from key combination to delimited macro names")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut result = IndexMap::new();
+
+            while let Some((key, value)) = map.next_entry::<KeyCombination, String>()? {
+                let tags = if value.is_empty() {
+                    Vec::new()
+                } else {
+                    value
+                        .split(MACRO_CHAIN_DELIMITER_CHAR)
+                        .map(|s| {
+                            MacroNameTag::from_str(s).map_err(|_| {
+                                serde::de::Error::custom(format!("Invalid MacroNameTag: '{}'", s))
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                };
+                result.insert(key, tags);
+            }
+            Ok(result)
+        }
+    }
+
+    deserializer.deserialize_map(MacrosMapVisitor)
 }
 
 impl Keybinds {

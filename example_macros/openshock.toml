@@ -1,0 +1,26 @@
+name = "OpenShock"
+
+[[macro]]
+name = "Version"
+category = "OpenShock"
+content = "version"
+
+[[macro]]
+name = "Restart"
+category = "OpenShock"
+content = "restart"
+
+[[macro]]
+name = "System Info"
+category = "OpenShock"
+content = "sysinfo"
+
+[[macro]]
+name = "Get Config (JSON)"
+category = "OpenShock"
+content = "jsonconfig "
+
+[[macro]]
+name = "Get Config (Raw)"
+category = "OpenShock"
+content = "rawconfig "

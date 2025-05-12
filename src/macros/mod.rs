@@ -1,12 +1,17 @@
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
+    f32::consts::PI,
     fmt,
+    fs::FileType,
+    path::Path,
 };
 
 use bstr::ByteVec;
-use compact_str::CompactString;
+use camino::Utf8PathBuf;
+use compact_str::{CompactString, format_compact};
 use crokey::KeyCombination;
+use fs_err::{self as fs, DirEntry};
 use indexmap::IndexMap;
 use ratatui::{
     layout::Constraint,
@@ -14,6 +19,7 @@ use ratatui::{
     text::Text,
     widgets::{Cell, HighlightSpacing, Row, ScrollbarState, Table},
 };
+use tracing::{error, info};
 use tui_input::Input;
 
 use crate::{
@@ -23,7 +29,7 @@ use crate::{
 mod macro_ref;
 mod tui;
 
-pub use macro_ref::MacroNameTag;
+// pub use macro_ref::MacroNameTag;
 // pub use tui::{MacroEditSelected, MacroEditing};
 
 // #[derive(Debug)]
@@ -45,7 +51,7 @@ pub enum MacroCategorySelection<'a> {
 // TODO search when typing
 
 pub struct Macros {
-    pub all: BTreeMap<MacroNameTag, MacroString>,
+    pub all: BTreeMap<MacroNameTag, MacroContent>,
 
     // pub ui_state: MacrosPrompt,
     // ["All Bytes", "All Strings", "All Macros", "OpenShock"]
@@ -61,123 +67,19 @@ pub struct Macros {
 impl Macros {
     pub fn new() -> Self {
         // TODO Load from disk
-        let mut test_macros = BTreeMap::new();
 
-        test_macros.insert(
-            MacroNameTag {
-                title: "Backspace".into(),
-                category: Some("OpenShock".into()),
-            },
-            MacroString::new("\\x08"),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "Mrow!".into(),
-                category: None,
-            },
-            MacroString::new("mrow"),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "Mrowwww".into(),
-                category: None,
-            },
-            MacroString::new("mrowwww"),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "Version".into(),
-                category: Some("OpenShock".into()),
-            },
-            MacroString::new("version"),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "Factory Reset".into(),
-                category: Some("OpenShock Setup".into()),
-            },
-            MacroString::new("factoryreset"),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "Restart".into(),
-                category: Some("OpenShock".into()),
-            },
-            MacroString::new("restart"),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "System Info".into(),
-                category: Some("OpenShock".into()),
-            },
-            MacroString::new("sysinfo"),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "Echo Off".into(),
-                category: Some("OpenShock Setup".into()),
-            },
-            MacroString::new("echo false"),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "Keep-Alive Off".into(),
-                category: Some("OpenShock Setup".into()),
-            },
-            MacroString::new("keepalive false"),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "Setup Authtoken".into(),
-                category: Some("OpenShock Setup".into()),
-            },
-            MacroString::new("authtoken "),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "Setup Networks".into(),
-                category: Some("OpenShock Setup".into()),
-            },
-            MacroString::new("networks "),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "Get Config (JSON)".into(),
-                category: Some("OpenShock".into()),
-            },
-            MacroString::new("jsonconfig "),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "Get Config (Raw)".into(),
-                category: Some("OpenShock".into()),
-            },
-            MacroString::new("rawconfig "),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "CaiX Vib (ID 12345, 0.5s)".into(),
-                category: Some("OpenShock Setup".into()),
-            },
-            MacroString::new(r#"rftransmit {"model":"caixianlin","id":12345,"type":"vibrate","intensity":5,"durationMs":500}"#),
-        );
-        test_macros.insert(
-            MacroNameTag {
-                title: "CaiX Vib (ID 12345, 1s)".into(),
-                category: Some("OpenShock Setup".into()),
-            },
-            MacroString::new(r#"rftransmit {"model":"caixianlin","id":12345,"type":"vibrate","intensity":5,"durationMs":1000}"#),
-        );
-
-        Self {
+        let mut macros = Self {
             // scrollbar_state: ScrollbarState::new(test_macros.len()),
-            all: test_macros,
+            all: BTreeMap::new(),
             // tx_queue: Vec::new(),
             // ui_state: MacrosPrompt::None,
             search_input: Input::default(),
             categories_selector: SingleLineSelectorState::new().with_selected(2),
             // categories: BTreeSet::new(),
-        }
+        };
+        macros.load_from_folder("../../example_macros").unwrap();
+
+        macros
     }
     pub fn is_empty(&self) -> bool {
         self.all.is_empty()
@@ -205,21 +107,23 @@ impl Macros {
     }
     pub fn category_filtered_macros(
         &self,
-    ) -> impl DoubleEndedIterator<Item = (&MacroNameTag, &MacroString)> {
+    ) -> impl DoubleEndedIterator<Item = (&MacroNameTag, &MacroContent)> {
         let category = self.selected_category();
 
-        self.all.iter().filter(move |(tag, string)| match category {
-            MacroCategorySelection::AllMacros => true,
-            MacroCategorySelection::StringsOnly => !string.has_bytes,
-            MacroCategorySelection::WithBytes => string.has_bytes,
-            MacroCategorySelection::NoCategory => tag.category.is_none(),
-            MacroCategorySelection::Category(cat) => tag.category.as_deref() == Some(cat),
-        })
+        self.all
+            .iter()
+            .filter(move |(tag, content)| match category {
+                MacroCategorySelection::AllMacros => true,
+                MacroCategorySelection::StringsOnly => !content.has_bytes,
+                MacroCategorySelection::WithBytes => content.has_bytes,
+                MacroCategorySelection::NoCategory => tag.category.is_none(),
+                MacroCategorySelection::Category(cat) => tag.category.as_deref() == Some(cat),
+            })
     }
     pub fn as_table(&self, keybinds: &Keybinds, fuzzy_macro_name_match: bool) -> Table<'_> {
         let filtered = self
             .category_filtered_macros()
-            .map(|m| (m.0.title.as_str(), m))
+            .map(|m| (m.0.name.as_str(), m))
             .map(|(title, (tag, string))| {
                 let macro_string = keybinds
                     .macros
@@ -268,13 +172,13 @@ impl Macros {
         key_combo: KeyCombination,
         macro_keybinds: &'a IndexMap<KeyCombination, Vec<MacroNameTag>>,
         fuzzy_macro_name_match: bool,
-    ) -> Result<Vec<(&'a MacroNameTag, &'a MacroString)>, Option<Vec<&'a MacroNameTag>>> {
+    ) -> Result<Vec<&'a MacroNameTag>, Option<Vec<&'a MacroNameTag>>> {
         // ) -> Result<Vec<usize>, Option<Vec<&KeybindMacro>>> {
         let Some(v) = macro_keybinds.get(&key_combo) else {
             return Err(None);
         };
 
-        let mut somes: Vec<(&MacroNameTag, &MacroString)> = Vec::new();
+        let mut somes: Vec<&MacroNameTag> = Vec::new();
         let mut nones: Vec<&MacroNameTag> = Vec::new();
 
         v.iter().for_each(|config_tag| {
@@ -282,10 +186,10 @@ impl Macros {
                 .all
                 .iter()
                 // .enumerate()
-                .find(|(tag, string)| config_tag.eq(tag));
+                .find(|(tag, content)| config_tag.eq(tag));
             match eq_result {
-                Some(macro_ref) => {
-                    somes.push(macro_ref);
+                Some((tag, content)) => {
+                    somes.push(tag);
                     return;
                 }
                 None if fuzzy_macro_name_match => (),
@@ -299,9 +203,9 @@ impl Macros {
                 .all
                 .iter()
                 // .enumerate()
-                .find(|(tag, string)| config_tag.eq_fuzzy(tag));
+                .find(|(tag, content)| config_tag.eq_fuzzy(tag));
             match eq_result {
-                Some(macro_ref) => somes.push(macro_ref),
+                Some((tag, content)) => somes.push(tag),
                 None => nones.push(config_tag),
             }
         });
@@ -318,6 +222,138 @@ impl Macros {
             .remove(macro_ref)
             .expect("attempted removal of non-existant element");
     }
+    pub fn load_from_folder<P: AsRef<Path>>(&mut self, folder: P) -> color_eyre::Result<()> {
+        // TODO never return on error, just log and notify user to check logs for details.
+        fn visit_dir(
+            dir: &Path,
+            new_macros: &mut BTreeMap<MacroNameTag, MacroContent>,
+        ) -> color_eyre::Result<()> {
+            for entry in fs::read_dir(dir)? {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        error!("Folder iteration error: {e}");
+                        return Err(e.into());
+                    }
+                };
+
+                let metadata = match entry.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(e) => {
+                        error!("Failed to get metadata for {}: {e}", entry.path().display());
+                        return Err(e.into());
+                    }
+                };
+
+                if metadata.is_dir() {
+                    // Recurse into subdirectory
+                    if let Err(e) = visit_dir(&entry.path(), new_macros) {
+                        error!(
+                            "Error traversing subdirectory {}: {e}",
+                            entry.path().display()
+                        );
+                        // propagate error for now
+                        return Err(e);
+                    }
+                    continue;
+                }
+
+                if !metadata.is_file() {
+                    continue;
+                }
+
+                let file_name = Utf8PathBuf::from_path_buf(entry.path()).unwrap();
+                if let Some(extension) = file_name.extension() {
+                    if extension != "toml" {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+
+                let mut file = match load_macros_from_path(&entry.path()) {
+                    Ok(file) => file,
+                    Err(e) => {
+                        error!(
+                            "Failed to read macros from file: {}. {e}",
+                            entry.path().display()
+                        );
+                        continue;
+                    }
+                };
+
+                if let Some(fallback_category) = &file.category_name {
+                    file.macros
+                        .iter_mut()
+                        .filter(|m| m.category.is_none())
+                        .for_each(|m| m.category = Some(fallback_category.to_owned()));
+                } else {
+                    file.macros
+                        .iter_mut()
+                        .filter(|m| m.category.is_none())
+                        .for_each(|m| m.category = Some(file_name.file_stem().unwrap().into()));
+                }
+
+                for ser_macro in file.macros {
+                    let (mut tag, content) = ser_macro.into_tag_and_content();
+
+                    if let Some(category) = &mut tag.category {
+                        if category.trim().is_empty() {
+                            tag.category = None;
+                        }
+                    }
+
+                    let old = new_macros.insert(tag, content);
+                    if old.is_some() {
+                        // TODO don't panic
+                        panic!("Duplicate found!")
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        let mut new_macros = BTreeMap::new();
+        visit_dir(folder.as_ref(), &mut new_macros)?;
+        self.all = new_macros;
+        Ok(())
+    }
+}
+#[derive(Debug, serde::Deserialize)]
+struct MacroFile {
+    #[serde(default)]
+    #[serde(alias = "name")]
+    #[serde(alias = "category")]
+    category_name: Option<CompactString>,
+    #[serde(rename = "macro")]
+    macros: Vec<SerializedMacro>,
+}
+#[derive(Debug, serde::Deserialize)]
+struct SerializedMacro {
+    name: CompactString,
+    category: Option<CompactString>,
+    content: CompactString,
+    line_ending: Option<CompactString>,
+}
+impl SerializedMacro {
+    fn into_tag_and_content(self) -> (MacroNameTag, MacroContent) {
+        let SerializedMacro {
+            name,
+            category,
+            content,
+            line_ending,
+        } = self;
+
+        (
+            MacroNameTag { name, category },
+            MacroContent::new_with_line_ending(&content, line_ending),
+        )
+    }
+}
+fn load_macros_from_path(path: &Path) -> color_eyre::Result<MacroFile> {
+    let file = toml::from_str(fs_err::read_to_string(path)?.as_str())?;
+
+    Ok(file)
 }
 
 // #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -330,30 +366,59 @@ impl Macros {
 // }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct MacroString {
-    pub inner: CompactString,
+pub struct MacroNameTag {
+    pub name: CompactString,
+    pub category: Option<CompactString>,
+}
+impl MacroNameTag {
+    pub fn to_serialized_format(&self) -> CompactString {
+        if let Some(cat) = &self.category {
+            format_compact!("{}|{}", cat, self.name)
+        } else {
+            self.name.clone()
+        }
+    }
+}
+#[derive(
+    Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub struct MacroContent {
+    pub content: CompactString,
     pub has_bytes: bool,
-} //maybe have has_bytes? dunno yet
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_ending: Option<CompactString>,
+}
 
-impl MacroString {
-    pub fn new<S: AsRef<str>>(inner: S) -> Self {
+impl MacroContent {
+    pub fn new<S: AsRef<str>>(value: S) -> Self {
         Self {
-            has_bytes: inner.as_ref().has_escaped_bytes(),
-            inner: inner.as_ref().into(),
+            has_bytes: value.as_ref().has_escaped_bytes(),
+            content: value.as_ref().into(),
+            line_ending: None,
+        }
+    }
+    pub fn new_with_line_ending<S: AsRef<str>>(
+        value: S,
+        line_ending: Option<CompactString>,
+    ) -> Self {
+        Self {
+            has_bytes: value.as_ref().has_escaped_bytes(),
+            content: value.as_ref().into(),
+            line_ending,
         }
     }
     pub fn update(&mut self, new: CompactString) {
-        self.inner = new;
-        self.has_bytes = self.inner.has_escaped_bytes();
+        self.content = new;
+        self.has_bytes = self.content.has_escaped_bytes();
     }
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.content.is_empty()
     }
     pub fn unescape_bytes(&self) -> Vec<u8> {
-        Vec::unescape_bytes(&self.inner)
+        Vec::unescape_bytes(&self.content)
     }
     pub fn as_str(&self) -> &str {
-        &self.inner
+        &self.content
     }
 }
 

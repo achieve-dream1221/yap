@@ -1,0 +1,13 @@
+[[macro]]
+name = "Backspace"
+category = "OpenShock"
+content = '\x08'
+line_ending = ""
+
+[[macro]]
+name = "Mrow!"
+content = "mrow"
+
+[[macro]]
+name = "Mrowwww"
+content = "mrowwww"
