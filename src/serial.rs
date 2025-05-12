@@ -9,6 +9,7 @@ use std::{
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use bstr::ByteVec;
 use serde::{Deserialize, Serializer};
 use serde_inline_default::serde_inline_default;
 use serialport::{
@@ -375,9 +376,13 @@ impl SerialHandle {
             .send(SerialCommand::TxBuffer(input))
             .map_err(|_| YapError::NoSerialWorker)
     }
-    pub fn send_str(&self, input: &str, line_ending: &[u8]) -> YapResult<()> {
+    pub fn send_str(&self, input: &str, line_ending: &[u8], unescape_bytes: bool) -> YapResult<()> {
         // debug!("Outputting to serial: {input}");
-        let buffer = input.as_bytes().to_owned();
+        let buffer = if unescape_bytes {
+            Vec::unescape_bytes(input)
+        } else {
+            input.as_bytes().to_owned()
+        };
         self.send_bytes(buffer, Some(line_ending))
     }
     pub fn read_signals(&self) -> YapResult<()> {

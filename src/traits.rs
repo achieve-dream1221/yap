@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 
+use bstr::ByteVec;
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -198,5 +199,27 @@ impl ToggleBool for bool {
     fn flip(&mut self) -> bool {
         *self = !*self;
         *self
+    }
+}
+
+pub trait HasEscapedBytes {
+    fn has_escaped_bytes(&self) -> bool;
+}
+
+impl HasEscapedBytes for str {
+    /// Returns `true` only if the given &str contains escaped bytes.
+    ///
+    /// Note: unescapes whole to check, so isn't the cheapest check yet.
+    fn has_escaped_bytes(&self) -> bool {
+        // Fast path: if not even a single backslash exists, then bail.
+        if memchr::memchr(b'\\', self.as_bytes()).is_none() {
+            return false;
+        }
+
+        // Otherwise, directly compare the results of a full unescape.
+
+        let unescaped = Vec::unescape_bytes(self);
+
+        unescaped != self.as_bytes()
     }
 }

@@ -3,32 +3,30 @@ use std::fmt;
 use compact_str::{CompactString, ToCompactString, format_compact};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::Macro;
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct MacroRef {
-    pub category: Option<CompactString>,
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MacroNameTag {
     pub title: CompactString,
+    pub category: Option<CompactString>,
 }
 
-impl From<&Macro> for MacroRef {
-    fn from(value: &Macro) -> Self {
-        Self {
-            category: value.category.clone(),
-            title: value.title.clone(),
-        }
-    }
-}
+// impl From<&OwnedMacro> for MacroNameTag {
+//     fn from(value: &OwnedMacro) -> Self {
+//         Self {
+//             category: value.category.clone(),
+//             title: value.title.clone(),
+//         }
+//     }
+// }
 
-impl From<Macro> for MacroRef {
-    fn from(value: Macro) -> Self {
-        Self::from(&value)
-    }
-}
+// impl From<OwnedMacro> for MacroNameTag {
+//     fn from(value: OwnedMacro) -> Self {
+//         Self::from(&value)
+//     }
+// }
 
 const MACRO_DELIMITER: char = '|';
 
-impl fmt::Display for MacroRef {
+impl fmt::Display for MacroNameTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(ref cat) = self.category {
             write!(f, "\"{}\" in \"{cat}\"", self.title)
@@ -38,18 +36,18 @@ impl fmt::Display for MacroRef {
     }
 }
 
-impl MacroRef {
-    pub fn eq_macro(&self, other: &Macro) -> bool {
-        self.title == other.title && self.category == other.category
-    }
-    pub fn eq_macro_fuzzy(&self, other: &Macro) -> bool {
+impl MacroNameTag {
+    // pub fn eq_macro(&self, other: &OwnedMacro) -> bool {
+    //     self.title == other.title && self.category == other.category
+    // }
+    pub fn eq_fuzzy(&self, other: &MacroNameTag) -> bool {
         self.title == other.title
     }
 }
 
 // TODO allow chaining with ;
 
-impl<'de> Deserialize<'de> for MacroRef {
+impl<'de> Deserialize<'de> for MacroNameTag {
     /// Example inputs that can be deserialized:
     ///
     /// - `"lorem|ipsum"` → `MacroRef { category: Some("lorem".into()), title: "ipsum".into() }`
@@ -71,11 +69,11 @@ impl<'de> Deserialize<'de> for MacroRef {
             _ => return Err(serde::de::Error::custom("invalid format for MacroRef")),
         };
 
-        Ok(MacroRef { category, title })
+        Ok(MacroNameTag { category, title })
     }
 }
 
-impl Serialize for MacroRef {
+impl Serialize for MacroNameTag {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,

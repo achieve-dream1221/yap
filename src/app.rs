@@ -40,9 +40,7 @@ use crate::{
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     keybinds::{Keybinds, methods::*},
-    macros::{
-        Macro, MacroContent, MacroEditSelected, MacroEditing, MacroRef, Macros, MacrosPrompt,
-    },
+    macros::{MacroContent, MacroEditSelected, MacroEditing, MacroNameTag, Macros, MacrosPrompt},
     notifications::{
         EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
     },
@@ -223,7 +221,7 @@ pub struct App {
     failed_send_at: Option<Instant>,
 
     macros: Macros,
-    macros_tx_queue: VecDeque<(Option<KeyCombination>, MacroRef)>,
+    macros_tx_queue: VecDeque<(Option<KeyCombination>, MacroNameTag)>,
 
     settings: Settings,
     scratch: Settings,
@@ -530,29 +528,34 @@ impl App {
         self.state = RunningState::Finished;
     }
     fn send_one_macro(&mut self) {
+        if !self.serial_healthy {
+            self.macros_tx_queue.clear();
+            return;
+        }
         let Some((key_combo_opt, macro_ref)) = self.macros_tx_queue.pop_front() else {
             return;
         };
 
-        let macro_binding = self
+        let (macro_tag, macro_content) = self
             .macros
             .all
             .iter()
-            .find(|m| macro_ref.eq_macro(m))
+            .find(|(tag, _string)| &&macro_ref == tag)
             .expect("Failed to find referenced Macro");
 
-        let (notif_text, notif_color) = match (key_combo_opt, &macro_binding.content) {
-            (_, MacroContent::Empty) => {
+        let (notif_text, notif_color) = match (key_combo_opt, macro_content) {
+            (_, _) if macro_content.is_empty() => {
                 ("Macro {macro_binding} is empty!".to_owned(), Color::Yellow)
             }
-            (Some(a), _) => (format!("{macro_binding} [{a}]"), Color::Green),
+            (Some(a), _) => (format!("{macro_tag} [{a}]"), Color::Green),
 
-            (None, _) => (format!("{macro_binding}"), Color::Green),
+            (None, _) => (format!("{macro_tag}"), Color::Green),
         };
 
-        match &macro_binding.content {
-            MacroContent::Empty => (),
-            MacroContent::Bytes { content, preview } => {
+        match macro_content {
+            _ if macro_content.is_empty() => (),
+            _ if macro_content.has_bytes => {
+                let content = macro_content.unescape_bytes();
                 self.serial
                     .send_bytes(content.clone(), Some(self.buffer.rx_tx_ending_bytes()))
                     .unwrap();
@@ -560,13 +563,19 @@ impl App {
                 debug!("{}", format!("Sending Macro Bytes: {:02X?}", content));
                 self.buffer.append_user_bytes(&content, true);
             }
-            MacroContent::Text(text) => {
+            _ => {
                 self.serial
-                    .send_str(text, self.buffer.rx_tx_ending_bytes())
+                    .send_str(&macro_content.inner, self.buffer.rx_tx_ending_bytes(), true)
                     .unwrap();
-                self.buffer.append_user_text(text, true);
+                self.buffer.append_user_text(&macro_content.inner, true);
 
-                debug!("{}", format!("Sending Macro Text: {}", text.escape_debug()));
+                debug!(
+                    "{}",
+                    format!(
+                        "Sending Macro Text: {}",
+                        macro_content.as_str().escape_debug()
+                    )
+                );
             }
         };
 
@@ -595,10 +604,7 @@ impl App {
                             .input
                             .handle_event(&ratatui::crossterm::event::Event::Key(key));
                     }
-                    MacroEditSelected::Content
-                        if matches!(editing.scratch_macro.content, MacroContent::Bytes { .. })
-                            && !editing.recording =>
-                    {
+                    MacroEditSelected::Content if editing.bytes_shown && !editing.recording => {
                         // Only allow hex digits, space, and backspace/del/left/right events, filter out all else.
                         let is_valid_hex_char = match key.code {
                             KeyCode::Char(c) => c.is_ascii_hexdigit() || c == ' ',
@@ -716,10 +722,10 @@ impl App {
                     return;
                 };
                 // begin editing macro
-                let macro_binding = self.macros.category_filtered_macros().nth(index).unwrap();
-                let macro_ref: MacroRef = macro_binding.into();
+                let (tag, string) = self.macros.category_filtered_macros().nth(index).unwrap();
+                // let macro_ref: MacroNameTag = tag.clone();
                 self.macros.ui_state =
-                    MacrosPrompt::AddEdit(MacroEditing::editing(macro_binding.clone()));
+                    MacrosPrompt::AddEdit(MacroEditing::editing(tag.clone(), string.clone()));
             }
             key!(ctrl - n)
                 if self.popup == Some(PopupMenu::Macros)
@@ -749,19 +755,20 @@ impl App {
                 let Some(index) = self.popup_table_state.selected() else {
                     return;
                 };
-                let macro_binding = self.macros.category_filtered_macros().nth(index).unwrap();
-                let macro_ref = macro_binding.into();
+                let (tag, string) = self.macros.category_filtered_macros().nth(index).unwrap();
+                let tag_clone = tag.clone();
+                // let macro_ref = macro_binding.into();
                 match (&self.popup, &self.macros.ui_state) {
                     (Some(PopupMenu::Macros), MacrosPrompt::None)
                     | (Some(PopupMenu::Macros), MacrosPrompt::Delete) => {
-                        self.macros.remove_macro_by_ref(&macro_ref);
+                        self.macros.remove_macro(&tag_clone);
                         if self.macros.is_empty() {
                             self.macros.categories_selector.active = false;
                             self.popup_table_state.select(None);
                             self.popup_single_line_state.active = true;
                         }
                         self.notifs
-                            .notify_str(format!("Removed Macro: {}", macro_ref.title), Color::Red);
+                            .notify_str(format!("Removed Macro: {}", tag_clone), Color::Red);
                     }
                     _ => (),
                 }
@@ -776,13 +783,14 @@ impl App {
                 let Some(index) = self.popup_table_state.selected() else {
                     return;
                 };
-                let macro_binding = self.macros.category_filtered_macros().nth(index).unwrap();
-                let macro_ref: MacroRef = macro_binding.into();
+                let (tag, string) = self.macros.category_filtered_macros().nth(index).unwrap();
+                let tag_clone = tag.clone();
+                // let macro_ref: MacroNameTag = macro_binding.into();
                 if matches!(self.macros.ui_state, MacrosPrompt::None) {
                     self.macros.ui_state = MacrosPrompt::Delete;
                     self.table_state.select_first();
                 } else if matches!(self.macros.ui_state, MacrosPrompt::Delete) {
-                    self.macros.remove_macro_by_ref(&macro_ref);
+                    self.macros.remove_macro(&tag_clone);
                     if self.macros.is_empty() {
                         self.macros.categories_selector.active = false;
                         self.popup_table_state.select(None);
@@ -790,7 +798,7 @@ impl App {
                     }
                     self.macros.ui_state = MacrosPrompt::None;
                     self.notifs
-                        .notify_str(format!("Removed Macro: {}", macro_ref.title), Color::Red);
+                        .notify_str(format!("Removed Macro: {}", tag_clone), Color::Red);
                 }
             }
             key!(pageup) => self.buffer.scroll_page_up(),
@@ -868,8 +876,7 @@ impl App {
                             self.macros_tx_queue.extend(
                                 somes
                                     .into_iter()
-                                    .map(MacroRef::from)
-                                    .map(|m| (Some(key_combo), m)),
+                                    .map(|(tag, string)| (Some(key_combo), tag.clone())),
                             );
                             self.tx.send(Tick::MacroTx.into()).unwrap();
                         }
@@ -877,7 +884,7 @@ impl App {
                     Ok(somes) => {
                         let unsent = somes
                             .into_iter()
-                            .map(|km| km.title.clone())
+                            .map(|(tag, string)| tag.title.clone())
                             .map(|s| Span::raw(s).italic())
                             .map(|s| tiny_vec!([Span;3] => span!("\""), s, span!("\"")))
                             // TODO fully qualified syntax
@@ -1141,17 +1148,17 @@ impl App {
                         editing.selected_element.rotate_prev(),
                     ) {
                         (M::Category, M::Title) => {
-                            editing.scratch_macro.category = if editing.input.value().is_empty() {
+                            editing.scratch_nametag.category = if editing.input.value().is_empty() {
                                 None
                             } else {
                                 Some(editing.input.value().into())
                             };
-                            editing.input = editing.scratch_macro.title.to_string().into();
+                            editing.input = editing.scratch_nametag.title.to_string().into();
                         }
                         (M::ContentType, M::Category) => {
                             // editing.scratch_macro.title = editing.input.value().into();
                             editing.input = editing
-                                .scratch_macro
+                                .scratch_nametag
                                 .category
                                 .as_ref()
                                 .map(CompactString::as_str)
@@ -1293,9 +1300,9 @@ impl App {
                         editing.selected_element.rotate_next(),
                     ) {
                         (M::Title, M::Category) => {
-                            editing.scratch_macro.title = editing.input.value().into();
+                            editing.scratch_nametag.title = editing.input.value().into();
                             editing.input = editing
-                                .scratch_macro
+                                .scratch_nametag
                                 .category
                                 .as_ref()
                                 .map(CompactString::as_str)
@@ -1303,7 +1310,7 @@ impl App {
                                 .into();
                         }
                         (M::Category, M::ContentType) => {
-                            editing.scratch_macro.category = if editing.input.value().is_empty() {
+                            editing.scratch_nametag.category = if editing.input.value().is_empty() {
                                 None
                             } else {
                                 Some(editing.input.value().into())
@@ -1322,7 +1329,7 @@ impl App {
                             editing.consume_input();
                         }
                         (M::Finish, M::Title) => {
-                            editing.input = editing.scratch_macro.title.to_string().into();
+                            editing.input = editing.scratch_nametag.title.to_string().into();
                         }
 
                         _ => (),
@@ -1490,9 +1497,19 @@ impl App {
                     .update_settings(self.scratch.last_port_settings.clone())
                     .unwrap();
 
-                self.settings.save().unwrap();
+                if matches!(self.menu, Menu::Terminal(_)) {
+                    if self.settings.behavior.retain_port_setting_changes {
+                        self.settings.save().unwrap();
+                        self.notifs.notify_str("Port settings saved!", Color::Green);
+                    } else {
+                        self.notifs
+                            .notify_str("Port settings applied!", Color::Gray);
+                    }
+                } else {
+                    self.settings.save().unwrap();
+                    self.notifs.notify_str("Port settings saved!", Color::Green);
+                }
                 self.dismiss_popup();
-                self.notifs.notify_str("Port settings saved!", Color::Green);
                 return;
             }
             Some(PopupMenu::BehaviorSettings) => {
@@ -1522,8 +1539,9 @@ impl App {
                 let Some(index) = self.popup_table_state.selected() else {
                     unreachable!();
                 };
-                let macro_binding = self.macros.category_filtered_macros().nth(index).unwrap();
-                let macro_ref: MacroRef = macro_binding.into();
+                let (tag, string) = self.macros.category_filtered_macros().nth(index).unwrap();
+                let tag = tag.to_owned();
+                // let macro_ref: MacroNameTag = macro_binding.into();
                 match &self.macros.ui_state {
                     MacrosPrompt::None if ctrl_pressed || shift_pressed => {
                         if !self.serial_healthy {
@@ -1531,12 +1549,12 @@ impl App {
                             return;
                         }
                         // Putting macro content into buffer.
-                        match &macro_binding.content {
-                            MacroContent::Empty => (),
-                            MacroContent::Bytes { content, preview } => {
+                        match string {
+                            _ if string.is_empty() => (),
+                            _ if string.has_bytes => {
                                 todo!()
                             }
-                            MacroContent::Text(text) => {
+                            text => {
                                 self.user_input.clear();
                                 self.user_input.input_box = text.as_str().into();
                                 self.dismiss_popup();
@@ -1549,12 +1567,12 @@ impl App {
                             self.notifs.notify_str("Port isn't ready!", Color::Red);
                             return;
                         }
-                        match &macro_binding.content {
-                            MacroContent::Empty => {
+                        match string {
+                            _ if string.is_empty() => {
                                 self.notifs.notify_str("Macro is empty!", Color::Yellow)
                             }
-                            MacroContent::Bytes { .. } | MacroContent::Text(_) => {
-                                self.macros_tx_queue.push_back((None, macro_binding.into()));
+                            _ => {
+                                self.macros_tx_queue.push_back((None, tag));
                                 self.tx.send(Tick::MacroTx.into()).unwrap();
                             }
                         };
@@ -1565,16 +1583,14 @@ impl App {
                         match DeleteMacroPrompt::try_from(index).unwrap() {
                             DeleteMacroPrompt::Cancel => self.macros.ui_state = MacrosPrompt::None,
                             DeleteMacroPrompt::Delete => {
-                                self.macros.remove_macro_by_ref(&macro_ref);
+                                self.macros.remove_macro(&tag);
                                 if self.macros.is_empty() {
                                     self.macros.categories_selector.active = false;
                                     self.popup_table_state.select(None);
                                     self.popup_single_line_state.active = true;
                                 }
-                                self.notifs.notify_str(
-                                    format!("Removed Macro: {}", macro_ref.title),
-                                    Color::Red,
-                                );
+                                self.notifs
+                                    .notify_str(format!("Removed Macro: {}", tag), Color::Red);
                                 self.macros.ui_state = MacrosPrompt::None;
                             }
                         }
@@ -1644,7 +1660,11 @@ impl App {
 
                     if self.settings.behavior.fake_shell {
                         self.serial
-                            .send_str(user_input, self.buffer.rx_tx_ending_bytes())
+                            .send_str(
+                                user_input,
+                                self.buffer.rx_tx_ending_bytes(),
+                                self.settings.behavior.fake_shell_unescape,
+                            )
                             .unwrap();
                         self.buffer.append_user_text(user_input, false);
                         self.user_input.history.push(user_input);
@@ -2146,8 +2166,10 @@ impl App {
                     //     .map(|i| )
                     //     .unwrap_or(&"");
 
-                    let macro_binding = self.macros.category_filtered_macros().nth(index).unwrap();
-                    let macro_preview = macro_binding.preview();
+                    let (tag, string) = self.macros.category_filtered_macros().nth(index).unwrap();
+                    // for now i guess
+                    // TOOD replace with fancy line preview
+                    let macro_preview = string.as_str();
                     let line = macro_preview.to_line().italic();
                     // let line = if matches!(macro_binding.content, MacroContent::Bytes { .. }) {
                     //     line.light_blue()
@@ -2166,7 +2188,7 @@ impl App {
                         MacrosPrompt::AddEdit(meow) => meow.render(frame, area),
                         MacrosPrompt::Delete => {
                             DeleteMacroPrompt::render_prompt_block_popup(
-                                Some(&format!("Delete Macro: \"{}\"?", macro_binding.title)),
+                                Some(&format!("Delete Macro: \"{}\"?", tag.title)),
                                 None,
                                 Style::new().red(),
                                 frame,
@@ -2382,10 +2404,20 @@ impl App {
         if self.user_input.input_box.value().is_empty() {
             // Leading space leaves room for full-width cursors.
             // TODO make binding hint dynamic (should maybe cache?)
-            let input_hint = Line::raw(" Input goes here. `Ctrl + .` for port settings.")
-                .style(input_style)
-                .dark_gray()
-                .italic();
+            let port_settings_combo = self
+                .keybinds
+                .keybindings
+                .iter()
+                .find(|(kc, m)| m.as_str() == SHOW_PORTSETTINGS)
+                .map(|(kc, m)| kc.to_compact_string())
+                .unwrap_or_else(|| CompactString::const_new("UNBOUND"));
+            let input_hint = Line::raw(format!(
+                " Input goes here. `{key}` for port settings.",
+                key = port_settings_combo
+            ))
+            .style(input_style)
+            .dark_gray()
+            .italic();
             frame.render_widget(input_hint, input_area);
             if should_position_cursor {
                 frame.set_cursor_position(input_area.as_position());

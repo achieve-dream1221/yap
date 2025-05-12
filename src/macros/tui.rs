@@ -14,22 +14,27 @@ use ratatui::{
 use ratatui_macros::{line, span, vertical};
 use tui_input::Input;
 
-use crate::{traits::LineHelpers, tui::centered_rect_size};
+use crate::{
+    traits::{LineHelpers, ToggleBool},
+    tui::centered_rect_size,
+};
 
-use super::{Macro, MacroContent, MacroRef};
+use super::{MacroContent, MacroNameTag, MacroString};
 
 #[derive(Debug, Default)]
 pub struct MacroEditing {
     // if is_some, is editing an existing macro
-    pub inner_ref: Option<MacroRef>,
+    pub inner_ref: Option<MacroNameTag>,
     pub input: Input,
 
     pub selected_element: MacroEditSelected,
 
     // Not using an enum for these to allow going from bytes->lossy string->bytes without losing anything.
-    pub scratch_macro: Macro,
+    // pub scratch_macro: Macro,
+    pub scratch_nametag: MacroNameTag,
     pub scratch_string: CompactString,
     pub scratch_bytes: Vec<u8>,
+    pub bytes_shown: bool,
     is_hex_valid: bool,
     pub scratch_keybind: Option<KeyCombination>,
     pub recording: bool,
@@ -42,29 +47,20 @@ impl MacroEditing {
             ..Default::default()
         }
     }
-    pub fn editing(macro_clone: Macro) -> Self {
+    pub fn editing(tag: MacroNameTag, content: MacroString) -> Self {
         Self {
-            inner_ref: Some(MacroRef::from(&macro_clone)),
-            input: Input::from(macro_clone.title.as_str()),
-            scratch_bytes: macro_clone
-                .as_bytes()
-                .map(Vec::from)
-                .unwrap_or_else(|| Vec::new()),
-            scratch_string: macro_clone
-                .as_str()
-                .map(CompactString::from)
-                .unwrap_or_else(|| CompactString::new("")),
-            scratch_macro: macro_clone,
+            input: Input::from(tag.title.as_str()),
+            scratch_bytes: content.unescape_bytes(),
+            scratch_string: content.as_str().into(),
+            // scratch_macro: macro_clone,
+            inner_ref: Some(tag),
             ..Default::default()
         }
     }
     pub fn content_input(&self) -> Option<Cow<'_, str>> {
-        match self.scratch_macro.content {
-            MacroContent::Empty => None,
-            MacroContent::Text(_) if !self.scratch_string.is_empty() => {
-                Some(self.scratch_string.as_str().into())
-            }
-            MacroContent::Bytes { .. } if !self.scratch_bytes.is_empty() => {
+        match self.bytes_shown {
+            false if !self.scratch_string.is_empty() => Some(self.scratch_string.as_str().into()),
+            true if !self.scratch_bytes.is_empty() => {
                 let text: String = self
                     .scratch_bytes
                     .iter()
@@ -76,11 +72,11 @@ impl MacroEditing {
         }
     }
     pub fn consume_input(&mut self) {
-        match self.scratch_macro.content {
-            MacroContent::Empty | MacroContent::Text(_) => {
+        match self.bytes_shown {
+            false => {
                 self.scratch_string = self.input.value().into();
             }
-            MacroContent::Bytes { .. } => {
+            true => {
                 let Ok(bytes) = self.validate_input_bytes(true) else {
                     return;
                 };
@@ -90,8 +86,8 @@ impl MacroEditing {
         self.input.reset();
     }
     pub fn swap_content_type(&mut self) {
-        self.scratch_macro.content = match self.scratch_macro.content {
-            MacroContent::Empty | MacroContent::Text(_) => {
+        match self.bytes_shown {
+            false => {
                 let unescaped = Vec::unescape_bytes(self.scratch_string.as_str());
                 if unescaped != self.scratch_bytes {
                     self.scratch_bytes = unescaped;
@@ -101,7 +97,7 @@ impl MacroEditing {
                     preview: String::new(),
                 }
             }
-            MacroContent::Bytes { .. } => {
+            true => {
                 let escaped = self.scratch_bytes.escape_bytes().to_compact_string();
                 if escaped != self.scratch_string {
                     self.scratch_string = escaped;
@@ -117,6 +113,7 @@ impl MacroEditing {
                 MacroContent::Text(String::new())
             }
         };
+        self.bytes_shown.flip();
         self.input = self
             .content_input()
             .map(|s| s.to_string())
@@ -261,7 +258,7 @@ impl MacroEditing {
             let is_selected = position == selected;
             let orig_text: Cow<'_, str> = match position {
                 MacroEditSelected::Category => Cow::Borrowed(
-                    self.scratch_macro
+                    self.scratch_nametag
                         .category
                         .as_ref()
                         .map(CompactString::as_str)
@@ -279,10 +276,10 @@ impl MacroEditing {
                         })
                         .unwrap_or(" ".to_string()),
                 ),
-                MacroEditSelected::Title if self.scratch_macro.title.is_empty() => {
+                MacroEditSelected::Title if self.scratch_nametag.title.is_empty() => {
                     Cow::Borrowed(" ")
                 }
-                MacroEditSelected::Title => Cow::Borrowed(self.scratch_macro.title.as_str()),
+                MacroEditSelected::Title => Cow::Borrowed(self.scratch_nametag.title.as_str()),
 
                 MacroEditSelected::Keybind
                 | MacroEditSelected::Finish
@@ -349,11 +346,11 @@ impl MacroEditing {
         } else {
             Style::new()
         };
-        let type_line = match &self.scratch_macro.content {
-            MacroContent::Empty | MacroContent::Text(_) => {
+        let type_line = match self.bytes_shown {
+            true => line![span!(" Text "), span!(type_reversed; "[Bytes]")],
+            false => {
                 line![span!(type_reversed; "[Text]"), span!(" Bytes ")]
             }
-            MacroContent::Bytes { .. } => line![span!(" Text "), span!(type_reversed; "[Bytes]")],
         };
 
         frame.render_widget(type_line.centered(), content_type);
@@ -370,8 +367,8 @@ impl MacroEditing {
             }
             (text, None) => text,
         };
-        let content_style = match (&self.selected_element, &self.scratch_macro.content) {
-            (MacroEditSelected::Content, MacroContent::Bytes { .. }) => {
+        let content_style = match (&self.selected_element, self.bytes_shown) {
+            (MacroEditSelected::Content, true) => {
                 if self.is_hex_valid {
                     Style::new().green().reversed().italic()
                 } else {
@@ -379,7 +376,7 @@ impl MacroEditing {
                 }
             }
             (MacroEditSelected::Content, _) => Style::new().reversed(),
-            (_, MacroContent::Bytes { .. }) => Style::new().italic(),
+            (_, true) => Style::new().italic(),
             _ => Style::new(),
         };
         frame.render_widget(content.style(content_style), content_entry);
@@ -474,7 +471,7 @@ impl MacroEditing {
                 recording_title,
             );
             frame.render_widget(
-                Line::raw(self.scratch_macro.title.as_str())
+                Line::raw(self.scratch_nametag.title.as_str())
                     .italic()
                     .centered(),
                 recording_name,

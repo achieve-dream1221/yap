@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crokey::KeyCombination;
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 pub mod methods {
@@ -39,14 +40,14 @@ ctrl-h = ["OpenShock Setup|Factory Reset","OpenShock Setup|Setup Authtoken","Ope
 
 use serde::{Deserializer, Serializer};
 
-use crate::macros::MacroRef;
+use crate::macros::MacroNameTag;
 
 // TODO use ; to chain macros
 
 #[derive(Serialize, Deserialize)]
 pub struct Keybinds {
-    pub keybindings: HashMap<KeyCombination, String>,
-    pub macros: HashMap<KeyCombination, Vec<MacroRef>>,
+    pub keybindings: IndexMap<KeyCombination, String>,
+    pub macros: IndexMap<KeyCombination, Vec<MacroNameTag>>,
 }
 
 impl Keybinds {

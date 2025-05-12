@@ -1,11 +1,13 @@
 use std::{
     borrow::Cow,
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
 };
 
+use bstr::ByteVec;
 use compact_str::CompactString;
 use crokey::KeyCombination;
+use indexmap::IndexMap;
 use ratatui::{
     layout::Constraint,
     style::{Style, Stylize},
@@ -14,12 +16,14 @@ use ratatui::{
 };
 use tui_input::Input;
 
-use crate::{keybinds::Keybinds, tui::single_line_selector::SingleLineSelectorState};
+use crate::{
+    keybinds::Keybinds, traits::HasEscapedBytes, tui::single_line_selector::SingleLineSelectorState,
+};
 
 mod macro_ref;
 mod tui;
 
-pub use macro_ref::MacroRef;
+pub use macro_ref::MacroNameTag;
 pub use tui::{MacroEditSelected, MacroEditing};
 
 #[derive(Debug)]
@@ -41,7 +45,7 @@ pub enum MacroCategorySelection<'a> {
 // TODO search when typing
 
 pub struct Macros {
-    pub all: BTreeSet<Macro>,
+    pub all: BTreeMap<MacroNameTag, MacroString>,
 
     pub ui_state: MacrosPrompt,
     // ["All Bytes", "All Strings", "All Macros", "OpenShock"]
@@ -57,35 +61,114 @@ pub struct Macros {
 impl Macros {
     pub fn new() -> Self {
         // TODO Load from disk
-        let test_macros = BTreeSet::from([
-            Macro::new_string("Mrow!", None, "mrow"),
-            Macro::new_empty("Mrowwww"),
-            Macro::new_string("Version", Some("OpenShock"), "version"),
-            Macro::new_string("Factory Reset", Some("OpenShock Setup"), "factoryreset"),
-            Macro::new_string("Restart", Some("OpenShock"), "restart"),
-            Macro::new_string("System Info", Some("OpenShock"), "sysinfo"),
-            Macro::new_string("Echo Off", Some("OpenShock Setup"), "echo false"),
-            Macro::new_string("Keep-Alive Off", Some("OpenShock Setup"), "keepalive false"),
-            Macro::new_bytes(
-                "Setup Networks",
-                Some("OpenShock Setup"),
-                br#"networks "#.into(),
-            ),
-            Macro::new_string("Setup Authtoken", Some("OpenShock Setup"), "authtoken "),
-            Macro::new_string("Get Config (JSON)", Some("OpenShock"), "jsonconfig "),
-            Macro::new_string("Get Config (Raw)", Some("OpenShock"), "rawconfig "),
-            Macro::new_string(
-                "CaiX Vib (ID 12345, 0.5s)",
-                Some("OpenShock Setup"),
-                r#"rftransmit {"model":"caixianlin","id":12345,"type":"vibrate","intensity":5,"durationMs":500}"#,
-            ),
-            Macro::new_string(
-                "CaiX Vib (ID 12345, 1s)",
-                Some("OpenShock Setup"),
-                r#"rftransmit {"model":"caixianlin","id":12345,"type":"vibrate","intensity":5,"durationMs":1000}"#,
-            ),
-            Macro::new_bytes("Backspace", Some("OpenShock"), b"\x08".into()),
-        ]);
+        let mut test_macros = BTreeMap::new();
+
+        test_macros.insert(
+            MacroNameTag {
+                title: "Backspace".into(),
+                category: Some("OpenShock".into()),
+            },
+            MacroString::new("\\x08"),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "Mrow!".into(),
+                category: None,
+            },
+            MacroString::new("mrow"),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "Mrowwww".into(),
+                category: None,
+            },
+            MacroString::new("mrowwww"),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "Version".into(),
+                category: Some("OpenShock".into()),
+            },
+            MacroString::new("version"),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "Factory Reset".into(),
+                category: Some("OpenShock Setup".into()),
+            },
+            MacroString::new("factoryreset"),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "Restart".into(),
+                category: Some("OpenShock".into()),
+            },
+            MacroString::new("restart"),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "System Info".into(),
+                category: Some("OpenShock".into()),
+            },
+            MacroString::new("sysinfo"),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "Echo Off".into(),
+                category: Some("OpenShock Setup".into()),
+            },
+            MacroString::new("echo false"),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "Keep-Alive Off".into(),
+                category: Some("OpenShock Setup".into()),
+            },
+            MacroString::new("keepalive false"),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "Setup Authtoken".into(),
+                category: Some("OpenShock Setup".into()),
+            },
+            MacroString::new("authtoken "),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "Setup Networks".into(),
+                category: Some("OpenShock Setup".into()),
+            },
+            MacroString::new("networks "),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "Get Config (JSON)".into(),
+                category: Some("OpenShock".into()),
+            },
+            MacroString::new("jsonconfig "),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "Get Config (Raw)".into(),
+                category: Some("OpenShock".into()),
+            },
+            MacroString::new("rawconfig "),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "CaiX Vib (ID 12345, 0.5s)".into(),
+                category: Some("OpenShock Setup".into()),
+            },
+            MacroString::new(r#"rftransmit {"model":"caixianlin","id":12345,"type":"vibrate","intensity":5,"durationMs":500}"#),
+        );
+        test_macros.insert(
+            MacroNameTag {
+                title: "CaiX Vib (ID 12345, 1s)".into(),
+                category: Some("OpenShock Setup".into()),
+            },
+            MacroString::new(r#"rftransmit {"model":"caixianlin","id":12345,"type":"vibrate","intensity":5,"durationMs":1000}"#),
+        );
+
         Self {
             // scrollbar_state: ScrollbarState::new(test_macros.len()),
             all: test_macros,
@@ -120,28 +203,30 @@ impl Macros {
             ),
         }
     }
-    pub fn category_filtered_macros(&self) -> impl DoubleEndedIterator<Item = &Macro> {
+    pub fn category_filtered_macros(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&MacroNameTag, &MacroString)> {
         let category = self.selected_category();
 
-        self.all.iter().filter(move |m| match category {
+        self.all.iter().filter(move |(tag, string)| match category {
             MacroCategorySelection::AllMacros => true,
-            MacroCategorySelection::AllStrings => matches!(m.content, MacroContent::Text(_)),
-            MacroCategorySelection::AllBytes => matches!(m.content, MacroContent::Bytes { .. }),
-            MacroCategorySelection::NoCategory => m.category.is_none(),
-            MacroCategorySelection::Category(cat) => m.category.as_deref() == Some(cat),
+            MacroCategorySelection::AllStrings => !string.has_bytes,
+            MacroCategorySelection::AllBytes => string.has_bytes,
+            MacroCategorySelection::NoCategory => tag.category.is_none(),
+            MacroCategorySelection::Category(cat) => tag.category.as_deref() == Some(cat),
         })
     }
     pub fn as_table(&self, keybinds: &Keybinds, fuzzy_macro_name_match: bool) -> Table<'_> {
         let filtered = self
             .category_filtered_macros()
-            .map(|m| (m.title.as_str(), m))
-            .map(|(title, m)| {
+            .map(|m| (m.0.title.as_str(), m))
+            .map(|(title, (tag, string))| {
                 let macro_string = keybinds
                     .macros
                     .iter()
                     .filter(|(kc, km)| km.len() == 1)
                     .map(|(kc, km)| (kc, &km[0]))
-                    .find(|(kc, km)| km.eq_macro(m))
+                    .find(|(kc, km)| *km == tag)
                     .or_else(|| {
                         if fuzzy_macro_name_match {
                             keybinds
@@ -149,7 +234,7 @@ impl Macros {
                                 .iter()
                                 .filter(|(kc, km)| km.len() == 1)
                                 .map(|(kc, km)| (kc, &km[0]))
-                                .find(|(kc, km)| km.eq_macro_fuzzy(m))
+                                .find(|(kc, km)| km.eq_fuzzy(tag))
                         } else {
                             None
                         }
@@ -165,7 +250,7 @@ impl Macros {
         table
     }
     pub fn has_no_category_macros(&self) -> bool {
-        self.all.iter().any(|m| m.category.is_none())
+        self.all.iter().any(|(tag, string)| tag.category.is_none())
     }
     pub fn categories<'a>(&'a self) -> impl DoubleEndedIterator<Item = &'a str> {
         let no_category = std::iter::once("No Category").filter(|_| self.has_no_category_macros());
@@ -173,7 +258,7 @@ impl Macros {
         let categories: BTreeSet<&str> = self
             .all
             .iter()
-            .filter_map(|m| m.category.as_deref())
+            .filter_map(|(tag, string)| tag.category.as_deref())
             .collect();
 
         no_category.chain(categories.into_iter())
@@ -181,23 +266,23 @@ impl Macros {
     pub fn macro_from_key_combo<'a>(
         &'a self,
         key_combo: KeyCombination,
-        macro_keybinds: &'a HashMap<KeyCombination, Vec<MacroRef>>,
+        macro_keybinds: &'a IndexMap<KeyCombination, Vec<MacroNameTag>>,
         fuzzy_macro_name_match: bool,
-    ) -> Result<Vec<&'a Macro>, Option<Vec<&'a MacroRef>>> {
+    ) -> Result<Vec<(&'a MacroNameTag, &'a MacroString)>, Option<Vec<&'a MacroNameTag>>> {
         // ) -> Result<Vec<usize>, Option<Vec<&KeybindMacro>>> {
         let Some(v) = macro_keybinds.get(&key_combo) else {
             return Err(None);
         };
 
-        let mut somes: Vec<&Macro> = Vec::new();
-        let mut nones: Vec<&MacroRef> = Vec::new();
+        let mut somes: Vec<(&MacroNameTag, &MacroString)> = Vec::new();
+        let mut nones: Vec<&MacroNameTag> = Vec::new();
 
-        v.iter().for_each(|km| {
+        v.iter().for_each(|config_tag| {
             let eq_result = self
                 .all
                 .iter()
                 // .enumerate()
-                .find(|m| km.eq_macro(m));
+                .find(|(tag, string)| config_tag.eq(tag));
             match eq_result {
                 Some(macro_ref) => {
                     somes.push(macro_ref);
@@ -205,7 +290,7 @@ impl Macros {
                 }
                 None if fuzzy_macro_name_match => (),
                 None => {
-                    nones.push(km);
+                    nones.push(config_tag);
                     return;
                 }
             }
@@ -214,10 +299,10 @@ impl Macros {
                 .all
                 .iter()
                 // .enumerate()
-                .find(|m| km.eq_macro_fuzzy(m));
+                .find(|(tag, string)| config_tag.eq_fuzzy(tag));
             match eq_result {
                 Some(macro_ref) => somes.push(macro_ref),
-                None => nones.push(km),
+                None => nones.push(config_tag),
             }
         });
 
@@ -228,21 +313,24 @@ impl Macros {
         }
     }
 
-    pub fn remove_macro(&mut self, macro_ref: &Macro) {
-        self.all.take(macro_ref).expect("expected removal of macro");
+    // pub fn remove_macro(&mut self, macro_ref: &OwnedMacro) {
+    //     self.all.take(macro_ref).expect("expected removal of macro");
 
-        // let macro_binding = self.all.iter().find(|d| macro_ref.eq_macro(d)).unwrap();
-        // self.all.remove(macro_binding);
-    }
+    //     // let macro_binding = self.all.iter().find(|d| macro_ref.eq_macro(d)).unwrap();
+    //     // self.all.remove(macro_binding);
+    // }
 
-    pub fn remove_macro_by_ref(&mut self, macro_ref: &MacroRef) {
-        let orig_len = self.all.len();
-        self.all.retain(|m| !macro_ref.eq_macro(m));
-        assert_eq!(
-            self.all.len(),
-            orig_len - 1,
-            "expected the removal of exactly one element"
-        );
+    pub fn remove_macro(&mut self, macro_ref: &MacroNameTag) {
+        self.all
+            .remove(macro_ref)
+            .expect("attempted removal of non-existant element");
+        // let orig_len = self.all.len();
+        // self.all.retain(|m, s| !macro_ref.eq_macro(m));
+        // assert_eq!(
+        //     self.all.len(),
+        //     orig_len - 1,
+        //     "expected the removal of exactly one element"
+        // );
 
         // let macro_binding = self.all.iter().find(|d| macro_ref.eq_macro(d)).unwrap();
         // self.all.remove(macro_binding);
@@ -256,43 +344,71 @@ impl Macros {
     // }
 }
 
+// #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
+// pub struct OwnedMacro {
+//     pub title: CompactString,
+//     pub category: Option<CompactString>,
+//     // pub keybinding: Option<KeyCombination>,
+//     pub content: MacroString,
+//     // preview_hidden: bool,
+// }
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Macro {
-    pub title: CompactString,
-    pub category: Option<CompactString>,
-    // pub keybinding: Option<KeyCombination>,
-    pub content: MacroContent,
-    // preview_hidden: bool,
+pub struct MacroString {
+    pub inner: CompactString,
+    pub has_bytes: bool,
+} //maybe have has_bytes? dunno yet
+
+impl MacroString {
+    pub fn new<S: AsRef<str>>(inner: S) -> Self {
+        Self {
+            has_bytes: inner.as_ref().has_escaped_bytes(),
+            inner: inner.as_ref().into(),
+        }
+    }
+    pub fn update(&mut self, new: CompactString) {
+        self.inner = new;
+        self.has_bytes = self.inner.has_escaped_bytes();
+    }
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+    pub fn unescape_bytes(&self) -> Vec<u8> {
+        Vec::unescape_bytes(&self.inner)
+    }
+    pub fn as_str(&self) -> &str {
+        &self.inner
+    }
 }
 
-impl Macro {
-    pub fn as_str(&self) -> Option<Cow<'_, str>> {
-        match &self.content {
-            MacroContent::Empty => None,
-            MacroContent::Text(text) => Some(Cow::Borrowed(text.as_str())),
-            MacroContent::Bytes { content, .. } => match std::str::from_utf8(content) {
-                Ok(s) => Some(Cow::Borrowed(s)),
-                Err(_) => None,
-            },
-        }
-    }
-    pub fn as_bytes(&self) -> Option<&[u8]> {
-        match &self.content {
-            MacroContent::Empty => None,
-            MacroContent::Bytes { content, .. } => Some(&content),
-            MacroContent::Text(text) => Some(text.as_bytes()),
-        }
-    }
-}
+// impl OwnedMacro {
+//     pub fn as_str(&self) -> Option<Cow<'_, str>> {
+//         match &self.content {
+//             MacroContent::Empty => None,
+//             MacroContent::Text(text) => Some(Cow::Borrowed(text.as_str())),
+//             MacroContent::Bytes { content, .. } => match std::str::from_utf8(content) {
+//                 Ok(s) => Some(Cow::Borrowed(s)),
+//                 Err(_) => None,
+//             },
+//         }
+//     }
+//     pub fn as_bytes(&self) -> Option<&[u8]> {
+//         match &self.content {
+//             MacroContent::Empty => None,
+//             MacroContent::Bytes { content, .. } => Some(&content),
+//             MacroContent::Text(text) => Some(text.as_bytes()),
+//         }
+//     }
+// }
 
-impl fmt::Display for Macro {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.category {
-            Some(category) => write!(f, "{category} - {}", self.title),
-            None => write!(f, "{}", self.title),
-        }
-    }
-}
+// impl fmt::Display for OwnedMacro {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         match &self.category {
+//             Some(category) => write!(f, "{category} - {}", self.title),
+//             None => write!(f, "{}", self.title),
+//         }
+//     }
+// }
 
 // // Custom Eq+Ord impls to avoid checking `content` when sorting.
 // impl PartialEq for Macro {
@@ -358,46 +474,46 @@ impl MacroContent {
     // }
 }
 
-impl Macro {
-    pub fn new_bytes<T: AsRef<str>>(
-        title: T,
-        category: Option<T>,
-        bytes: Vec<u8>,
-        // keybinding: Option<u8>,
-    ) -> Self {
-        Self {
-            title: title.as_ref().into(),
-            category: category.map(|t| t.as_ref().into()),
-            content: MacroContent::new_bytes(bytes),
-            // keybinding,
-        }
-    }
-    pub fn new_empty<T: AsRef<str>>(title: T) -> Self {
-        Self {
-            title: title.as_ref().into(),
-            category: None,
-            content: MacroContent::Empty,
-            // keybinding: None,
-        }
-    }
-    pub fn new_string<T: AsRef<str>, S: AsRef<str>>(
-        title: T,
-        category: Option<T>,
-        s: S,
-        // keybinding: Option<u8>,
-    ) -> Self {
-        Self {
-            title: title.as_ref().into(),
-            category: category.map(|t| t.as_ref().into()),
-            content: MacroContent::Text(s.as_ref().into()),
-            // keybinding,
-        }
-    }
-    pub fn preview(&self) -> &str {
-        match &self.content {
-            MacroContent::Text(text) => text.as_str(),
-            MacroContent::Bytes { preview, .. } => preview.as_str(),
-            MacroContent::Empty => "Empty! Please edit with `IDK YET`",
-        }
-    }
-}
+// impl OwnedMacro {
+//     pub fn new_bytes<T: AsRef<str>>(
+//         title: T,
+//         category: Option<T>,
+//         bytes: Vec<u8>,
+//         // keybinding: Option<u8>,
+//     ) -> Self {
+//         Self {
+//             title: title.as_ref().into(),
+//             category: category.map(|t| t.as_ref().into()),
+//             content: MacroContent::new_bytes(bytes),
+//             // keybinding,
+//         }
+//     }
+//     pub fn new_empty<T: AsRef<str>>(title: T) -> Self {
+//         Self {
+//             title: title.as_ref().into(),
+//             category: None,
+//             content: MacroContent::Empty,
+//             // keybinding: None,
+//         }
+//     }
+//     pub fn new_string<T: AsRef<str>, S: AsRef<str>>(
+//         title: T,
+//         category: Option<T>,
+//         s: S,
+//         // keybinding: Option<u8>,
+//     ) -> Self {
+//         Self {
+//             title: title.as_ref().into(),
+//             category: category.map(|t| t.as_ref().into()),
+//             content: MacroContent::Text(s.as_ref().into()),
+//             // keybinding,
+//         }
+//     }
+//     pub fn preview(&self) -> &str {
+//         match &self.content {
+//             MacroContent::Text(text) => text.as_str(),
+//             MacroContent::Bytes { preview, .. } => preview.as_str(),
+//             MacroContent::Empty => "Empty! Please edit with `IDK YET`",
+//         }
+//     }
+// }

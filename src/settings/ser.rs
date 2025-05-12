@@ -1,3 +1,6 @@
+use bstr::ByteSlice;
+use bstr::ByteVec;
+use compact_str::ToCompactString;
 use serde::Deserialize;
 use serde::Serializer;
 
@@ -25,7 +28,7 @@ pub fn serialize_line_ending<S>(input: &str, serializer: S) -> Result<S::Ok, S::
 where
     S: Serializer,
 {
-    let buffer = input.escape_default().to_string();
+    let buffer = input.as_bytes().escape_bytes().to_compact_string();
     serializer.serialize_str(&buffer)
 }
 
@@ -34,7 +37,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
-    match unescaper::unescape(&s) {
+    match Vec::unescape_bytes(&s).into_string() {
         Ok(result) => Ok(result),
         Err(e) => Err(serde::de::Error::custom(format!(
             "Failed to unescape line ending string: {e}"

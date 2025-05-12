@@ -191,7 +191,7 @@ impl Buffer {
             .rendering
             .echo_user_input
             .filter_user_line(&user_buf_line)
-            || self.raw_buffer.has_line_ending(&self.line_ending);
+            || (self.raw_buffer.is_empty() || self.raw_buffer.has_line_ending(&self.line_ending));
         self.user_lines.push(user_buf_line);
         // TODO make this more dynamic with the macro hiding
     }
@@ -231,7 +231,8 @@ impl Buffer {
                 .rendering
                 .echo_user_input
                 .filter_user_line(&user_buf_line)
-                || self.raw_buffer.has_line_ending(&self.line_ending);
+                || (self.raw_buffer.is_empty()
+                    || self.raw_buffer.has_line_ending(&self.line_ending));
 
             self.user_lines.push(user_buf_line);
         }

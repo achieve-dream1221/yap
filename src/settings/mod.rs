@@ -90,13 +90,23 @@ pub struct Behavior {
     /// Use text box to type in before sending, with history. If disabled, sends keyboard inputs directly (TODO).
     pub fake_shell: bool,
 
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// Send symbols like \n or \xFF as their respective bytes.
+    pub fake_shell_unescape: bool,
+
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// Persist changes to Port Settings made while connected across sessions.
+    pub retain_port_setting_changes: bool,
+
     #[serde(default)]
     /// Persist Fake Shell's command history across sessions (TODO).
     pub retain_history: bool,
 
     #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]
-    /// Fall back to macros with same name if category missing (TODO).
+    /// Fall back to macros with same name if category missing.
     pub fuzzy_macro_match: bool,
 
     #[serde_inline_default(Duration::from_millis(500))]
