@@ -24,20 +24,20 @@ mod macro_ref;
 mod tui;
 
 pub use macro_ref::MacroNameTag;
-pub use tui::{MacroEditSelected, MacroEditing};
+// pub use tui::{MacroEditSelected, MacroEditing};
 
-#[derive(Debug)]
-#[repr(u8)]
-pub enum MacrosPrompt {
-    None,
-    Delete,
-    AddEdit(MacroEditing),
-}
+// #[derive(Debug)]
+// #[repr(u8)]
+// pub enum MacrosPrompt {
+//     None,
+//     Delete,
+//     AddEdit(MacroEditing),
+// }
 
 pub enum MacroCategorySelection<'a> {
     AllMacros,
-    AllStrings,
-    AllBytes,
+    StringsOnly,
+    WithBytes,
     NoCategory,
     Category(&'a str),
 }
@@ -47,7 +47,7 @@ pub enum MacroCategorySelection<'a> {
 pub struct Macros {
     pub all: BTreeMap<MacroNameTag, MacroString>,
 
-    pub ui_state: MacrosPrompt,
+    // pub ui_state: MacrosPrompt,
     // ["All Bytes", "All Strings", "All Macros", "OpenShock"]
     //     Start here, at user's first category.  ^
     pub categories_selector: SingleLineSelectorState,
@@ -173,7 +173,7 @@ impl Macros {
             // scrollbar_state: ScrollbarState::new(test_macros.len()),
             all: test_macros,
             // tx_queue: Vec::new(),
-            ui_state: MacrosPrompt::None,
+            // ui_state: MacrosPrompt::None,
             search_input: Input::default(),
             categories_selector: SingleLineSelectorState::new().with_selected(2),
             // categories: BTreeSet::new(),
@@ -194,8 +194,8 @@ impl Macros {
     }
     fn selected_category(&self) -> MacroCategorySelection {
         match self.categories_selector.current_index {
-            0 => MacroCategorySelection::AllBytes,
-            1 => MacroCategorySelection::AllStrings,
+            0 => MacroCategorySelection::WithBytes,
+            1 => MacroCategorySelection::StringsOnly,
             2 => MacroCategorySelection::AllMacros,
             3 if self.has_no_category_macros() => MacroCategorySelection::NoCategory,
             index => MacroCategorySelection::Category(
@@ -210,8 +210,8 @@ impl Macros {
 
         self.all.iter().filter(move |(tag, string)| match category {
             MacroCategorySelection::AllMacros => true,
-            MacroCategorySelection::AllStrings => !string.has_bytes,
-            MacroCategorySelection::AllBytes => string.has_bytes,
+            MacroCategorySelection::StringsOnly => !string.has_bytes,
+            MacroCategorySelection::WithBytes => string.has_bytes,
             MacroCategorySelection::NoCategory => tag.category.is_none(),
             MacroCategorySelection::Category(cat) => tag.category.as_deref() == Some(cat),
         })
@@ -313,35 +313,11 @@ impl Macros {
         }
     }
 
-    // pub fn remove_macro(&mut self, macro_ref: &OwnedMacro) {
-    //     self.all.take(macro_ref).expect("expected removal of macro");
-
-    //     // let macro_binding = self.all.iter().find(|d| macro_ref.eq_macro(d)).unwrap();
-    //     // self.all.remove(macro_binding);
-    // }
-
     pub fn remove_macro(&mut self, macro_ref: &MacroNameTag) {
         self.all
             .remove(macro_ref)
             .expect("attempted removal of non-existant element");
-        // let orig_len = self.all.len();
-        // self.all.retain(|m, s| !macro_ref.eq_macro(m));
-        // assert_eq!(
-        //     self.all.len(),
-        //     orig_len - 1,
-        //     "expected the removal of exactly one element"
-        // );
-
-        // let macro_binding = self.all.iter().find(|d| macro_ref.eq_macro(d)).unwrap();
-        // self.all.remove(macro_binding);
     }
-    // pub fn begin_editing(&mut self, macro_ref: &MacroRef) {
-    //     self.ui_state = MacrosPrompt::AddEdit(MacroEditing {
-    //         inner_ref: Some(macro_ref.clone()),
-    //         ..Default::default()
-    //     });
-
-    // }
 }
 
 // #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -409,70 +385,6 @@ impl MacroString {
 //         }
 //     }
 // }
-
-// // Custom Eq+Ord impls to avoid checking `content` when sorting.
-// impl PartialEq for Macro {
-//     fn eq(&self, other: &Self) -> bool {
-//         self.title == other.title && self.keybinding == other.keybinding
-//     }
-// }
-
-// impl Eq for Macro {}
-
-// impl PartialOrd for Macro {
-//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-//         match self.title.partial_cmp(&other.title) {
-//             Some(std::cmp::Ordering::Equal) => self.keybinding.partial_cmp(&other.keybinding),
-//             ord => ord,
-//         }
-//     }
-// }
-
-// impl Ord for Macro {
-//     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-//         match self.title.cmp(&other.title) {
-//             std::cmp::Ordering::Equal => self.keybinding.cmp(&other.keybinding),
-//             ord => ord,
-//         }
-//     }
-// }
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum MacroContent {
-    #[default]
-    Empty,
-    Text(String),
-    Bytes {
-        content: Vec<u8>,
-        preview: String,
-    },
-}
-
-impl MacroContent {
-    fn new_bytes(content: Vec<u8>) -> Self {
-        let hex_string = content
-            .iter()
-            .map(|b| format!("\\x{:02X}", b))
-            .collect::<Vec<_>>()
-            .join("");
-        Self::Bytes {
-            content,
-            preview: hex_string,
-        }
-    }
-    // fn update_byte_preview(&mut self) {
-    //     match self {
-    //         MacroContent::Bytes { content, preview } => {
-    //             *preview = content
-    //                 .iter()
-    //                 .map(|b| format!("{:02X}", b))
-    //                 .collect::<Vec<_>>()
-    //                 .join(" ")
-    //         }
-    //         _ => unreachable!(),
-    //     }
-    // }
-}
 
 // impl OwnedMacro {
 //     pub fn new_bytes<T: AsRef<str>>(

@@ -37,15 +37,15 @@ pub enum DisconnectPrompt {
     Exit,
     Cancel,
 }
-#[derive(
-    Debug, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
-)]
-#[repr(u8)]
-pub enum DeleteMacroPrompt {
-    #[strum(props(color = "red"))]
-    Delete,
-    Cancel,
-}
+// #[derive(
+//     Debug, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
+// )]
+// #[repr(u8)]
+// pub enum DeleteMacroPrompt {
+//     #[strum(props(color = "red"))]
+//     Delete,
+//     Cancel,
+// }
 
 pub trait PromptTable: VariantNames + VariantArray + EnumProperty + Into<u8> + TryFrom<u8> {
     /// Returns a ratatui [Table] with static references to the names of each enum variant.
