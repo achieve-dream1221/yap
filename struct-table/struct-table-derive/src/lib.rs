@@ -93,6 +93,20 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                         .values_to_cycle
                         .as_ref()
                         .expect("expected list of values to cycle through");
+                    let allow_unknown = if f.allow_unknown_values {
+                        quote! {
+                            if let Some(current_position) = variants.iter().position(|v: &_| v == &self.#ident ) {
+                                overrides_ref[current_position].to_string()
+                            } else {
+                                self.#ident.to_string()
+                            }
+                        }
+                    } else {
+                        quote! {
+                            let current_position: usize = variants.iter().position(|v: &_| v == &self.#ident ).expect("current variant not in given list");
+                            overrides_ref[current_position]
+                        }
+                    };
                     quote! {
                         {
                             let (overrides, variants) = const {
@@ -104,9 +118,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                             };
                             let overrides_ref: &[&'static str] = overrides.as_ref();
 
-                            let current_position: usize = variants.iter().position(|v: &_| v == &self.#ident ).expect("current variant not in given list");
-
-                            overrides_ref[current_position]
+                            #allow_unknown
                         }
                     }
                 }
@@ -189,13 +201,17 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                     .expect("expected list of values to cycle through");
 
                 let inner_wrap_logic = inner_wrap(a.no_inner_wrap);
-
+                let allow_unknown = if a.allow_unknown_values {
+                    quote! { let current_position: usize = variants_ref.iter().position(|v: &_| v == &self.#ident ).unwrap_or(0); }
+                } else {
+                    quote! { let current_position: usize = variants_ref.iter().position(|v: &_| v == &self.#ident ).expect("current variant not in given list"); }
+                };
                 quote! {
                     let variants: _ = #variants;
 
                     let variants_ref: &[_] = variants.as_ref();
 
-                    let current_position: usize = variants_ref.iter().position(|v: &_| v == &self.#ident ).expect("current variant not in given list");
+                    #allow_unknown
 
                     let last_index = variants_ref.len() - 1;
 
@@ -376,6 +392,7 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
                 rename,
                 skip,
                 immutable,
+                allow_unknown_values,
             } = deluxe::extract_attributes(field)?;
 
             if skip {
@@ -469,6 +486,7 @@ fn extract_field_attrs(ast: &mut DeriveInput) -> deluxe::Result<Vec<StructField>
                 no_inner_wrap,
                 rename,
                 immutable,
+                allow_unknown_values,
             };
             field_attrs.push(processed_field);
         }
@@ -549,6 +567,7 @@ struct StructField {
     no_inner_wrap: bool,
     rename: Option<String>,
     immutable: bool,
+    allow_unknown_values: bool,
 }
 
 #[derive(deluxe::ExtractAttributes)]
@@ -573,6 +592,9 @@ struct StructFieldAttributes {
     /// Don't allow changing this field with the StructTable methods
     #[deluxe(default)]
     immutable: bool,
+    /// Don't panic if encountering an unknown value, instead behaving as if it's on the 0th value.
+    #[deluxe(default)]
+    allow_unknown_values: bool,
 }
 
 #[derive(deluxe::ExtractAttributes)]

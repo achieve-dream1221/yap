@@ -95,6 +95,7 @@ pub struct PortSettings {
     /// Line endings for RX and TX.
     #[table(display = ["None", "\\n", "\\r", "\\r\\n"])]
     #[table(values = ["", "\n", "\r", "\r\n"])]
+    #[table(allow_unknown_values)]
     #[serde(
         serialize_with = "serialize_line_ending",
         deserialize_with = "deserialize_line_ending"
