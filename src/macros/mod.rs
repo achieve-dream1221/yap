@@ -26,7 +26,8 @@ use crate::{
     keybinds::Keybinds, traits::HasEscapedBytes, tui::single_line_selector::SingleLineSelectorState,
 };
 
-mod macro_ref;
+mod macro_nametag;
+pub use macro_nametag::MacroNameTag;
 mod tui;
 
 // pub use macro_ref::MacroNameTag;
@@ -356,29 +357,6 @@ fn load_macros_from_path(path: &Path) -> color_eyre::Result<MacroFile> {
     Ok(file)
 }
 
-// #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
-// pub struct OwnedMacro {
-//     pub title: CompactString,
-//     pub category: Option<CompactString>,
-//     // pub keybinding: Option<KeyCombination>,
-//     pub content: MacroString,
-//     // preview_hidden: bool,
-// }
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct MacroNameTag {
-    pub name: CompactString,
-    pub category: Option<CompactString>,
-}
-impl MacroNameTag {
-    pub fn to_serialized_format(&self) -> CompactString {
-        if let Some(cat) = &self.category {
-            format_compact!("{}|{}", cat, self.name)
-        } else {
-            self.name.clone()
-        }
-    }
-}
 #[derive(
     Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -390,13 +368,17 @@ pub struct MacroContent {
 }
 
 impl MacroContent {
-    pub fn new<S: AsRef<str>>(value: S) -> Self {
-        Self {
-            has_bytes: value.as_ref().has_escaped_bytes(),
-            content: value.as_ref().into(),
-            line_ending: None,
-        }
-    }
+    // pub fn new<S: AsRef<str>>(value: S) -> Self {
+    //     Self {
+    //         has_bytes: value.as_ref().has_escaped_bytes(),
+    //         content: value.as_ref().into(),
+    //         line_ending: None,
+    //     }
+    // }
+    // pub fn update(&mut self, new: CompactString) {
+    //     self.content = new;
+    //     self.has_bytes = self.content.has_escaped_bytes();
+    // }
     pub fn new_with_line_ending<S: AsRef<str>>(
         value: S,
         line_ending: Option<CompactString>,
@@ -406,10 +388,6 @@ impl MacroContent {
             content: value.as_ref().into(),
             line_ending,
         }
-    }
-    pub fn update(&mut self, new: CompactString) {
-        self.content = new;
-        self.has_bytes = self.content.has_escaped_bytes();
     }
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
@@ -421,76 +399,3 @@ impl MacroContent {
         &self.content
     }
 }
-
-// impl OwnedMacro {
-//     pub fn as_str(&self) -> Option<Cow<'_, str>> {
-//         match &self.content {
-//             MacroContent::Empty => None,
-//             MacroContent::Text(text) => Some(Cow::Borrowed(text.as_str())),
-//             MacroContent::Bytes { content, .. } => match std::str::from_utf8(content) {
-//                 Ok(s) => Some(Cow::Borrowed(s)),
-//                 Err(_) => None,
-//             },
-//         }
-//     }
-//     pub fn as_bytes(&self) -> Option<&[u8]> {
-//         match &self.content {
-//             MacroContent::Empty => None,
-//             MacroContent::Bytes { content, .. } => Some(&content),
-//             MacroContent::Text(text) => Some(text.as_bytes()),
-//         }
-//     }
-// }
-
-// impl fmt::Display for OwnedMacro {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         match &self.category {
-//             Some(category) => write!(f, "{category} - {}", self.title),
-//             None => write!(f, "{}", self.title),
-//         }
-//     }
-// }
-
-// impl OwnedMacro {
-//     pub fn new_bytes<T: AsRef<str>>(
-//         title: T,
-//         category: Option<T>,
-//         bytes: Vec<u8>,
-//         // keybinding: Option<u8>,
-//     ) -> Self {
-//         Self {
-//             title: title.as_ref().into(),
-//             category: category.map(|t| t.as_ref().into()),
-//             content: MacroContent::new_bytes(bytes),
-//             // keybinding,
-//         }
-//     }
-//     pub fn new_empty<T: AsRef<str>>(title: T) -> Self {
-//         Self {
-//             title: title.as_ref().into(),
-//             category: None,
-//             content: MacroContent::Empty,
-//             // keybinding: None,
-//         }
-//     }
-//     pub fn new_string<T: AsRef<str>, S: AsRef<str>>(
-//         title: T,
-//         category: Option<T>,
-//         s: S,
-//         // keybinding: Option<u8>,
-//     ) -> Self {
-//         Self {
-//             title: title.as_ref().into(),
-//             category: category.map(|t| t.as_ref().into()),
-//             content: MacroContent::Text(s.as_ref().into()),
-//             // keybinding,
-//         }
-//     }
-//     pub fn preview(&self) -> &str {
-//         match &self.content {
-//             MacroContent::Text(text) => text.as_str(),
-//             MacroContent::Bytes { preview, .. } => preview.as_str(),
-//             MacroContent::Empty => "Empty! Please edit with `IDK YET`",
-//         }
-//     }
-// }

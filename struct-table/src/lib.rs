@@ -36,4 +36,5 @@ pub trait StructTable: ::core::marker::Sized + 'static {
     ) -> Result<(bool, bool, bool), ()>;
     fn as_table(&self, table_state: &mut TableState) -> Table<'_>;
     const DOCSTRINGS: &'static [&'static str];
+    const VISIBLE_FIELDS: usize;
 }

@@ -542,13 +542,19 @@ impl App {
             .find(|(tag, _string)| &&macro_ref == tag)
             .expect("Failed to find referenced Macro");
 
-        let (notif_text, notif_color) = match (key_combo_opt, macro_content) {
-            (_, _) if macro_content.is_empty() => {
-                ("Macro {macro_binding} is empty!".to_owned(), Color::Yellow)
-            }
-            (Some(a), _) => (format!("{macro_tag} [{a}]"), Color::Green),
+        let italic = Style::new().italic();
 
-            (None, _) => (format!("{macro_tag}"), Color::Green),
+        let (notif_line, notif_color) = match (key_combo_opt, macro_content) {
+            (_, _) if macro_content.is_empty() => (
+                line!["Macro \"", span!(italic; macro_tag), "\" is empty!"],
+                Color::Yellow,
+            ),
+            (Some(key_combo), _) => (
+                line![span!(italic; macro_tag), span!(" [{key_combo}]")],
+                Color::Green,
+            ),
+
+            (None, _) => (line![span!(italic; "{macro_tag}")], Color::Green),
         };
 
         let default_macro_line_ending =
@@ -590,7 +596,7 @@ impl App {
             }
         };
 
-        self.notifs.notify_str(notif_text, notif_color);
+        self.notifs.notify(notif_line, notif_color);
     }
     // TODO fuzz this
     fn handle_key_press(&mut self, key: KeyEvent) {
@@ -1695,9 +1701,9 @@ impl App {
         let content_length = match popup {
             PopupMenu::Macros => self.macros.visible_len(),
             // TODO find more clear way than checking this length
-            PopupMenu::PortSettings => PortSettings::DOCSTRINGS.len(),
-            PopupMenu::BehaviorSettings => Behavior::DOCSTRINGS.len(),
-            PopupMenu::RenderingSettings => Rendering::DOCSTRINGS.len(),
+            PopupMenu::PortSettings => PortSettings::VISIBLE_FIELDS,
+            PopupMenu::BehaviorSettings => Behavior::VISIBLE_FIELDS,
+            PopupMenu::RenderingSettings => Rendering::VISIBLE_FIELDS,
         };
 
         let height = match popup {

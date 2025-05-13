@@ -57,10 +57,10 @@ impl FromStr for RxLineEnding {
                 ))
             }
             other => {
-                let escaped = Vec::unescape_bytes(other);
+                let into_bytes = Vec::unescape_bytes(other);
                 Ok(Self::Custom(
-                    escaped.escape_bytes().to_compact_string(),
-                    escaped,
+                    into_bytes.escape_bytes().to_compact_string(),
+                    into_bytes,
                 ))
             }
         }
@@ -124,10 +124,10 @@ impl FromStr for TxLineEnding {
                 ))
             }
             other => {
-                let escaped = Vec::unescape_bytes(other);
+                let into_bytes = Vec::unescape_bytes(other);
                 Ok(Self::Custom(
-                    escaped.escape_bytes().to_compact_string(),
-                    escaped,
+                    into_bytes.escape_bytes().to_compact_string(),
+                    into_bytes,
                 ))
             }
         }
@@ -195,10 +195,10 @@ impl FromStr for MacroTxLineEnding {
                 ))
             }
             other => {
-                let escaped = Vec::unescape_bytes(other);
+                let into_bytes = Vec::unescape_bytes(other);
                 Ok(Self::Custom(
-                    escaped.escape_bytes().to_compact_string(),
-                    escaped,
+                    into_bytes.escape_bytes().to_compact_string(),
+                    into_bytes,
                 ))
             }
         }

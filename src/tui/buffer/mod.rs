@@ -160,6 +160,9 @@ impl From<&[u8]> for LineEnding {
     }
 }
 
+// TODO tests for buffer behavior with new lines
+// (i broke it once before with tests passing, so, bleh)
+
 pub struct Buffer {
     raw_buffer: Vec<u8>,
     // Time-tagged indexes into `raw_buffer`, from each input from the port.

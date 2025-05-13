@@ -3,31 +3,30 @@ use std::fmt;
 use compact_str::{CompactString, ToCompactString, format_compact};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::MacroNameTag;
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MacroNameTag {
+    pub name: CompactString,
+    pub category: Option<CompactString>,
+}
 
-// impl From<&OwnedMacro> for MacroNameTag {
-//     fn from(value: &OwnedMacro) -> Self {
-//         Self {
-//             category: value.category.clone(),
-//             title: value.title.clone(),
-//         }
-//     }
-// }
-
-// impl From<OwnedMacro> for MacroNameTag {
-//     fn from(value: OwnedMacro) -> Self {
-//         Self::from(&value)
-//     }
-// }
+impl MacroNameTag {
+    pub fn to_serialized_format(&self) -> CompactString {
+        if let Some(cat) = &self.category {
+            format_compact!("{}|{}", cat, self.name)
+        } else {
+            self.name.clone()
+        }
+    }
+}
 
 const MACRO_DELIMITER: char = '|';
 
 impl fmt::Display for MacroNameTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(ref cat) = self.category {
-            write!(f, "\"{}\" in \"{cat}\"", self.name)
+            write!(f, "{cat}: {}", self.name)
         } else {
-            write!(f, "\"{}\"", self.name)
+            write!(f, "{}", self.name)
         }
     }
 }

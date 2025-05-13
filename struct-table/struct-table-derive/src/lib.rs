@@ -142,6 +142,8 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
 
     let docstrings: Vec<_> = field_attrs.iter().map(|a| a.doc.clone()).collect();
 
+    let docstrings_len = docstrings.len();
+
     let inner_wrap = |no_wrap: bool| -> proc_macro2::TokenStream {
         if !no_wrap {
             quote! {
@@ -347,6 +349,8 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
             }
 
             const DOCSTRINGS: &'static [&'static str] = &[ #(#docstrings),* ];
+
+            const VISIBLE_FIELDS: usize = #docstrings_len;
         }
     })
 }
