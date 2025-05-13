@@ -116,8 +116,14 @@ pub struct Behavior {
 
     #[serde_inline_default(Duration::from_millis(500))]
     #[derivative(Default(value = "Duration::from_millis(500)"))]
+    #[table(allow_unknown_values)]
     #[table(display = Debug)]
     #[table(values = [Duration::from_millis(10), Duration::from_millis(100), Duration::from_millis(250), Duration::from_millis(500), Duration::from_secs(1)])]
+    #[serde(rename = "macro_chain_delay_ms")]
+    #[serde(
+        serialize_with = "serialize_duration_as_ms",
+        deserialize_with = "deserialize_duration_from_ms"
+    )]
     /// Pause between chained Macros.
     pub macro_chain_delay: Duration,
 }
@@ -154,6 +160,14 @@ pub struct PortSettings {
         deserialize_with = "deserialize_from_u8"
     )]
     pub stop_bits: StopBits,
+    /// Assert DTR to this state on port connect (and reconnect).
+    #[table(rename = "DTR on Connect")]
+    #[serde_inline_default(true)]
+    pub dtr_on_connect: bool,
+    /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB device/COM port.
+    #[table(values = [Reconnections::Disabled, Reconnections::StrictChecks, Reconnections::LooseChecks])]
+    #[serde_inline_default(Reconnections::LooseChecks)]
+    pub reconnections: Reconnections,
 
     /// Line endings for RX'd data.
     #[table(display = ["\\n", "\\r", "\\r\\n", "None"])]
@@ -166,7 +180,6 @@ pub struct PortSettings {
     )]
     #[serde_inline_default(RxLineEnding::Preset("\\n", &[b'\n']))]
     pub rx_line_ending: RxLineEnding,
-
     /// Line endings for TX'd data.
     #[table(display = ["Inherit RX", "\\n", "\\r", "\\r\\n", "None"])]
     #[table(rename = "TX Line Ending")]
@@ -178,7 +191,6 @@ pub struct PortSettings {
     )]
     #[serde_inline_default(TxLineEnding::InheritRx)]
     pub tx_line_ending: TxLineEnding,
-
     /// Default line ending for sent macros.
     #[table(display = ["Inherit TX", "Inherit RX", "\\n", "\\r", "\\r\\n", "None"])]
     #[table(values = [MacroTxLineEnding::InheritTx, MacroTxLineEnding::InheritRx, MacroTxLineEnding::Preset("\\n", &[b'\n']), MacroTxLineEnding::Preset("\\r", &[b'\r']), MacroTxLineEnding::Preset("\\r\\n", &[b'\r', b'\n']), MacroTxLineEnding::Preset("", &[])])]
@@ -189,20 +201,10 @@ pub struct PortSettings {
     )]
     #[serde_inline_default(MacroTxLineEnding::InheritTx)]
     pub macro_line_ending: MacroTxLineEnding,
-
-    /// Assert DTR to this state on port connect (and reconnect).
-    #[table(rename = "DTR on Connect")]
-    #[serde_inline_default(true)]
-    pub dtr_on_connect: bool,
-    /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB device/COM port.
-    #[table(values = [Reconnections::Disabled, Reconnections::StrictChecks, Reconnections::LooseChecks])]
-    #[serde_inline_default(Reconnections::LooseChecks)]
-    pub reconnections: Reconnections,
 }
 
 impl Default for PortSettings {
     fn default() -> Self {
-        let s = MacroTxLineEnding::InheritTx.to_string();
         Self {
             baud_rate: DEFAULT_BAUD,
             data_bits: DataBits::Eight,

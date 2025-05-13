@@ -68,3 +68,27 @@ where
 
     Ok(generic)
 }
+
+pub fn serialize_duration_as_ms<S>(
+    duration: &std::time::Duration,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    // lmao at how `as_millis()` returns a u128 but `from_` takes a u64
+    // like i get you're likely not making a new one with that length
+    // but still
+    let millis = duration.as_millis();
+    serializer.serialize_u64(millis as u64)
+}
+
+pub fn deserialize_duration_from_ms<'de, D>(
+    deserializer: D,
+) -> Result<std::time::Duration, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let millis = u64::deserialize(deserializer)?;
+    Ok(std::time::Duration::from_millis(millis))
+}
