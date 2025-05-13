@@ -9,6 +9,7 @@ use derivative::Derivative;
 use fs_err::{self as fs};
 use serde::{Deserialize, Serialize};
 use serde_inline_default::serde_inline_default;
+use serialport::{DataBits, FlowControl, Parity, StopBits};
 use struct_table::StructTable;
 use tracing::{info, level_filters::LevelFilter};
 
@@ -23,9 +24,13 @@ use tracing::{info, level_filters::LevelFilter};
 //   - Since #[serde(default)] gets the default for the field's _type_, and *not* the parent struct's `Default::default()` value for it
 // - #[derivative(Default)] for properly setting up `Default::default()` for when a _struct_ is missing.
 
-use crate::{serial::PortSettings, tui::buffer::UserEcho};
+use crate::{app::DEFAULT_BAUD, serial::Reconnections, tui::buffer::UserEcho};
 
 pub mod ser;
+use ser::*;
+
+pub mod line_ending;
+use line_ending::*;
 
 #[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
@@ -115,6 +120,102 @@ pub struct Behavior {
     #[table(values = [Duration::from_millis(10), Duration::from_millis(100), Duration::from_millis(250), Duration::from_millis(500), Duration::from_secs(1)])]
     /// Pause between chained Macros.
     pub macro_chain_delay: Duration,
+}
+
+#[serde_inline_default]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, StructTable)]
+pub struct PortSettings {
+    /// The baud rate in symbols-per-second.
+    // #[table(values = COMMON_BAUD)]
+    #[table(immutable)]
+    #[serde_inline_default(DEFAULT_BAUD)]
+    pub baud_rate: u32,
+    /// Number of bits per character.
+    #[table(values = [DataBits::Five, DataBits::Six, DataBits::Seven, DataBits::Eight])]
+    #[serde_inline_default(DataBits::Eight)]
+    #[serde(
+        serialize_with = "serialize_as_u8",
+        deserialize_with = "deserialize_from_u8"
+    )]
+    pub data_bits: DataBits,
+    /// Flow control modes.
+    #[table(values = [FlowControl::None, FlowControl::Software, FlowControl::Hardware])]
+    #[serde_inline_default(FlowControl::None)]
+    pub flow_control: FlowControl,
+    /// Parity bit modes.
+    #[table(values = [Parity::None, Parity::Odd, Parity::Even])]
+    #[serde_inline_default(Parity::None)]
+    pub parity_bits: Parity,
+    /// Number of stop bits.
+    #[table(values = [StopBits::One, StopBits::Two])]
+    #[serde_inline_default(StopBits::One)]
+    #[serde(
+        serialize_with = "serialize_as_u8",
+        deserialize_with = "deserialize_from_u8"
+    )]
+    pub stop_bits: StopBits,
+
+    /// Line endings for RX'd data.
+    #[table(display = ["\\n", "\\r", "\\r\\n", "None"])]
+    #[table(rename = "RX Line Ending")]
+    #[table(values = [RxLineEnding::Preset("\\n", &[b'\n']), RxLineEnding::Preset("\\r", &[b'\r']), RxLineEnding::Preset("\\r\\n", &[b'\r', b'\n']), RxLineEnding::Preset("", &[])])]
+    #[table(allow_unknown_values)]
+    #[serde(
+        serialize_with = "serialize_as_string",
+        deserialize_with = "deserialize_from_str"
+    )]
+    #[serde_inline_default(RxLineEnding::Preset("\\n", &[b'\n']))]
+    pub rx_line_ending: RxLineEnding,
+
+    /// Line endings for TX'd data.
+    #[table(display = ["Inherit RX", "\\n", "\\r", "\\r\\n", "None"])]
+    #[table(rename = "TX Line Ending")]
+    #[table(values = [TxLineEnding::InheritRx, TxLineEnding::Preset("\\n", &[b'\n']), TxLineEnding::Preset("\\r", &[b'\r']), TxLineEnding::Preset("\\r\\n", &[b'\r', b'\n']), TxLineEnding::Preset("", &[])])]
+    #[table(allow_unknown_values)]
+    #[serde(
+        serialize_with = "serialize_as_string",
+        deserialize_with = "deserialize_from_str"
+    )]
+    #[serde_inline_default(TxLineEnding::InheritRx)]
+    pub tx_line_ending: TxLineEnding,
+
+    /// Default line ending for sent macros.
+    #[table(display = ["Inherit TX", "Inherit RX", "\\n", "\\r", "\\r\\n", "None"])]
+    #[table(values = [MacroTxLineEnding::InheritTx, MacroTxLineEnding::InheritRx, MacroTxLineEnding::Preset("\\n", &[b'\n']), MacroTxLineEnding::Preset("\\r", &[b'\r']), MacroTxLineEnding::Preset("\\r\\n", &[b'\r', b'\n']), MacroTxLineEnding::Preset("", &[])])]
+    #[table(allow_unknown_values)]
+    #[serde(
+        serialize_with = "serialize_as_string",
+        deserialize_with = "deserialize_from_str"
+    )]
+    #[serde_inline_default(MacroTxLineEnding::InheritTx)]
+    pub macro_line_ending: MacroTxLineEnding,
+
+    /// Assert DTR to this state on port connect (and reconnect).
+    #[table(rename = "DTR on Connect")]
+    #[serde_inline_default(true)]
+    pub dtr_on_connect: bool,
+    /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB device/COM port.
+    #[table(values = [Reconnections::Disabled, Reconnections::StrictChecks, Reconnections::LooseChecks])]
+    #[serde_inline_default(Reconnections::LooseChecks)]
+    pub reconnections: Reconnections,
+}
+
+impl Default for PortSettings {
+    fn default() -> Self {
+        let s = MacroTxLineEnding::InheritTx.to_string();
+        Self {
+            baud_rate: DEFAULT_BAUD,
+            data_bits: DataBits::Eight,
+            flow_control: FlowControl::None,
+            parity_bits: Parity::None,
+            stop_bits: StopBits::One,
+            rx_line_ending: "\n".into(),
+            tx_line_ending: TxLineEnding::InheritRx,
+            macro_line_ending: MacroTxLineEnding::InheritTx,
+            dtr_on_connect: true,
+            reconnections: Reconnections::LooseChecks,
+        }
+    }
 }
 
 impl Settings {

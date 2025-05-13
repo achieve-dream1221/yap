@@ -202,7 +202,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
 
                 let inner_wrap_logic = inner_wrap(a.no_inner_wrap);
                 let allow_unknown = if a.allow_unknown_values {
-                    quote! { let current_position: usize = variants_ref.iter().position(|v: &_| v == &self.#ident ).unwrap_or(0); }
+                    quote! { let current_position: usize = variants_ref.iter().position(|v: &_| v == &self.#ident ).unwrap_or(variants_ref.len()); }
                 } else {
                     quote! { let current_position: usize = variants_ref.iter().position(|v: &_| v == &self.#ident ).expect("current variant not in given list"); }
                 };

@@ -18,7 +18,6 @@ use ratatui::crossterm::{
 use serialport::{SerialPortInfo, SerialPortType};
 use tracing::{Level, debug, error, info, level_filters::LevelFilter};
 use tracing_appender::non_blocking::WorkerGuard;
-use tui::buffer::line_ending_iter_inner;
 
 mod app;
 mod errors;

@@ -1,5 +1,5 @@
-use ratatui::widgets::Table;
+// use ratatui::widgets::Table;
 
-use crate::serial::PortSettings;
+// use crate::serial::PortSettings;
 
 // pub fn port_settings() -> Table<'static> {}

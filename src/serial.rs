@@ -10,6 +10,7 @@ use std::{
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use bstr::ByteVec;
+use compact_str::CompactString;
 use serde::{Deserialize, Serializer};
 use serde_inline_default::serde_inline_default;
 use serialport::{
@@ -22,8 +23,11 @@ use virtual_serialport::VirtualPort;
 use crate::{
     app::{COMMON_BAUD, DEFAULT_BAUD, Event, Tick},
     errors::{YapError, YapResult},
-    settings::ser::{
-        deserialize_from_u8, deserialize_line_ending, serialize_as_u8, serialize_line_ending,
+    settings::{
+        PortSettings,
+        ser::{
+            deserialize_from_u8, deserialize_line_ending, serialize_as_u8, serialize_line_ending,
+        },
     },
     traits::ToggleBool,
 };
@@ -60,58 +64,6 @@ impl From<SerialEvent> for Event {
     }
 }
 
-#[serde_inline_default]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, StructTable)]
-pub struct PortSettings {
-    /// The baud rate in symbols-per-second.
-    // #[table(values = COMMON_BAUD)]
-    #[table(immutable)]
-    #[serde_inline_default(DEFAULT_BAUD)]
-    pub baud_rate: u32,
-    /// Number of bits per character.
-    #[table(values = [DataBits::Five, DataBits::Six, DataBits::Seven, DataBits::Eight])]
-    #[serde_inline_default(DataBits::Eight)]
-    #[serde(
-        serialize_with = "serialize_as_u8",
-        deserialize_with = "deserialize_from_u8"
-    )]
-    pub data_bits: DataBits,
-    /// Flow control modes.
-    #[table(values = [FlowControl::None, FlowControl::Software, FlowControl::Hardware])]
-    #[serde_inline_default(FlowControl::None)]
-    pub flow_control: FlowControl,
-    /// Parity bit modes.
-    #[table(values = [Parity::None, Parity::Odd, Parity::Even])]
-    #[serde_inline_default(Parity::None)]
-    pub parity_bits: Parity,
-    /// Number of stop bits.
-    #[table(values = [StopBits::One, StopBits::Two])]
-    #[serde_inline_default(StopBits::One)]
-    #[serde(
-        serialize_with = "serialize_as_u8",
-        deserialize_with = "deserialize_from_u8"
-    )]
-    pub stop_bits: StopBits,
-    /// Line endings for RX and TX.
-    #[table(display = ["None", "\\n", "\\r", "\\r\\n"])]
-    #[table(values = ["", "\n", "\r", "\r\n"])]
-    #[table(allow_unknown_values)]
-    #[serde(
-        serialize_with = "serialize_line_ending",
-        deserialize_with = "deserialize_line_ending"
-    )]
-    #[serde_inline_default(String::from("\n"))]
-    pub line_ending: String,
-    /// Assert DTR to this state on port connect (and reconnect).
-    #[table(rename = "DTR on Connect")]
-    #[serde_inline_default(true)]
-    pub dtr_on_connect: bool,
-    /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB device/COM port.
-    #[table(values = [Reconnections::Disabled, Reconnections::StrictChecks, Reconnections::LooseChecks])]
-    #[serde_inline_default(Reconnections::LooseChecks)]
-    pub reconnections: Reconnections,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Reconnections {
     Disabled,
@@ -127,21 +79,6 @@ impl std::fmt::Display for Reconnections {
             Reconnections::LooseChecks => "Loose Checks",
         };
         write!(f, "{}", reconnection_str)
-    }
-}
-
-impl Default for PortSettings {
-    fn default() -> Self {
-        Self {
-            baud_rate: DEFAULT_BAUD,
-            data_bits: DataBits::Eight,
-            flow_control: FlowControl::None,
-            parity_bits: Parity::None,
-            stop_bits: StopBits::One,
-            line_ending: "\n".into(),
-            dtr_on_connect: true,
-            reconnections: Reconnections::LooseChecks,
-        }
     }
 }
 

@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use bstr::ByteSlice;
 use bstr::ByteVec;
 use compact_str::ToCompactString;
@@ -43,4 +45,26 @@ where
             "Failed to unescape line ending string: {e}"
         ))),
     }
+}
+
+pub fn serialize_as_string<S, T>(input: T, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    T: ToString,
+{
+    let buffer = input.to_string();
+    serializer.serialize_str(&buffer)
+}
+
+pub fn deserialize_from_str<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: FromStr,
+{
+    let s = String::deserialize(deserializer)?;
+    let generic: T = s
+        .parse()
+        .map_err(|_| serde::de::Error::custom(format!("Failed to parse line ending: \"{s}\"")))?;
+
+    Ok(generic)
 }

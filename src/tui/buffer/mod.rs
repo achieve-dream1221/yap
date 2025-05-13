@@ -1,9 +1,10 @@
 use std::{borrow::Cow, cmp::Ordering, collections::BTreeSet, iter::Peekable};
 
 use ansi_to_tui::IntoText;
+use bstr::{ByteSlice, ByteVec};
 use buf_line::{BufLine, LineType};
 use chrono::{DateTime, Local};
-use compact_str::CompactString;
+use compact_str::{CompactString, ToCompactString};
 use itertools::{Either, Itertools};
 use memchr::memmem::Finder;
 use ratatui::{
@@ -54,8 +55,57 @@ impl UserEcho {
 #[derive(Debug, Clone)]
 pub enum LineEnding {
     None,
-    Byte(CompactString),
-    MultiByte(CompactString, Finder<'static>),
+    Byte(u8),
+    MultiByte(Finder<'static>),
+}
+
+impl PartialEq<str> for LineEnding {
+    fn eq(&self, other: &str) -> bool {
+        let other_esc = Vec::unescape_bytes(other);
+        match self {
+            LineEnding::None => other.is_empty(),
+            _ if other.is_empty() => false,
+            LineEnding::Byte(_) if other_esc.len() != 1 => false,
+            LineEnding::Byte(byte) => *byte == other_esc[0],
+            LineEnding::MultiByte(finder) => finder.needle() == other_esc,
+        }
+    }
+}
+
+impl PartialEq<&str> for LineEnding {
+    fn eq(&self, other: &&str) -> bool {
+        self.eq(*other)
+    }
+}
+
+impl PartialEq<LineEnding> for &str {
+    fn eq(&self, other: &LineEnding) -> bool {
+        other.eq(*self)
+    }
+}
+
+impl PartialEq<LineEnding> for str {
+    fn eq(&self, other: &LineEnding) -> bool {
+        other.eq(self)
+    }
+}
+
+impl PartialEq<[u8]> for LineEnding {
+    fn eq(&self, other: &[u8]) -> bool {
+        match self {
+            LineEnding::None => other.is_empty(),
+            _ if other.is_empty() => false,
+            LineEnding::Byte(_) if other.len() != 1 => false,
+            LineEnding::Byte(byte) => *byte == other[0],
+            LineEnding::MultiByte(finder) => finder.needle() == other,
+        }
+    }
+}
+
+impl PartialEq<&[u8]> for LineEnding {
+    fn eq(&self, other: &&[u8]) -> bool {
+        self.eq(*other)
+    }
 }
 
 // impl AsRef<[u8]> for LineEnding {
@@ -68,28 +118,44 @@ pub enum LineEnding {
 //     }
 // }
 
-impl AsRef<str> for LineEnding {
-    fn as_ref(&self) -> &str {
-        match self {
-            LineEnding::None => "",
-            LineEnding::Byte(cs) => cs.as_str(),
-            LineEnding::MultiByte(cs, _) => cs.as_str(),
-        }
-    }
-}
+// impl AsRef<str> for LineEnding {
+//     fn as_ref(&self) -> &str {
+//         match self {
+//             LineEnding::None => "",
+//             LineEnding::Byte(cs) => cs.as_str(),
+//             LineEnding::MultiByte(cs, _) => cs.as_str(),
+//         }
+//     }
+// }
 
 impl From<&str> for LineEnding {
     fn from(value: &str) -> Self {
         if value.is_empty() {
             LineEnding::None
-        } else if value.len() == 1 {
-            let cs = CompactString::from(value);
-            assert_eq!(cs.len(), 1, "Inner should only contain one byte.");
-            LineEnding::Byte(cs)
         } else {
-            let cs = CompactString::from(value);
-            let finder = Finder::new(cs.as_bytes()).into_owned();
-            LineEnding::MultiByte(cs, finder)
+            let unescaped = Vec::unescape_bytes(value);
+            debug_assert!(!unescaped.is_empty());
+            if value.len() == 1 {
+                LineEnding::Byte(unescaped[0])
+            } else {
+                let finder = Finder::new(&unescaped).into_owned();
+                LineEnding::MultiByte(finder)
+            }
+        }
+    }
+}
+
+impl From<&[u8]> for LineEnding {
+    fn from(value: &[u8]) -> Self {
+        if value.is_empty() {
+            LineEnding::None
+        } else {
+            if value.len() == 1 {
+                LineEnding::Byte(value[0])
+            } else {
+                let finder = Finder::new(value).into_owned();
+                LineEnding::MultiByte(finder)
+            }
         }
     }
 }
@@ -140,7 +206,7 @@ pub enum UserEcho {
 impl Buffer {
     // TODO lower sources of truth for all this.
     // Rc<Something> with the settings that's shared around?
-    pub fn new(line_ending: &str, rendering: Rendering) -> Self {
+    pub fn new(line_ending: &[u8], rendering: Rendering) -> Self {
         Self {
             raw_buffer: Vec::with_capacity(1024),
             buffer_timestamps: Vec::with_capacity(1024),
@@ -464,8 +530,9 @@ impl Buffer {
             total + new_height
         })
     }
-    pub fn update_line_ending(&mut self, line_ending: &str) {
-        if self.line_ending.as_ref() != line_ending {
+    // pub fn update_line_ending(&mut self, line_ending: &str) {
+    pub fn update_line_ending(&mut self, line_ending: &[u8]) {
+        if self.line_ending != line_ending {
             self.line_ending = line_ending.into();
             self.reconsume_raw_buffer();
         }
@@ -714,53 +781,48 @@ impl Buffer {
         Ok(())
     }
 
-    pub fn rx_tx_ending_bytes(&self) -> &[u8] {
-        self.line_ending.as_ref().as_bytes()
-    }
+    // pub fn rx_tx_ending_bytes(&self) -> &[u8] {
+    //     self.line_ending.as_ref().as_bytes()
+    // }
 }
 
-// TODO make tests for this idiot thing
-
-pub fn line_ending_iter<'a>(
-    bytes: &'a [u8],
-    line_ending: &'a LineEnding,
-) -> impl Iterator<Item = (&'a [u8], &'a [u8], (usize, usize))> {
-    line_ending_iter_inner(
-        bytes,
-        match line_ending {
-            LineEnding::None => ("", None),
-            LineEnding::Byte(cs) => (cs, None),
-            LineEnding::MultiByte(cs, finder) => (cs, Some(finder)),
-        },
-    )
-}
-
-/// Returns an iterator over the given byte slice, seperated by (and excluding) the given line ending `&str`.
+/// Returns an iterator over the given byte slice, seperated by (and excluding) the given line ending byte slice.
 ///
 /// String slice tuple is in order of `(exclusive, inclusive/original)`.
 ///
 /// `usize` tuple has the inclusive indices into the given slice.
 ///
 /// If no line ending was found, emits the whole slice once.
-pub fn line_ending_iter_inner<'a>(
+pub fn line_ending_iter<'a>(
     bytes: &'a [u8],
-    line_ending: (&'a str, Option<&'a Finder>),
+    line_ending: &'a LineEnding,
 ) -> impl Iterator<Item = (&'a [u8], &'a [u8], (usize, usize))> {
-    let (le_str, finder_opt) = line_ending;
-    assert!(!le_str.is_empty(), "line_ending can't be empty");
+    assert!(
+        !matches!(line_ending, LineEnding::None),
+        "line_ending can't be empty"
+    );
 
-    let line_ending_pos_iter = if let Some(finder) = finder_opt {
-        assert_ne!(
-            le_str.len(),
-            1,
-            "not allowing slower Finder search with one-byte ending"
-        );
-        Either::Left(finder.find_iter(bytes))
-    } else if le_str.len() == 1 {
-        Either::Right(memchr::memchr_iter(le_str.as_bytes()[0], bytes))
-    } else {
-        Either::Left(memchr::memmem::find_iter(bytes, le_str.as_bytes()))
+    let line_ending_pos_iter = match line_ending {
+        LineEnding::None => unreachable!(),
+        LineEnding::Byte(byte) => Either::Right(memchr::memchr_iter(*byte, bytes)),
+        LineEnding::MultiByte(finder) => {
+            assert_ne!(finder.needle().len(), 0, "empty finder not allowed");
+            assert_ne!(
+                finder.needle().len(),
+                1,
+                "not allowing slower Finder search with one-byte ending"
+            );
+            Either::Left(finder.find_iter(bytes))
+        }
     };
+    let le_len = match line_ending {
+        LineEnding::None => unreachable!(),
+        LineEnding::Byte(_) => 1,
+        LineEnding::MultiByte(finder) => finder.needle().len(),
+    };
+
+    // if not using a finder with multi-byte endings:
+    // Either::Left(memchr::memmem::find_iter(bytes, line_ending_bytes))
 
     // let line_ending_pos_iter = if line_ending.len() == 1 {
     // } else {
@@ -789,11 +851,11 @@ pub fn line_ending_iter_inner<'a>(
                 let index_copy = last_index;
                 // Adding the length of the line ending to exclude it's presence
                 // from the next line.
-                last_index = line_ending_index + le_str.len();
+                last_index = line_ending_index + le_len;
                 (
                     &bytes[index_copy..line_ending_index],
-                    &bytes[index_copy..line_ending_index + le_str.len()],
-                    (index_copy, line_ending_index + le_str.len()),
+                    &bytes[index_copy..line_ending_index + le_len],
+                    (index_copy, line_ending_index + le_len),
                 )
             };
             Some(result)
@@ -810,7 +872,8 @@ mod tests {
     #[test]
     fn test_single_line() {
         let s = b"hello";
-        let it = line_ending_iter_inner(s, ("\n", None));
+        let le = LineEnding::Byte(b'\n');
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].0, b"hello");
@@ -821,7 +884,8 @@ mod tests {
     #[test]
     fn test_simple_lines() {
         let s = b"foo\nbar\nbaz";
-        let it = line_ending_iter_inner(s, ("\n", None));
+        let le = LineEnding::Byte(b'\n');
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"foo");
@@ -838,14 +902,16 @@ mod tests {
     #[test]
     fn test_few_bytes() {
         let s = b"a";
-        let it = line_ending_iter_inner(s, ("\n", None));
+        let le = LineEnding::Byte(b'\n');
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].0, b"a");
         assert_eq!(res[0].1, b"a");
 
         let s = b"";
-        let it = line_ending_iter_inner(s, ("\n", None));
+        let le = LineEnding::Byte(b'\n');
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].0, b"");
@@ -855,7 +921,8 @@ mod tests {
     #[test]
     fn test_trailing_newline() {
         let s = b"a\nb\nc\n";
-        let it = line_ending_iter_inner(s, ("\n", None));
+        let le = LineEnding::Byte(b'\n');
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"a");
@@ -869,7 +936,8 @@ mod tests {
     #[test]
     fn test_starting_newline() {
         let s = b"\rb\nc\n";
-        let it = line_ending_iter_inner(s, ("\r", None));
+        let le = LineEnding::Byte(b'\r');
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 2);
         assert_eq!(res[0].0, b"");
@@ -881,7 +949,8 @@ mod tests {
     #[test]
     fn test_crlf() {
         let s = b"one\r\ntwo\r\nthree";
-        let it = line_ending_iter_inner(s, ("\r\n", None));
+        let le = LineEnding::MultiByte(Finder::new(b"\r\n"));
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"one");
@@ -893,16 +962,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "line_ending can't be empty")]
+    #[should_panic(expected = "empty finder")]
     fn test_line_ending_empty() {
         let s = b"test";
-        let _ = line_ending_iter_inner(s, ("", None));
+        let le = LineEnding::MultiByte(Finder::new(&[]));
+        let _ = line_ending_iter(s, &le);
     }
 
     #[test]
     fn test_multi_byte_line_ending() {
         let s = b"abcXYZdefXYZghi";
-        let it = line_ending_iter_inner(s, ("XYZ", None));
+        let finder = Finder::new(b"XYZ");
+        let le = LineEnding::MultiByte(finder);
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"abc");
@@ -916,7 +988,8 @@ mod tests {
     #[test]
     fn test_multiple_consecutive_line_endings() {
         let s = b"foo\n\nbar\n";
-        let it = line_ending_iter_inner(s, ("\n", None));
+        let le = LineEnding::Byte(b'\n');
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"foo");
@@ -932,7 +1005,8 @@ mod tests {
     fn test_find_one_byte_with_finder() {
         let s = b"apple,banana,grape";
         let finder = Finder::new(b",");
-        let it = line_ending_iter_inner(s, (",", Some(&finder)));
+        let le = LineEnding::MultiByte(finder);
+        let it = line_ending_iter(s, &le);
         let _res: Vec<_> = it.collect();
         // assert_eq!(res.len(), 3);
         // assert_eq!(res[0].0, b"apple");
@@ -947,7 +1021,8 @@ mod tests {
     fn test_find_multi_byte_with_finder() {
         let s = b"abc123def123ghi";
         let finder = Finder::new(b"123");
-        let it = line_ending_iter_inner(s, ("123", Some(&finder)));
+        let le = LineEnding::MultiByte(finder);
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0, b"abc");
@@ -962,7 +1037,8 @@ mod tests {
     fn test_finder_trailing_sep() {
         let s = b"abc123";
         let finder = Finder::new(b"123");
-        let it = line_ending_iter_inner(s, ("123", Some(&finder)));
+        let le = LineEnding::MultiByte(finder);
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].0, b"abc");
@@ -973,7 +1049,8 @@ mod tests {
     fn test_finder_no_match() {
         let s = b"abcdefgh";
         let finder = Finder::new(b"xyz");
-        let it = line_ending_iter_inner(s, ("xyz", Some(&finder)));
+        let le = LineEnding::MultiByte(finder);
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].0, b"abcdefgh");
@@ -984,7 +1061,8 @@ mod tests {
     fn test_finder_empty_input() {
         let s = b"";
         let finder = Finder::new(b"xyz");
-        let it = line_ending_iter_inner(s, ("xyz", Some(&finder)));
+        let le = LineEnding::MultiByte(finder);
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].0, b"");
@@ -995,7 +1073,8 @@ mod tests {
     fn test_finder_multiple_consecutive() {
         let s = b"xaaxaaxyzaaxyz";
         let finder = Finder::new(b"xyz");
-        let it = line_ending_iter_inner(s, ("xyz", Some(&finder)));
+        let le = LineEnding::MultiByte(finder);
+        let it = line_ending_iter(s, &le);
         let res: Vec<_> = it.collect();
         assert_eq!(res.len(), 2);
         assert_eq!(res[0].0, b"xaaxaa");

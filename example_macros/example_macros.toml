@@ -1,3 +1,5 @@
+name = "Examples"
+
 [[macro]]
 name = "Backspace"
 category = "OpenShock"

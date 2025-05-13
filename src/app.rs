@@ -45,10 +45,9 @@ use crate::{
         EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
     },
     serial::{
-        MOCK_PORT_NAME, PortSettings, PrintablePortInfo, ReconnectType, Reconnections, SerialEvent,
-        SerialHandle,
+        MOCK_PORT_NAME, PrintablePortInfo, ReconnectType, Reconnections, SerialEvent, SerialHandle,
     },
-    settings::{Behavior, Rendering, Settings},
+    settings::{Behavior, PortSettings, Rendering, Settings},
     traits::{LastIndex, LineHelpers, ToggleBool},
     tui::{
         buffer::Buffer,
@@ -292,8 +291,8 @@ impl App {
             Duration::from_millis(100),
         );
 
-        let line_ending = &settings.last_port_settings.line_ending;
-        let buffer = Buffer::new(&line_ending, settings.rendering.clone());
+        let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
+        let buffer = Buffer::new(line_ending, settings.rendering.clone());
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection(PortSelectionElement::Ports),
@@ -552,11 +551,17 @@ impl App {
             (None, _) => (format!("{macro_tag}"), Color::Green),
         };
 
+        let default_macro_line_ending =
+            self.settings.last_port_settings.macro_line_ending.as_bytes(
+                &self.settings.last_port_settings.rx_line_ending,
+                &self.settings.last_port_settings.tx_line_ending,
+            );
+
         let macro_line_ending = macro_content
             .line_ending
             .as_ref()
             .map(CompactString::as_bytes)
-            .unwrap_or(self.buffer.rx_tx_ending_bytes());
+            .unwrap_or(default_macro_line_ending);
 
         match macro_content {
             _ if macro_content.is_empty() => (),
@@ -1231,7 +1236,7 @@ impl App {
             Some(PopupMenu::PortSettings) => {
                 self.settings.last_port_settings = self.scratch.last_port_settings.clone();
                 self.buffer
-                    .update_line_ending(&self.scratch.last_port_settings.line_ending);
+                    .update_line_ending(self.scratch.last_port_settings.rx_line_ending.as_bytes());
 
                 self.serial
                     .update_settings(self.scratch.last_port_settings.clone())
@@ -1364,10 +1369,15 @@ impl App {
                     let user_input = self.user_input.input_box.value();
 
                     if self.settings.behavior.fake_shell {
+                        let user_line_ending = self
+                            .settings
+                            .last_port_settings
+                            .tx_line_ending
+                            .as_bytes(&self.settings.last_port_settings.rx_line_ending);
                         self.serial
                             .send_str(
                                 user_input,
-                                self.buffer.rx_tx_ending_bytes(),
+                                user_line_ending,
                                 self.settings.behavior.fake_shell_unescape,
                             )
                             .unwrap();

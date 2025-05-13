@@ -84,9 +84,8 @@ impl ByteSuffixCheck for [u8] {
     fn has_line_ending(&self, line_ending: &LineEnding) -> bool {
         match line_ending {
             LineEnding::None => false,
-            LineEnding::MultiByte(cs, _) | LineEnding::Byte(cs) => {
-                self.has_byte_suffix(cs.as_bytes())
-            }
+            LineEnding::Byte(byte) => self.has_byte_suffix(&[*byte]),
+            LineEnding::MultiByte(finder) => self.has_byte_suffix(finder.needle()),
         }
     }
 }
