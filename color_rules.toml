@@ -23,10 +23,16 @@ rule = '^\[\d+\]\[V\]\[[^\]:]+(?::\d+)?\]'
 color = "magenta"
 line = true
 
-[[literal]]
-rule = "OpenShock"
-color = "BrightMagenta"
+[[regex]]
+rule = '(?i)lorem'
+color = "cyan"
 
-[[literal]]
-rule = "domain"
+[[regex]]
+rule = "OpenShock"
+color = "BrightCyan"
+
+[[regex]]
+# \x1B[K
+rule = '(?-u)\x1b\x5b\x4b'
 color = "red"
+line = true

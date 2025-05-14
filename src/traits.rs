@@ -229,12 +229,11 @@ pub trait LineColor {
 }
 
 impl LineColor for Line<'_> {
-    /// ## Panics if range intersects char boundaries!
+    /// ## Panics if range intersects char boundaries or goes out of bounds!
     fn style_slice(&mut self, range: Range<usize>, style: Style) {
         debug!("Styling {range:?} with {style:?}");
         let spans = &mut self.spans;
-        let total_len: usize = spans.iter().map(|s| s.content.len()).sum();
-        assert!(range.end <= total_len, "range can't end past slice length");
+        // let total_len: usize = spans.iter().map(|s| s.content.len()).sum();
         let mut current = 0;
         for (index, span) in spans.iter_mut().enumerate() {
             let span_len = span.content.len();
