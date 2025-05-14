@@ -4358,6 +4358,7 @@ dependencies = [
  "num-integer",
  "ratatui",
  "ratatui-macros",
+ "regex",
  "rolling-file",
  "serde",
  "serde-inline-default",

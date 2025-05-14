@@ -1,6 +1,7 @@
 use ratatui::layout::{Rect, Size};
 
 pub mod buffer;
+pub mod color_rules;
 pub mod port_settings;
 pub mod prompts;
 pub mod single_line_selector;

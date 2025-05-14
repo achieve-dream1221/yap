@@ -1,0 +1,32 @@
+[[regex]]
+rule = '^\[\d+\]\[D\]\[[^\]:]+(?::\d+)?\]'
+color = "blue"
+line = true
+
+[[regex]]
+rule = '^\[\d+\]\[I\]\[[^\]:]+(?::\d+)?\]'
+color = "green"
+line = true
+
+[[regex]]
+rule = '^\[\d+\]\[E\]\[[^\]:]+(?::\d+)?\]'
+color = "red"
+line = true
+
+[[regex]]
+rule = '^\[\d+\]\[W\]\[[^\]:]+(?::\d+)?\]'
+color = "yellow"
+line = true
+
+[[regex]]
+rule = '^\[\d+\]\[V\]\[[^\]:]+(?::\d+)?\]'
+color = "magenta"
+line = true
+
+[[literal]]
+rule = "OpenShock"
+color = "BrightMagenta"
+
+[[literal]]
+rule = "domain"
+color = "red"

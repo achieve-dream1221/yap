@@ -896,6 +896,12 @@ impl App {
                     .notify_str(format!("Reloaded Macros!"), Color::Green);
             }
 
+            _ if m == RELOAD_COLORS => {
+                self.buffer.reload_color_rules().unwrap();
+                self.notifs
+                    .notify_str(format!("Reloaded Color Rules!"), Color::Green);
+            }
+
             unknown => {
                 warn!("Unknown keybind action: {unknown}");
                 self.notifs.notify_str(

@@ -20,6 +20,7 @@ pub mod methods {
     pub const SHOW_BEHAVIOR: &str = "show-behavior";
     pub const SHOW_RENDERING: &str = "show-rendering";
     pub const RELOAD_MACROS: &str = "reload-macros";
+    pub const RELOAD_COLORS: &str = "reload-colors";
 }
 
 static CONFIG_TOML: &str = r#"
@@ -34,6 +35,7 @@ ctrl-m = "show-macros"
 ctrl-b = "show-behavior"
 'ctrl-.' = "show-portsettings"
 ctrl-d = "toggle-indices"
+ctrl-f = "reload-colors"
 
 [macros]
 F19 = "Restart"

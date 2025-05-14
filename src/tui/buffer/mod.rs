@@ -22,14 +22,17 @@ use tracing::{debug, error, info, warn};
 use crate::{
     errors::YapResult,
     settings::Rendering,
-    traits::{ByteSuffixCheck, LineHelpers},
+    traits::{ByteSuffixCheck, LineColor, LineHelpers},
 };
+
+use super::color_rules::ColorRules;
 
 mod buf_line;
 mod wrap;
 
 // use crate::app::{LINE_ENDINGS, LINE_ENDINGS_DEFAULT};
 
+#[derive(Debug)]
 pub struct BufferState {
     vert_scroll: usize,
     scrollbar_state: ScrollbarState,
@@ -163,6 +166,7 @@ impl From<&[u8]> for LineEnding {
 // TODO tests for buffer behavior with new lines
 // (i broke it once before with tests passing, so, bleh)
 
+#[derive(Debug)]
 pub struct Buffer {
     raw_buffer: Vec<u8>,
     // Time-tagged indexes into `raw_buffer`, from each input from the port.
@@ -182,6 +186,9 @@ pub struct Buffer {
     // TODO separate line ending for TX'd text?
     line_ending: LineEnding,
     // line_ending_finder: Finder<'static>,
+
+    //
+    color_rules: ColorRules,
 }
 
 #[derive(
@@ -224,6 +231,7 @@ impl Buffer {
             rendering,
             line_ending: line_ending.into(),
             last_line_completed: true,
+            color_rules: ColorRules::load_from_file("../../color_rules.toml"),
         }
     }
     // pub fn append_str(&mut self, str: &str) {
@@ -332,7 +340,7 @@ impl Buffer {
 
             let slice = &self.raw_buffer[last_index..start_index + trunc.len()];
             // info!("AAAFG: {:?}", slice);
-            let line = match slice.into_line_lossy(Style::new()) {
+            let mut line = match slice.into_line_lossy(Style::new()) {
                 Ok(line) => line,
                 Err(_) => {
                     error!("ansi-to-tui failed to parse input! Using unstyled text.");
@@ -348,15 +356,28 @@ impl Buffer {
             //         .join("")
             //         .escape_default()
             // );
+
+            // if line.width() >= 5 {
+            //     line.style_slice(1..3, Style::new().red().italic());
+            // }
+
+            self.color_rules.apply_onto(slice, &mut line);
+
             last_line.update_line(line, slice, self.last_terminal_size.width, &self.rendering);
         } else {
-            let line = match trunc.into_line_lossy(Style::new()) {
+            let mut line = match trunc.into_line_lossy(Style::new()) {
                 Ok(line) => line,
                 Err(_) => {
                     error!("ansi-to-tui failed to parse input! Using unstyled text.");
                     Line::from(String::from_utf8_lossy(trunc).to_string())
                 }
             };
+
+            self.color_rules.apply_onto(trunc, &mut line);
+
+            // if line.width() >= 5 {
+            //     line.style_slice(1..3, Style::new().red().italic());
+            // }
 
             // if !line.is_styled() {
             //     assert!(line.spans.len() <= 1);
@@ -787,6 +808,12 @@ impl Buffer {
     // pub fn rx_tx_ending_bytes(&self) -> &[u8] {
     //     self.line_ending.as_ref().as_bytes()
     // }
+
+    pub fn reload_color_rules(&mut self) -> color_eyre::Result<()> {
+        self.color_rules = ColorRules::load_from_file("../../color_rules.toml");
+        self.reconsume_raw_buffer();
+        Ok(())
+    }
 }
 
 /// Returns an iterator over the given byte slice, seperated by (and excluding) the given line ending byte slice.

@@ -102,10 +102,10 @@ impl BufLine {
 
         line.remove_unsavory_chars();
 
-        if !line.is_styled() && !line.is_empty() {
-            assert!(line.spans.len() <= 1);
-            determine_color(&mut line, &[]);
-        }
+        // if !line.is_styled() && !line.is_empty() {
+        //     assert!(line.spans.len() <= 1);
+        //     determine_color(&mut line, &[]);
+        // }
 
         let index_info = index_info(raw_value, raw_buffer_index, line_type);
 
@@ -128,11 +128,6 @@ impl BufLine {
         area_width: u16,
         rendering: &Rendering,
     ) {
-        if !line.is_styled() && !line.is_empty() {
-            assert!(line.spans.len() <= 1);
-            determine_color(&mut line, &[]);
-        }
-
         self.index_info = index_info(full_line_slice, self.raw_buffer_index, self.line_type);
 
         self.value = line;
@@ -222,27 +217,27 @@ impl BufLine {
     // }
 }
 
-fn determine_color(line: &mut Line, rules: &[u8]) {
-    assert_eq!(line.spans.len(), 1);
-    if let Some(slice) = line.spans[0].content.first_chars(5) {
-        let mut style = Style::new();
-        style = match slice {
-            // "USER>" => style.dark_gray(),
-            "Got m" => style.blue(),
-            "ID:0x" => style.green(),
-            "Chan." => style.dark_gray(),
-            "Mode:" => style.yellow(),
-            "Power" => style.red(),
-            // "keepa" => style.red(),
-            _ => style,
-        };
+// fn determine_color(line: &mut Line, rules: &[u8]) {
+//     assert_eq!(line.spans.len(), 1);
+//     if let Some(slice) = line.spans[0].content.first_chars(5) {
+//         let mut style = Style::new();
+//         style = match slice {
+//             // "USER>" => style.dark_gray(),
+//             "Got m" => style.blue(),
+//             "ID:0x" => style.green(),
+//             "Chan." => style.dark_gray(),
+//             "Mode:" => style.yellow(),
+//             "Power" => style.red(),
+//             // "keepa" => style.red(),
+//             _ => style,
+//         };
 
-        if style != Style::new() {
-            line.style = style;
-            line.style_all_spans(style);
-        }
-    }
-}
+//         if style != Style::new() {
+//             line.style = style;
+//             line.style_all_spans(style);
+//         }
+//     }
+// }
 
 fn index_info(full_line_slice: &[u8], start_index: usize, line_type: LineType) -> CompactString {
     if let LineType::User { .. } = line_type {
