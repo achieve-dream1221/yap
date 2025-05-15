@@ -1,6 +1,6 @@
 use std::{borrow::Cow, cmp::Ordering, collections::BTreeSet, iter::Peekable};
 
-use ansi_to_tui::IntoText;
+use ansi_to_tui::{IntoText, LossyFlavor};
 use bstr::{ByteSlice, ByteVec};
 use buf_line::{BufLine, LineType};
 use chrono::{DateTime, Local};
@@ -20,6 +20,7 @@ use ratatui_macros::{line, span};
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    changed,
     errors::YapResult,
     settings::Rendering,
     traits::{ByteSuffixCheck, LineColor, LineHelpers},
@@ -346,7 +347,12 @@ impl Buffer {
 
             let slice = &self.raw_buffer[last_index..start_index + trunc.len()];
             // info!("AAAFG: {:?}", slice);
-            let mut line = match slice.into_line_lossy(Style::new()) {
+            let lossy_flavor = if self.rendering.escape_invalid_bytes {
+                LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
+            } else {
+                LossyFlavor::replacement_char()
+            };
+            let mut line = match slice.into_line_lossy(Style::new(), lossy_flavor) {
                 Ok(line) => line,
                 Err(_) => {
                     error!("ansi-to-tui failed to parse input! Using unstyled text.");
@@ -371,7 +377,12 @@ impl Buffer {
 
             last_line.update_line(line, slice, self.last_terminal_size.width, &self.rendering);
         } else {
-            let mut line = match trunc.into_line_lossy(Style::new()) {
+            let lossy_flavor = if self.rendering.escape_invalid_bytes {
+                LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
+            } else {
+                LossyFlavor::replacement_char()
+            };
+            let mut line = match trunc.into_line_lossy(Style::new(), lossy_flavor) {
                 Ok(line) => line,
                 Err(_) => {
                     error!("ansi-to-tui failed to parse input! Using unstyled text.");
@@ -569,9 +580,13 @@ impl Buffer {
     }
     pub fn update_render_settings(&mut self, rendering: Rendering) {
         let old = std::mem::replace(&mut self.rendering, rendering);
-        let should_reconsume = old.echo_user_input != self.rendering.echo_user_input;
-        let should_rewrap_lines = (old.timestamps != self.rendering.timestamps)
-            || (old.show_indices != self.rendering.show_indices);
+        let new = &self.rendering;
+        let should_reconsume =
+            changed!(old, new, echo_user_input) || changed!(old, new, escape_invalid_bytes);
+
+        let should_rewrap_lines =
+            changed!(old, new, timestamps) || changed!(old, new, show_indices);
+
         if should_reconsume {
             self.reconsume_raw_buffer();
         } else if should_rewrap_lines {

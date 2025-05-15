@@ -84,6 +84,10 @@ pub struct Rendering {
     #[serde(default)]
     /// Wrap text longer than the screen.
     pub wrap_text: bool,
+
+    #[serde(default)]
+    /// Show invalid byte sequences in \xFF notation.
+    pub escape_invalid_bytes: bool,
 }
 
 #[serde_inline_default]

@@ -220,3 +220,13 @@ fn get_user_dir() -> Option<std::path::PathBuf> {
         None
     }
 }
+
+#[macro_export]
+/// Macro to check if a field has changed between two objects.
+///
+/// Usage: `changed!(old, new, field_name)`
+macro_rules! changed {
+    ($a:expr, $b:expr, $field:ident) => {
+        ($a.$field != $b.$field)
+    };
+}
