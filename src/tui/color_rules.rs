@@ -24,8 +24,6 @@ struct RegexRule {
 }
 #[derive(Debug)]
 struct LiteralRule {
-    value: CompactString,
-    // TODO use value? self-ref?
     finder: Finder<'static>,
 }
 
@@ -66,12 +64,11 @@ impl ColorRules {
 
         for rule in literal {
             let color = Color::from_str(&rule.color).unwrap();
-            let value = rule.rule.clone();
             let finder = Finder::new(rule.rule.as_bytes()).into_owned();
             if rule.line {
-                literal_lines.push((LiteralRule { value, finder }, color));
+                literal_lines.push((LiteralRule { finder }, color));
             } else {
-                literal_words.push((LiteralRule { value, finder }, color));
+                literal_words.push((LiteralRule { finder }, color));
             }
         }
 
@@ -193,7 +190,7 @@ impl ColorRules {
             }
         }
         for (lit_rule, color) in &self.literal_words {
-            let rule_len = lit_rule.value.len();
+            let rule_len = lit_rule.finder.needle().len();
             for occurance_idx in lit_rule.finder.find_iter(original) {
                 let byte_start = occurance_idx;
                 let byte_end = occurance_idx + rule_len;
