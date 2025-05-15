@@ -97,10 +97,7 @@ impl ColorRules {
 
         // We'll do a best-effort match: scan through original and line at the same time.
 
-        use std::collections::HashMap;
-        use unicode_width::UnicodeWidthChar;
-
-        // The buffer 'original' is bytes; the rendered text for 'line' is a str.
+        // The buffer 'original' is bytes; but we also need the rendered text for 'line' as a str.
         let rendered: CompactString = line.iter().map(|s| s.content.as_ref()).join_compact("");
 
         // Build mapping: for each byte index into 'original', what's the visible char index in 'rendered'?

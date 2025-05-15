@@ -237,10 +237,11 @@ impl Buffer {
     // pub fn append_str(&mut self, str: &str) {
     // }
 
-    pub fn append_user_bytes(&mut self, bytes: &[u8], is_macro: bool) {
+    pub fn append_user_bytes(&mut self, bytes: &[u8], line_ending: &[u8], is_macro: bool) {
         let now = Local::now();
         let text: Span = bytes
             .iter()
+            .chain(line_ending.iter())
             .map(|b| format!("\\x{:02X}", b))
             .join("")
             .into();
@@ -273,21 +274,30 @@ impl Buffer {
         // TODO make this more dynamic with the macro hiding
     }
 
-    pub fn append_user_text(&mut self, text: &str, is_macro: bool) {
+    pub fn append_user_text(&mut self, text: &str, line_ending: &[u8], is_macro: bool) {
         let now = Local::now();
-        let mm = text.escape_debug().to_string();
+        let escaped_line_ending = line_ending.escape_bytes().to_string();
+        let escaped_chained: Vec<u8> = text
+            .as_bytes()
+            .iter()
+            .chain(escaped_line_ending.as_bytes().iter())
+            .map(|i| *i)
+            .collect();
 
         let user_span = span!(Color::DarkGray;"USER> ");
         // let Text { lines, .. } = text;
         // TODO HANDLE MULTI-LINE USER INPUT AAAA
-        for (trunc, orig, _indices) in line_ending_iter(mm.as_bytes(), &self.line_ending) {
-            let mut line = match trunc.into_line_lossy(Style::new()) {
-                Ok(line) => line,
-                Err(_) => {
-                    error!("ansi-to-tui failed to parse input! Using unstyled text.");
-                    Line::from(String::from_utf8_lossy(trunc).to_string())
-                }
-            };
+        for (trunc, orig, _indices) in line_ending_iter(&escaped_chained, &self.line_ending) {
+            // not sure if i want to ansi-style user text?
+            // let mut line = match trunc.into_line_lossy(Style::new()) {
+            //     Ok(line) => line,
+            //     Err(_) => {
+            //         error!("ansi-to-tui failed to parse input! Using unstyled text.");
+            //         Line::from(String::from_utf8_lossy(trunc).to_string())
+            //     }
+            // };
+
+            let mut line = Line::from(String::from_utf8_lossy(trunc).to_string());
 
             line.spans.insert(0, user_span.clone());
             line.style_all_spans(Color::DarkGray.into());

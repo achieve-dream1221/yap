@@ -12,6 +12,12 @@ pub enum RxLineEnding {
 }
 
 impl RxLineEnding {
+    pub fn preview(&self) -> &str {
+        match self {
+            RxLineEnding::Preset(preset, _) => preset,
+            RxLineEnding::Custom(custom, _) => &custom,
+        }
+    }
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             RxLineEnding::Preset(_, preset) => preset,
@@ -75,6 +81,13 @@ pub enum TxLineEnding {
 }
 
 impl TxLineEnding {
+    pub fn preview<'a>(&'a self, rx: &'a RxLineEnding) -> &'a str {
+        match self {
+            TxLineEnding::InheritRx => rx.preview(),
+            TxLineEnding::Preset(preset, _) => preset,
+            TxLineEnding::Custom(custom, _) => &custom,
+        }
+    }
     pub fn as_bytes<'a>(&'a self, rx: &'a RxLineEnding) -> &'a [u8] {
         match self {
             TxLineEnding::InheritRx => rx.as_bytes(),
@@ -143,6 +156,14 @@ pub enum MacroTxLineEnding {
 }
 
 impl MacroTxLineEnding {
+    pub fn preview<'a>(&'a self, rx: &'a RxLineEnding, tx: &'a TxLineEnding) -> &'a str {
+        match self {
+            MacroTxLineEnding::InheritRx => rx.preview(),
+            MacroTxLineEnding::InheritTx => tx.preview(rx),
+            MacroTxLineEnding::Preset(preset, _) => preset,
+            MacroTxLineEnding::Custom(custom, _) => &custom,
+        }
+    }
     pub fn as_bytes<'a>(&'a self, rx: &'a RxLineEnding, tx: &'a TxLineEnding) -> &'a [u8] {
         match self {
             MacroTxLineEnding::InheritRx => rx.as_bytes(),

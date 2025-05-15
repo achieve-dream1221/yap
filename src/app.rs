@@ -8,6 +8,7 @@ use std::{
 };
 
 use arboard::Clipboard;
+use bstr::ByteVec;
 use color_eyre::{eyre::Result, owo_colors::OwoColorize};
 use compact_str::{CompactString, ToCompactString};
 use crokey::{KeyCombination, key};
@@ -563,28 +564,36 @@ impl App {
                 &self.settings.last_port_settings.tx_line_ending,
             );
 
-        let macro_line_ending = macro_content
-            .line_ending
-            .as_ref()
-            .map(CompactString::as_bytes)
-            .unwrap_or(default_macro_line_ending);
+        let macro_line_ending = if let Some(line_ending) = &macro_content.escaped_line_ending {
+            Cow::Owned(Vec::unescape_bytes(line_ending))
+        } else {
+            Cow::Borrowed(default_macro_line_ending)
+        };
+
+        // let macro_line_ending = macro_content
+        //     .escaped_line_ending
+        //     .as_ref()
+        //     .map(CompactString::as_bytes)
+        //     .unwrap_or(default_macro_line_ending);
 
         match macro_content {
             _ if macro_content.is_empty() => (),
             _ if macro_content.has_bytes => {
                 let content = macro_content.unescape_bytes();
                 self.serial
-                    .send_bytes(content.clone(), Some(macro_line_ending))
+                    .send_bytes(content.clone(), Some(&macro_line_ending))
                     .unwrap();
 
                 debug!("{}", format!("Sending Macro Bytes: {:02X?}", content));
-                self.buffer.append_user_bytes(&content, true);
+                self.buffer
+                    .append_user_bytes(&content, &macro_line_ending, true);
             }
             _ => {
                 self.serial
-                    .send_str(&macro_content.content, macro_line_ending, true)
+                    .send_str(&macro_content.content, &macro_line_ending, true)
                     .unwrap();
-                self.buffer.append_user_text(&macro_content.content, true);
+                self.buffer
+                    .append_user_text(&macro_content.content, &macro_line_ending, true);
 
                 debug!(
                     "{}",
@@ -721,6 +730,9 @@ impl App {
                 self.user_input.find_input_in_history();
             }
             // KeyCode::Tab => self.tab_pressed(),
+            key!(ctrl - r) if self.popup == Some(PopupMenu::Macros) => {
+                self.run_method_from_string(RELOAD_MACROS).unwrap();
+            }
             key!(esc) => self.esc_pressed(),
             key_combo => {
                 if let Some(method) = self
@@ -1381,19 +1393,18 @@ impl App {
                     let user_input = self.user_input.input_box.value();
 
                     if self.settings.behavior.fake_shell {
-                        let user_line_ending = self
-                            .settings
-                            .last_port_settings
-                            .tx_line_ending
-                            .as_bytes(&self.settings.last_port_settings.rx_line_ending);
+                        let user_le = &self.settings.last_port_settings.tx_line_ending;
+                        let user_le_bytes =
+                            user_le.as_bytes(&self.settings.last_port_settings.rx_line_ending);
                         self.serial
                             .send_str(
                                 user_input,
-                                user_line_ending,
+                                user_le_bytes,
                                 self.settings.behavior.fake_shell_unescape,
                             )
                             .unwrap();
-                        self.buffer.append_user_text(user_input, false);
+                        self.buffer
+                            .append_user_text(user_input, user_le_bytes, false);
                         self.user_input.history.push(user_input);
 
                         self.user_input.clear();
@@ -1612,7 +1623,7 @@ impl App {
         );
         let center_area = centered_rect_size(
             Size {
-                width: area.width.min(42),
+                width: area.width.min(50),
                 height: area.height.min(16),
             },
             area,
@@ -1861,15 +1872,15 @@ impl App {
 
                 frame.render_stateful_widget(table, macros_table_area, &mut self.popup_table_state);
 
-                frame.render_widget(
-                    Line::raw("Ctrl+N: New")
-                        .all_spans_styled(Color::DarkGray.into())
-                        .centered(),
-                    new_seperator,
-                );
+                // frame.render_widget(
+                //     Line::raw("Ctrl+N: New")
+                //         .all_spans_styled(Color::DarkGray.into())
+                //         .centered(),
+                //     new_seperator,
+                // );
 
                 frame.render_widget(
-                    Line::raw("Del: Remove | Ctrl+E: Edit")
+                    Line::raw("Ctrl+R: Reload")
                         .all_spans_styled(Color::DarkGray.into())
                         .centered(),
                     line_area,

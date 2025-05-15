@@ -364,7 +364,7 @@ pub struct MacroContent {
     pub content: CompactString,
     pub has_bytes: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub line_ending: Option<CompactString>,
+    pub escaped_line_ending: Option<CompactString>,
 }
 
 impl MacroContent {
@@ -381,12 +381,12 @@ impl MacroContent {
     // }
     pub fn new_with_line_ending<S: AsRef<str>>(
         value: S,
-        line_ending: Option<CompactString>,
+        escaped_line_ending: Option<CompactString>,
     ) -> Self {
         Self {
             has_bytes: value.as_ref().has_escaped_bytes(),
             content: value.as_ref().into(),
-            line_ending,
+            escaped_line_ending,
         }
     }
     pub fn is_empty(&self) -> bool {

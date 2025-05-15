@@ -39,14 +39,12 @@ ctrl-f = "reload-colors"
 
 [macros]
 F19 = "Restart"
-ctrl-r = "Restart~Restart"
+ctrl-r = ["Restart","Restart"]
 ctrl-f = "Cum|Factory Reset"
 ctrl-s = "CaiX Vib (ID 12345, 0.5s)"
 ctrl-g = "OpenShock Setup|Echo Off"
 ctrl-h = "OpenShock Setup|Factory Reset~OpenShock Setup|Setup Authtoken~OpenShock Setup|Setup Networks"
 "#;
-
-use serde::{Deserializer, Serializer};
 
 use crate::macros::MacroNameTag;
 
@@ -106,19 +104,31 @@ where
         {
             let mut result = IndexMap::new();
 
-            while let Some((key, value)) = map.next_entry::<KeyCombination, String>()? {
-                let tags = if value.is_empty() {
-                    Vec::new()
-                } else {
-                    value
+            // Don't really need this type anywhere else, so it's fine being super private.
+            #[derive(serde::Deserialize)]
+            #[serde(untagged)]
+            enum StringOrMacroArray {
+                String(String),
+                MacroArray(Vec<MacroNameTag>),
+            }
+
+            while let Some((key, value)) = map.next_entry::<KeyCombination, StringOrMacroArray>()? {
+                let tags = match value {
+                    StringOrMacroArray::String(maybe_combined) if maybe_combined.is_empty() => {
+                        Vec::new()
+                    }
+                    StringOrMacroArray::String(maybe_combined) => maybe_combined
                         .split(MACRO_CHAIN_DELIMITER_CHAR)
                         .map(|s| {
                             MacroNameTag::from_str(s).map_err(|_| {
                                 serde::de::Error::custom(format!("Invalid MacroNameTag: '{}'", s))
                             })
                         })
-                        .collect::<Result<Vec<_>, _>>()?
+                        .collect::<Result<Vec<_>, _>>()?,
+
+                    StringOrMacroArray::MacroArray(pre_split) => pre_split,
                 };
+
                 result.insert(key, tags);
             }
             Ok(result)
