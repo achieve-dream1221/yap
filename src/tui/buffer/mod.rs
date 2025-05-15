@@ -53,8 +53,6 @@ impl UserEcho {
     }
 }
 
-// TODO have separate vector for user lines, and re-render the raw buffer when turning user lines on and off?
-
 #[derive(Debug, Clone)]
 pub enum LineEnding {
     None,
@@ -183,7 +181,6 @@ pub struct Buffer {
 
     rendering: Rendering,
 
-    // TODO separate line ending for TX'd text?
     line_ending: LineEnding,
     // line_ending_finder: Finder<'static>,
 
@@ -271,7 +268,6 @@ impl Buffer {
             .filter_user_line(&user_buf_line)
             || (self.raw_buffer.is_empty() || self.raw_buffer.has_line_ending(&self.line_ending));
         self.user_lines.push(user_buf_line);
-        // TODO make this more dynamic with the macro hiding
     }
 
     pub fn append_user_text(&mut self, text: &str, line_ending: &[u8], is_macro: bool) {
@@ -602,9 +598,6 @@ impl Buffer {
         }
     }
     pub fn lines_iter(&self) -> (impl Iterator<Item = Line>, u16) {
-        // TODO styling based on line prefix
-        // or have BufLine.value be an enum for String/ratatui::Line
-        // and then match against at in BufLine::as_line()
         let last_size = &self.last_terminal_size;
         let total_lines = self.combined_height();
         let more_lines_than_height = total_lines > last_size.height as usize;

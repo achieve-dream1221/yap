@@ -679,7 +679,7 @@ impl SerialWorker {
                         //     port.flush()?;
                         // }
                     }
-                    SerialCommand::TxBuffer(_) => todo!(), // Tried to send with no port
+                    SerialCommand::TxBuffer(_) => todo!("Tried to send with no port"), // Tried to send with no port
                 },
 
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {

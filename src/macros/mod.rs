@@ -13,6 +13,7 @@ use compact_str::{CompactString, format_compact};
 use crokey::KeyCombination;
 use fs_err::{self as fs, DirEntry};
 use indexmap::IndexMap;
+use itertools::Either;
 use ratatui::{
     layout::Constraint,
     style::{Style, Stylize},
@@ -89,7 +90,7 @@ impl Macros {
         if self.is_empty() {
             0
         } else {
-            self.category_filtered_macros().count()
+            self.filtered_macro_iter().count()
         }
     }
     pub fn none_visible(&self) -> bool {
@@ -106,7 +107,7 @@ impl Macros {
             ),
         }
     }
-    pub fn category_filtered_macros(
+    fn category_filtered_macros(
         &self,
     ) -> impl DoubleEndedIterator<Item = (&MacroNameTag, &MacroContent)> {
         let category = self.selected_category();
@@ -121,9 +122,31 @@ impl Macros {
                 MacroCategorySelection::Category(cat) => tag.category.as_deref() == Some(cat),
             })
     }
+    fn search_filtered_macros(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&MacroNameTag, &MacroContent)> {
+        let query = self.search_input.value();
+        let query_len = query.len();
+        self.all.iter().filter(move |(tag, content)| {
+            if tag.name.is_char_boundary(query_len) {
+                tag.name[..query_len].eq_ignore_ascii_case(query)
+            } else {
+                false
+            }
+        })
+    }
+    pub fn filtered_macro_iter(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&MacroNameTag, &MacroContent)> {
+        if self.search_input.value().is_empty() {
+            Either::Right(self.category_filtered_macros())
+        } else {
+            Either::Left(self.search_filtered_macros())
+        }
+    }
     pub fn as_table(&self, keybinds: &Keybinds, fuzzy_macro_name_match: bool) -> Table<'_> {
         let filtered = self
-            .category_filtered_macros()
+            .filtered_macro_iter()
             .map(|m| (m.0.name.as_str(), m))
             .map(|(title, (tag, string))| {
                 let macro_string = keybinds

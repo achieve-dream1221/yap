@@ -620,6 +620,21 @@ impl App {
         let mut at_terminal = false;
         // Filter for when we decide to handle user *text input*.
         // TODO move these into per-menu funcs.
+        match self.popup {
+            Some(PopupMenu::Macros) => {
+                match self
+                    .macros
+                    .search_input
+                    .handle_event(&ratatui::crossterm::event::Event::Key(key))
+                {
+                    Some(StateChanged { value: true, .. }) => {}
+
+                    Some(StateChanged { cursor: true, .. }) => {}
+                    _ => (),
+                }
+            }
+            _ => (),
+        }
         match self.menu {
             Menu::Terminal(TerminalPrompt::None) if self.popup.is_none() => {
                 at_terminal = true;
@@ -1017,7 +1032,11 @@ impl App {
             Some(PopupMenu::Macros) => {
                 if self.popup_table_state.selected() == Some(0) {
                     self.popup_table_state.select(None);
-                    self.macros.categories_selector.active = true;
+                    if self.macros.search_input.value().is_empty() {
+                        self.macros.categories_selector.active = true;
+                    } else {
+                        self.popup_single_line_state.active = true;
+                    }
                 } else {
                     self.scroll_menu_up();
                 }
@@ -1058,11 +1077,16 @@ impl App {
                 self.macros.categories_selector.active = false;
                 self.popup_table_state.select_first();
             }
-            // If popup selector chosen on Macro screen, select the Macro Categories
+            // If popup selector chosen on Macro screen, select the Macro Categories (if there's no search active)
             // Has to be above the catch-all below
             Some(PopupMenu::Macros) if self.popup_single_line_state.active => {
                 self.popup_single_line_state.active = false;
-                self.macros.categories_selector.active = true;
+
+                if self.macros.search_input.value().is_empty() {
+                    self.macros.categories_selector.active = true;
+                } else {
+                    self.popup_table_state.select_first();
+                }
             }
             // If on any other screen, just select the first element.
             Some(popup) if self.popup_single_line_state.active => {
@@ -1188,6 +1212,9 @@ impl App {
                     .unwrap();
             }
             Some(PopupMenu::Macros) => {
+                if !self.macros.search_input.value().is_empty() {
+                    return;
+                }
                 self.macros.categories_selector.prev();
                 if self.popup_table_state.selected().is_some() && !self.macros.none_visible() {
                     self.popup_table_state.select_first();
@@ -1237,6 +1264,9 @@ impl App {
                     .unwrap();
             }
             Some(PopupMenu::Macros) => {
+                if !self.macros.search_input.value().is_empty() {
+                    return;
+                }
                 self.macros.categories_selector.next();
                 if self.popup_table_state.selected().is_some() && !self.macros.none_visible() {
                     self.popup_table_state.select_first();
@@ -1308,7 +1338,7 @@ impl App {
                 let Some(index) = self.popup_table_state.selected() else {
                     unreachable!();
                 };
-                let (tag, string) = self.macros.category_filtered_macros().nth(index).unwrap();
+                let (tag, string) = self.macros.filtered_macro_iter().nth(index).unwrap();
                 let tag = tag.to_owned();
                 // let macro_ref: MacroNameTag = macro_binding.into();
 
@@ -1846,21 +1876,52 @@ impl App {
                 //     Line::raw(" <     All Macros    > ").centered(),
                 //     categories_area,
                 // );
-                let categories_iter = ["Has Bytes", "Strings Only", "All Macros"]
-                    .iter()
-                    .map(|s| *s)
-                    .map(String::from)
-                    .map(Line::raw)
-                    .chain(self.macros.categories().map(String::from).map(Line::raw));
-                let categories_selector = SingleLineSelector::new(categories_iter)
-                    .with_next_symbol(">")
-                    .with_prev_symbol("<")
-                    .with_size_hint(popup_menu_title_selector.max_chars());
-                frame.render_stateful_widget(
-                    &categories_selector,
-                    categories_area,
-                    &mut self.macros.categories_selector,
-                );
+
+                if self.macros.search_input.value().is_empty() {
+                    let categories_iter = ["Has Bytes", "Strings Only", "All Macros"]
+                        .iter()
+                        .map(|s| *s)
+                        .map(String::from)
+                        .map(Line::raw)
+                        .chain(self.macros.categories().map(String::from).map(Line::raw));
+                    let categories_selector = SingleLineSelector::new(categories_iter)
+                        .with_next_symbol(">")
+                        .with_prev_symbol("<")
+                        .with_size_hint(popup_menu_title_selector.max_chars());
+                    frame.render_stateful_widget(
+                        &categories_selector,
+                        categories_area,
+                        &mut self.macros.categories_selector,
+                    );
+                } else {
+                    // Get the search text
+                    let search_text = self.macros.search_input.value();
+                    // Center the search line in the area
+                    let search_line = Line::raw(search_text).centered();
+
+                    let width = categories_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge
+
+                    // Calculate padding for centered text
+                    let text_width = search_line.width() as u16;
+                    let pad_left = if width > text_width {
+                        (width - text_width) / 2
+                    } else {
+                        0
+                    };
+
+                    // Can't scroll centered lines horizontally??
+                    let scroll = self.macros.search_input.visual_scroll(width as usize);
+                    let input_text = Paragraph::new(search_line).scroll((0, scroll as u16));
+
+                    frame.render_widget(input_text, categories_area);
+
+                    // Cursor logic: trailing edge after the last char, with center offset
+                    let cursor_pos = self.macros.search_input.visual_cursor();
+                    let centered_offset = pad_left as i32 + (cursor_pos as i32 - scroll as i32);
+                    let cursor_x = categories_area.x + centered_offset.max(0) as u16;
+
+                    frame.set_cursor_position((cursor_x + 1, categories_area.y));
+                }
 
                 let mut table = self
                     .macros
@@ -1900,7 +1961,7 @@ impl App {
                     //     .map(|i| )
                     //     .unwrap_or(&"");
 
-                    let (tag, string) = self.macros.category_filtered_macros().nth(index).unwrap();
+                    let (tag, string) = self.macros.filtered_macro_iter().nth(index).unwrap();
                     // for now i guess
                     // TOOD replace with fancy line preview
                     let macro_preview = string.as_str();
@@ -2363,6 +2424,7 @@ impl App {
 
         self.refresh_scratch();
         self.popup_desc_scroll = -2;
+        self.macros.search_input.reset();
     }
 }
 
