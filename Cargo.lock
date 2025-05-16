@@ -1117,6 +1117,7 @@ dependencies = [
 [[package]]
 name = "espflash"
 version = "3.3.0"
+source = "git+https://github.com/nullstalgia/espflash?branch=public_verify_and_skip#e4ba1ccbfa50a7c4079922f37692ad5e447a1369"
 dependencies = [
  "addr2line 0.22.0",
  "base64",

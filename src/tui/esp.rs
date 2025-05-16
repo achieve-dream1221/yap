@@ -298,22 +298,34 @@ impl EspFlashState {
                     which_bytes,
                 );
 
-                let percent = if *current_file_len == 0 {
-                    0u16
+                let ratio = if *current_file_len == 0 {
+                    0.0
                 } else {
-                    ((*current_progress as f64 / *current_file_len as f64) * 100.0).round() as u16
+                    *current_progress as f64 / *current_file_len as f64
                 };
 
+                let label = format!("{:.2}%", ratio * 100.0);
                 let progressbar = Gauge::default()
                     .gauge_style(Style::from(Color::Green))
-                    .percent(percent);
+                    .label(label)
+                    .ratio(ratio);
 
                 frame.render_widget(progressbar, progress_area);
             }
             EspPopup::Connecting => {
                 frame.render_widget(
                     line!["Connecting to Espressif device..."].centered(),
-                    body2_area,
+                    body1_area,
+                );
+                frame.render_widget(
+                    line!["Try holding down BOOT/IO0"].centered().dark_gray(),
+                    chunks_text,
+                );
+                frame.render_widget(
+                    line!["during connection if unreliable."]
+                        .centered()
+                        .dark_gray(),
+                    which_bytes,
                 );
             }
             EspPopup::Connected { chip } => {

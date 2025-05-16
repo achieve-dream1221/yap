@@ -55,7 +55,6 @@ use crate::{
     tui::{
         buffer::Buffer,
         centered_rect_size,
-        esp::meow,
         prompts::{DisconnectPrompt, PromptTable, centered_rect},
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
@@ -65,6 +64,8 @@ use crate::{
 use crate::keybinds::esp_methods::*;
 #[cfg(feature = "espflash")]
 use crate::serial::esp::EspFlashEvent;
+#[cfg(feature = "espflash")]
+use crate::tui::esp::meow;
 #[cfg(feature = "espflash")]
 use crate::tui::esp::{self, EspFlashState};
 
@@ -799,6 +800,7 @@ impl App {
             }
             key!(esc) => self.esc_pressed(),
             key_combo => {
+                // TODO move all these into diff func
                 if let Some(method) = self
                     .keybinds
                     .method_from_key_combo(key_combo)
@@ -810,9 +812,9 @@ impl App {
                     return;
                 }
 
-                // TODO maybe just remove since the macro queue consumer won't send if unhealthy.
                 let serial_healthy = self.serial.port_status.load().inner.is_healthy();
 
+                #[cfg(feature = "espflash")]
                 if let Some(profile_name) = self
                     .keybinds
                     .espflash_profile_from_key_combo(key_combo)
@@ -822,17 +824,30 @@ impl App {
                         self.espflash.bins.iter().find(|p| p.name == profile_name)
                     {
                         let italic = Style::new().italic();
-                        self.notifs.notify(
-                            line![
-                                "Flashing \"",
-                                span!(italic;profile_name),
-                                "\" [",
-                                key_combo.to_string(),
-                                "]"
-                            ],
-                            Color::LightGreen,
-                        );
-                        self.serial.esp_write_bins(profile.to_owned()).unwrap();
+                        if serial_healthy {
+                            self.notifs.notify(
+                                line![
+                                    "Flashing with \"",
+                                    span!(italic;profile_name),
+                                    "\" [",
+                                    key_combo.to_string(),
+                                    "]"
+                                ],
+                                Color::LightGreen,
+                            );
+                            self.serial.esp_write_bins(profile.to_owned()).unwrap();
+                        } else {
+                            self.notifs.notify(
+                                line![
+                                    "Not flashing with \"",
+                                    span!(italic;profile_name),
+                                    "\" [",
+                                    key_combo.to_string(),
+                                    "]"
+                                ],
+                                Color::Yellow,
+                            );
+                        }
                     } else {
                         error!("No such espflash profile: \"{profile_name}\"");
                         self.notifs.notify_str(
