@@ -279,8 +279,11 @@ impl App {
         debug!("{settings:#?}");
 
         let (event_carousel, carousel_thread) = CarouselHandle::new();
-        let (serial_handle, serial_thread) =
-            SerialHandle::new(tx.clone(), settings.last_port_settings.clone());
+        let (serial_handle, serial_thread) = SerialHandle::new(
+            tx.clone(),
+            settings.last_port_settings.clone(),
+            settings.ignored.clone(),
+        );
 
         let tick_tx = tx.clone();
         event_carousel.add_repeating(
@@ -382,6 +385,7 @@ impl App {
                 end1, end2
             );
             // debug!("{msg:?}");
+
             // Don't wait for another loop iteration to start shutting down workers.
             // TODO convert into a loop {}, but see if clippy notices first (when i dont have 170+ warnings)
             if !self.is_running() {
@@ -448,6 +452,8 @@ impl App {
                 }
             }
             Event::Serial(SerialEvent::Disconnected(reason)) => {
+                #[cfg(feature = "espflash")]
+                self.espflash.reset();
                 // self.menu = Menu::PortSelection;
                 // if let Some(reason) = reason {
                 //     self.notify(format!("Disconnected from port! {reason}"), Color::Red);

@@ -15,7 +15,7 @@ use tracing::error;
 use crate::{
     app::Event,
     errors::{YapError, YapResult},
-    settings::PortSettings,
+    settings::{Ignored, PortSettings},
 };
 
 #[cfg(feature = "espflash")]
@@ -26,12 +26,20 @@ use crate::tui::esp::EspBins;
 use super::worker::{PortStatus, SerialWorker};
 
 #[derive(Debug)]
-pub enum SerialCommand {
+pub enum SerialWorkerCommand {
     RequestPortScan,
     Connect {
         port: SerialPortInfo,
         settings: PortSettings,
     },
+    PortCommand(PortCommand),
+    RequestReconnect,
+    Disconnect,
+    Shutdown(Sender<()>),
+}
+
+#[derive(Debug)]
+pub enum PortCommand {
     PortSettings(PortSettings),
     TxBuffer(Vec<u8>),
     #[cfg(feature = "espflash")]
@@ -44,21 +52,21 @@ pub enum SerialCommand {
         dtr: bool,
         rts: bool,
     },
-    // ReadSignals,
-    RequestReconnect,
-    Disconnect,
-    Shutdown(Sender<()>),
 }
 
 #[derive(Clone)]
 pub struct SerialHandle {
-    pub(super) command_tx: Sender<SerialCommand>,
+    pub(super) command_tx: Sender<SerialWorkerCommand>,
     pub port_status: Arc<ArcSwap<PortStatus>>,
     pub port_settings: Arc<ArcSwap<PortSettings>>,
 }
 
 impl SerialHandle {
-    pub fn new(event_tx: Sender<Event>, port_settings: PortSettings) -> (Self, JoinHandle<()>) {
+    pub fn new(
+        event_tx: Sender<Event>,
+        port_settings: PortSettings,
+        ignored_devices: Ignored,
+    ) -> (Self, JoinHandle<()>) {
         let (command_tx, command_rx) = mpsc::channel();
 
         let port_status = Arc::new(ArcSwap::from_pointee(PortStatus::new_idle(&port_settings)));
@@ -70,6 +78,7 @@ impl SerialHandle {
             event_tx,
             port_status.clone(),
             port_settings.clone(),
+            ignored_devices,
         );
 
         let worker = std::thread::spawn(move || {
@@ -88,7 +97,7 @@ impl SerialHandle {
     }
     pub fn connect(&self, port: &SerialPortInfo, settings: PortSettings) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::Connect {
+            .send(SerialWorkerCommand::Connect {
                 port: port.to_owned(),
                 settings,
             })
@@ -96,12 +105,14 @@ impl SerialHandle {
     }
     pub fn disconnect(&self) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::Disconnect)
+            .send(SerialWorkerCommand::Disconnect)
             .map_err(|_| YapError::NoSerialWorker)
     }
     pub fn update_settings(&self, settings: PortSettings) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::PortSettings(settings))
+            .send(SerialWorkerCommand::PortCommand(PortCommand::PortSettings(
+                settings,
+            )))
             .map_err(|_| YapError::NoSerialWorker)
     }
     /// Sends the supplied bytes through the connected Serial device.
@@ -110,7 +121,9 @@ impl SerialHandle {
             input.extend(ending.iter());
         }
         self.command_tx
-            .send(SerialCommand::TxBuffer(input))
+            .send(SerialWorkerCommand::PortCommand(PortCommand::TxBuffer(
+                input,
+            )))
             .map_err(|_| YapError::NoSerialWorker)
     }
     pub fn send_str(&self, input: &str, line_ending: &[u8], unescape_bytes: bool) -> YapResult<()> {
@@ -129,24 +142,28 @@ impl SerialHandle {
     // }
     pub fn write_signals(&self, dtr: Option<bool>, rts: Option<bool>) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::WriteSignals { dtr, rts })
+            .send(SerialWorkerCommand::PortCommand(
+                PortCommand::WriteSignals { dtr, rts },
+            ))
             .map_err(|_| YapError::NoSerialWorker)
     }
     pub fn toggle_signals(&self, dtr: bool, rts: bool) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::ToggleSignals { dtr, rts })
+            .send(SerialWorkerCommand::PortCommand(
+                PortCommand::ToggleSignals { dtr, rts },
+            ))
             .map_err(|_| YapError::NoSerialWorker)
     }
     /// Non-blocking request for the serial worker to scan for ports and send a list of available ports
     pub fn request_port_scan(&self) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::RequestPortScan)
+            .send(SerialWorkerCommand::RequestPortScan)
             .map_err(|_| YapError::NoSerialWorker)
     }
     /// Non-blocking request for the serial worker to attempt to reconnect to the "current" device
     pub fn request_reconnect(&self) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::RequestReconnect)
+            .send(SerialWorkerCommand::RequestReconnect)
             .map_err(|_| YapError::NoSerialWorker)
     }
     // TODO maybe just shut down when we lose all Tx handles?
@@ -156,7 +173,7 @@ impl SerialHandle {
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         if self
             .command_tx
-            .send(SerialCommand::Shutdown(shutdown_tx))
+            .send(SerialWorkerCommand::Shutdown(shutdown_tx))
             .is_ok()
         {
             if shutdown_rx.recv_timeout(Duration::from_secs(3)).is_ok() {

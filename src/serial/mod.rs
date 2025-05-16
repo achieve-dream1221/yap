@@ -2,6 +2,10 @@ use serialport::{SerialPort, SerialPortInfo, SerialPortType};
 
 use crate::app::Event;
 
+mod errors;
+mod ignorable;
+pub use ignorable::*;
+
 pub mod handle;
 pub mod worker;
 

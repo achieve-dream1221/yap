@@ -24,7 +24,11 @@ use tracing::{info, level_filters::LevelFilter};
 //   - Since #[serde(default)] gets the default for the field's _type_, and *not* the parent struct's `Default::default()` value for it
 // - #[derivative(Default)] for properly setting up `Default::default()` for when a _struct_ is missing.
 
-use crate::{app::DEFAULT_BAUD, serial::Reconnections, tui::buffer::UserEcho};
+use crate::{
+    app::DEFAULT_BAUD,
+    serial::{IgnoreableUsb, Reconnections},
+    tui::buffer::UserEcho,
+};
 
 pub mod ser;
 use ser::*;
@@ -46,6 +50,8 @@ pub struct Settings {
     pub misc: Misc,
     #[serde(default)]
     pub last_port_settings: PortSettings,
+    #[serde(default)]
+    pub ignored: Ignored,
 }
 
 #[serde_inline_default]
@@ -205,6 +211,14 @@ pub struct PortSettings {
     )]
     #[serde_inline_default(MacroTxLineEnding::InheritTx)]
     pub macro_line_ending: MacroTxLineEnding,
+}
+
+#[serde_inline_default]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Ignored {
+    #[serde(default)]
+    /// Show invalid byte sequences in \xFF notation.
+    pub usb: Vec<IgnoreableUsb>,
 }
 
 impl Default for PortSettings {

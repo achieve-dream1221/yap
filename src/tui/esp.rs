@@ -229,6 +229,9 @@ impl EspFlashState {
             _ => (),
         }
     }
+    pub fn reset(&mut self) {
+        _ = self.popup.take();
+    }
     pub fn render_espflash(&self, frame: &mut Frame, screen: Rect) {
         let center_area = centered_rect_size(
             Size {

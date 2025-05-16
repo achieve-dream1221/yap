@@ -8,12 +8,11 @@ use tracing::debug;
 
 use super::{
     SerialEvent,
-    handle::{SerialCommand, SerialHandle},
+    handle::{PortCommand, SerialHandle, SerialWorkerCommand},
 };
 use crate::{
     app::Event,
     errors::{YapError, YapResult},
-    traits::LastIndex,
     tui::esp::EspBins,
 };
 
@@ -25,28 +24,34 @@ pub enum EspCommand {
     DeviceInfo,
 }
 
+impl From<EspCommand> for SerialWorkerCommand {
+    fn from(value: EspCommand) -> Self {
+        SerialWorkerCommand::PortCommand(PortCommand::Esp(value))
+    }
+}
+
 impl SerialHandle {
     pub fn esp_restart(&self, bootloader: bool) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::Esp(EspCommand::Restart { bootloader }))
+            .send(EspCommand::Restart { bootloader }.into())
             .map_err(|_| YapError::NoSerialWorker)
     }
 
     pub fn esp_device_info(&self) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::Esp(EspCommand::DeviceInfo))
+            .send(EspCommand::DeviceInfo.into())
             .map_err(|_| YapError::NoSerialWorker)
     }
 
     pub fn esp_write_bins(&self, bins: EspBins) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::Esp(EspCommand::WriteBins(bins)))
+            .send(EspCommand::WriteBins(bins).into())
             .map_err(|_| YapError::NoSerialWorker)
     }
 
     pub fn esp_erase_flash(&self) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::Esp(EspCommand::EraseFlash))
+            .send(EspCommand::EraseFlash.into())
             .map_err(|_| YapError::NoSerialWorker)
     }
 }
