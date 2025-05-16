@@ -1,25 +1,25 @@
 [[regex]]
-rule = '^\[\d+\]\[D\]\[[^\]:]+(?::\d+)?\]'
+rule = '^\[\s*\d+\]\[D\]\[[^\]:]+(?::\d+)?\]'
 color = "blue"
 line = true
 
 [[regex]]
-rule = '^\[\d+\]\[I\]\[[^\]:]+(?::\d+)?\]'
+rule = '^\[\s*\d+\]\[I\]\[[^\]:]+(?::\d+)?\]'
 color = "green"
 line = true
 
 [[regex]]
-rule = '^\[\d+\]\[E\]\[[^\]:]+(?::\d+)?\]'
+rule = '^\[\s*\d+\]\[E\]\[[^\]:]+(?::\d+)?\]'
 color = "red"
 line = true
 
 [[regex]]
-rule = '^\[\d+\]\[W\]\[[^\]:]+(?::\d+)?\]'
+rule = '^\[\s*\d+\]\[W\]\[[^\]:]+(?::\d+)?\]'
 color = "yellow"
 line = true
 
 [[regex]]
-rule = '^\[\d+\]\[V\]\[[^\]:]+(?::\d+)?\]'
+rule = '^\[\s*\d+\]\[V\]\[[^\]:]+(?::\d+)?\]'
 color = "magenta"
 line = true
 
@@ -28,7 +28,7 @@ rule = '(?i)lorem'
 color = "cyan"
 
 [[regex]]
-rule = "OpenShock"
+rule = "(?i)OpenShock"
 color = "BrightCyan"
 
 [[regex]]

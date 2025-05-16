@@ -62,6 +62,8 @@ use crate::{
 };
 
 #[cfg(feature = "espflash")]
+use crate::keybinds::esp_methods::*;
+#[cfg(feature = "espflash")]
 use crate::serial::esp::EspFlashEvent;
 #[cfg(feature = "espflash")]
 use crate::tui::esp::{self, EspFlashState};
@@ -486,9 +488,8 @@ impl App {
                 EspFlashEvent::HardResetAttempt => self
                     .notifs
                     .notify_str(format!("Attempted ESP hard reset!"), Color::LightYellow),
-                EspFlashEvent::PortBorrowed => (),
                 EspFlashEvent::Error(e) => self.notifs.notify_str(&e, Color::Red),
-                EspFlashEvent::DeviceInfo(_) => self.espflash.consume_event(esp_event),
+                _ => self.espflash.consume_event(esp_event),
             },
             Event::Tick(Tick::PerSecond) => match self.menu {
                 Menu::Terminal(TerminalPrompt::None) => {
@@ -785,7 +786,10 @@ impl App {
             key!(down) => self.down_pressed(),
             key!(left) => self.left_pressed(),
             key!(right) => self.right_pressed(),
-            key!(enter) => self.enter_pressed(ctrl_pressed, shift_pressed),
+            key!(enter) => self.enter_pressed(false, false),
+            key!(ctrl - enter) => self.enter_pressed(true, false),
+            key!(shift - enter) => self.enter_pressed(false, true),
+            key!(ctrl - shift - enter) => self.enter_pressed(true, true),
             key!(tab) if at_terminal && self.popup.is_none() => {
                 self.user_input.find_input_in_history();
             }
@@ -808,6 +812,40 @@ impl App {
 
                 // TODO maybe just remove since the macro queue consumer won't send if unhealthy.
                 let serial_healthy = self.serial.port_status.load().inner.is_healthy();
+
+                if let Some(profile_name) = self
+                    .keybinds
+                    .espflash_profile_from_key_combo(key_combo)
+                    .map(ToOwned::to_owned)
+                {
+                    if let Some(profile) =
+                        self.espflash.bins.iter().find(|p| p.name == profile_name)
+                    {
+                        let italic = Style::new().italic();
+                        self.notifs.notify(
+                            line![
+                                "Flashing \"",
+                                span!(italic;profile_name),
+                                "\" [",
+                                key_combo.to_string(),
+                                "]"
+                            ],
+                            Color::LightGreen,
+                        );
+                        self.serial.esp_write_bins(profile.to_owned()).unwrap();
+                    } else {
+                        error!("No such espflash profile: \"{profile_name}\"");
+                        self.notifs.notify_str(
+                            format!("No such espflash profile: \"{profile_name}\""),
+                            Color::Yellow,
+                        );
+                        // let Some(profile) =
+                        //     self.espflash.elfs.iter().find(|p| p.name == profile_name)
+                        // else {};
+                    }
+
+                    return;
+                }
 
                 match self.macros.macro_from_key_combo(
                     key_combo,
@@ -974,6 +1012,26 @@ impl App {
                     .send(Tick::Scroll.into())
                     .map_err(|e| e.to_string())
                     .unwrap();
+            }
+
+            #[cfg(feature = "espflash")]
+            _ if m == ESP_HARD_RESET => {
+                self.serial.esp_restart(false).unwrap();
+            }
+
+            #[cfg(feature = "espflash")]
+            _ if m == ESP_BOOTLOADER => {
+                self.serial.esp_restart(true).unwrap();
+            }
+
+            #[cfg(feature = "espflash")]
+            _ if m == ESP_DEVICE_INFO => {
+                self.serial.esp_device_info().unwrap();
+            }
+
+            #[cfg(feature = "espflash")]
+            _ if m == ESP_ERASE_FLASH => {
+                self.serial.esp_erase_flash().unwrap();
             }
 
             _ if m == RELOAD_MACROS => {
@@ -1465,10 +1523,19 @@ impl App {
                     return;
                 }
                 match selected {
-                    0 => self.serial.esp_restart(false).unwrap(),
-                    1 => self.serial.esp_restart(true).unwrap(),
-                    2 => self.serial.esp_device_info().unwrap(),
-                    3 => self.serial.esp_erase_flash().unwrap(),
+                    0 => self.run_method_from_string(ESP_HARD_RESET).unwrap(),
+                    1 => self.run_method_from_string(ESP_BOOTLOADER).unwrap(),
+                    2 => self.run_method_from_string(ESP_DEVICE_INFO).unwrap(),
+                    3 => {
+                        if !shift_pressed && !ctrl_pressed {
+                            self.notifs.notify_str(
+                                "Press Shift/Ctrl+Enter to erase flash!",
+                                Color::Yellow,
+                            );
+                        } else {
+                            self.run_method_from_string(ESP_ERASE_FLASH).unwrap();
+                        }
+                    }
                     flashing => {
                         if flashing > self.espflash.bins.len() + (4 - 1) {
                             return;
@@ -1684,6 +1751,9 @@ impl App {
         // let start = Instant::now();
         self.render_notifs(frame, frame.area());
         // debug!("3: {:?}", start.elapsed());
+
+        #[cfg(feature = "espflash")]
+        self.espflash.render_espflash(frame, frame.area());
 
         // TODO:
         // self.render_error_messages(frame, frame.area());

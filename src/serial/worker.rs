@@ -656,7 +656,10 @@ impl SerialWorker {
     fn handle_esp_command(&mut self, esp_command: EspCommand) -> color_eyre::Result<()> {
         use std::{borrow::Cow, fs};
 
+        use compact_str::{CompactString, ToCompactString};
         use espflash::{elf::RomSegment, flasher::ProgressCallbacks};
+
+        use crate::serial::esp::{FlashProgress, ProgressPropagator};
 
         match esp_command {
             EspCommand::DeviceInfo if self.port.is_owned() => {
@@ -677,7 +680,7 @@ impl SerialWorker {
                 self.shared_status.store(Arc::new(status.clone()));
 
                 self.event_tx
-                    .send(EspFlashEvent::PortBorrowed.into())
+                    .send(EspFlashEvent::Connecting.into())
                     .unwrap();
 
                 let lent_port = self.port.take_native().unwrap();
@@ -696,6 +699,15 @@ impl SerialWorker {
                     )
                     .unwrap();
 
+                    self.event_tx
+                        .send(
+                            EspFlashEvent::Connected {
+                                chip: flasher.chip().to_compact_string().to_uppercase(),
+                            }
+                            .into(),
+                        )
+                        .unwrap();
+
                     let esp_info = flasher.device_info().unwrap();
 
                     debug!("{esp_info:#?}");
@@ -710,6 +722,10 @@ impl SerialWorker {
                 };
 
                 self.return_native_port(returned_port)?;
+
+                // self.event_tx
+                //     .send(EspFlashEvent::PortReturned.into())
+                //     .unwrap();
             }
             EspCommand::DeviceInfo => {
                 warn!("No owned port to query for ESP32 device info!");
@@ -732,7 +748,7 @@ impl SerialWorker {
                 self.shared_status.store(Arc::new(status.clone()));
 
                 self.event_tx
-                    .send(EspFlashEvent::PortBorrowed.into())
+                    .send(EspFlashEvent::Connecting.into())
                     .unwrap();
 
                 let lent_port = self.port.take_native().unwrap();
@@ -751,6 +767,15 @@ impl SerialWorker {
                     )
                     .unwrap();
 
+                    self.event_tx
+                        .send(
+                            EspFlashEvent::Connected {
+                                chip: flasher.chip().to_compact_string().to_uppercase(),
+                            }
+                            .into(),
+                        )
+                        .unwrap();
+
                     let esp_chip = flasher.chip();
 
                     let esp_info = flasher.device_info().unwrap();
@@ -760,7 +785,7 @@ impl SerialWorker {
                     self.event_tx
                         .send(
                             EspFlashEvent::BootloaderSuccess {
-                                chip: esp_chip.to_string().to_uppercase(),
+                                chip: esp_chip.to_compact_string().to_uppercase(),
                             }
                             .into(),
                         )
@@ -785,6 +810,9 @@ impl SerialWorker {
                 };
 
                 self.return_native_port(returned_port)?;
+                self.event_tx
+                    .send(EspFlashEvent::PortReturned.into())
+                    .unwrap();
 
                 // flasher
                 //     .write_bin_to_flash(
@@ -795,7 +823,7 @@ impl SerialWorker {
                 //     .unwrap();
             }
             EspCommand::Restart { .. } => error!("Requested an ESP restart with no port active!"),
-            EspCommand::WriteBins(bins) if self.port.is_owned() => {
+            EspCommand::WriteBins(bins) if self.port.is_owned() && !bins.bins.is_empty() => {
                 let mut status: PortStatus = self.shared_status.load().as_ref().clone();
 
                 let usb_port_info = {
@@ -813,7 +841,7 @@ impl SerialWorker {
                 self.shared_status.store(Arc::new(status.clone()));
 
                 self.event_tx
-                    .send(EspFlashEvent::PortBorrowed.into())
+                    .send(EspFlashEvent::Connecting.into())
                     .unwrap();
 
                 let lent_port = self.port.take_native().unwrap();
@@ -831,6 +859,15 @@ impl SerialWorker {
                         espflash::connection::reset::ResetBeforeOperation::DefaultReset,
                     )
                     .unwrap();
+
+                    self.event_tx
+                        .send(
+                            EspFlashEvent::Connected {
+                                chip: flasher.chip().to_compact_string().to_uppercase(),
+                            }
+                            .into(),
+                        )
+                        .unwrap();
 
                     let matches = bins.expected_chip.map_or(true, |expected| {
                         if expected == flasher.chip() {
@@ -858,27 +895,29 @@ impl SerialWorker {
                             })
                             .collect();
 
-                        struct Meoww;
+                        let filenames: Vec<_> = bins
+                            .bins
+                            .iter()
+                            .map(|(index, name)| {
+                                name.file_name()
+                                    .map(|n| n.to_string_lossy())
+                                    .expect("can't have file without name")
+                            })
+                            .collect();
 
-                        impl ProgressCallbacks for Meoww {
-                            fn init(&mut self, addr: u32, total: usize) {
-                                debug!("flashing {total}b to 0x{addr:X}");
-                            }
-                            fn update(&mut self, current: usize) {
-                                debug!("flashing 0x{current:X}");
-                            }
-                            fn finish(&mut self) {
-                                debug!("flashed!");
-                            }
-                        }
+                        let mut propagator = ProgressPropagator::new(self.event_tx.clone());
 
                         flasher
                             .write_bins_to_flash(
                                 &rom_segs,
-                                Some(&mut Meoww),
+                                Some(&mut propagator),
                                 !bins.no_verify,
                                 !bins.no_skip,
                             )
+                            .unwrap();
+
+                        self.event_tx
+                            .send(EspFlashEvent::PortReturned.into())
                             .unwrap();
                     }
 
@@ -916,7 +955,7 @@ impl SerialWorker {
                 self.shared_status.store(Arc::new(status.clone()));
 
                 self.event_tx
-                    .send(EspFlashEvent::PortBorrowed.into())
+                    .send(EspFlashEvent::Connecting.into())
                     .unwrap();
 
                 let lent_port = self.port.take_native().unwrap();
@@ -935,14 +974,23 @@ impl SerialWorker {
                     )
                     .unwrap();
 
-                    flasher.erase_flash().unwrap();
-
                     let esp_chip = flasher.chip();
 
                     self.event_tx
                         .send(
+                            EspFlashEvent::EraseStart {
+                                chip: esp_chip.to_compact_string().to_uppercase(),
+                            }
+                            .into(),
+                        )
+                        .unwrap();
+
+                    flasher.erase_flash().unwrap();
+
+                    self.event_tx
+                        .send(
                             EspFlashEvent::EraseSuccess {
-                                chip: esp_chip.to_string().to_uppercase(),
+                                chip: esp_chip.to_compact_string().to_uppercase(),
                             }
                             .into(),
                         )
@@ -952,6 +1000,10 @@ impl SerialWorker {
                 };
 
                 self.return_native_port(returned_port)?;
+
+                self.event_tx
+                    .send(EspFlashEvent::PortReturned.into())
+                    .unwrap();
 
                 // flasher
                 //     .write_bin_to_flash(

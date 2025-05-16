@@ -19,10 +19,17 @@ pub mod methods {
     pub const SHOW_PORTSETTINGS: &str = "show-portsettings";
     pub const SHOW_BEHAVIOR: &str = "show-behavior";
     pub const SHOW_RENDERING: &str = "show-rendering";
-    #[cfg(feature = "espflash")]
-    pub const SHOW_ESPFLASH: &str = "show-espflash";
     pub const RELOAD_MACROS: &str = "reload-macros";
     pub const RELOAD_COLORS: &str = "reload-colors";
+}
+
+#[cfg(feature = "espflash")]
+pub mod esp_methods {
+    pub const SHOW_ESPFLASH: &str = "show-espflash";
+    pub const ESP_HARD_RESET: &str = "esp-hard-reset";
+    pub const ESP_BOOTLOADER: &str = "esp-bootloader";
+    pub const ESP_DEVICE_INFO: &str = "esp-device-info";
+    pub const ESP_ERASE_FLASH: &str = "esp-erase-flash";
 }
 
 static CONFIG_TOML: &str = r#"
@@ -39,6 +46,8 @@ ctrl-b = "show-behavior"
 'ctrl-.' = "show-portsettings"
 ctrl-d = "toggle-indices"
 ctrl-f = "reload-colors"
+F20 = "esp-hard-reset"
+F21 = "esp-bootloader"
 
 [macros]
 F19 = "Restart"
@@ -47,6 +56,9 @@ ctrl-f = "Cum|Factory Reset"
 ctrl-s = "CaiX Vib (ID 12345, 0.5s)"
 ctrl-g = "OpenShock Setup|Echo Off"
 ctrl-h = "OpenShock Setup|Factory Reset~OpenShock Setup|Setup Authtoken~OpenShock Setup|Setup Networks"
+
+[espflash_profiles]
+F18 = "PIO Core v2"
 "#;
 
 use crate::macros::MacroNameTag;
@@ -60,7 +72,12 @@ pub struct Keybinds {
         serialize_with = "serialize_macros_map",
         deserialize_with = "deserialize_macros_map"
     )]
+    //
     pub macros: IndexMap<KeyCombination, Vec<MacroNameTag>>,
+
+    #[cfg(feature = "espflash")]
+    // #[serde(rename = "espflash.profiles")]
+    pub espflash_profiles: IndexMap<KeyCombination, String>,
 }
 
 fn serialize_macros_map<S>(
@@ -150,6 +167,13 @@ impl Keybinds {
             .iter()
             .find(|(kc, m)| *kc == &key_combo)
             .map(|(kc, m)| m.as_str())
+    }
+    #[cfg(feature = "espflash")]
+    pub fn espflash_profile_from_key_combo(&self, key_combo: KeyCombination) -> Option<&str> {
+        self.espflash_profiles
+            .iter()
+            .find(|(kc, name)| *kc == &key_combo)
+            .map(|(kc, name)| name.as_str())
     }
 }
 
