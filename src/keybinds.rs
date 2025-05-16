@@ -19,6 +19,8 @@ pub mod methods {
     pub const SHOW_PORTSETTINGS: &str = "show-portsettings";
     pub const SHOW_BEHAVIOR: &str = "show-behavior";
     pub const SHOW_RENDERING: &str = "show-rendering";
+    #[cfg(feature = "espflash")]
+    pub const SHOW_ESPFLASH: &str = "show-espflash";
     pub const RELOAD_MACROS: &str = "reload-macros";
     pub const RELOAD_COLORS: &str = "reload-colors";
 }
@@ -28,7 +30,8 @@ static CONFIG_TOML: &str = r#"
 ctrl-w = "toggle-textwrap"
 ctrl-o = "toggle-dtr"
 ctrl-p = "toggle-rts"
-ctrl-e = "reload-macros"
+ctrl-e = "show-espflash"
+# ctrl-e = "reload-macros"
 # ctrl-e = "esp-bootloader"
 ctrl-t = "toggle-timestamps"
 ctrl-m = "show-macros"

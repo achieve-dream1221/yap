@@ -46,13 +46,14 @@ use crate::{
         EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
     },
     serial::{
-        MOCK_PORT_NAME, PrintablePortInfo, ReconnectType, Reconnections, SerialEvent, SerialHandle,
+        EspFlashEvent, MOCK_PORT_NAME, PortState, PrintablePortInfo, ReconnectType, Reconnections,
+        SerialEvent, SerialHandle,
     },
     settings::{Behavior, PortSettings, Rendering, Settings},
     traits::{LastIndex, LineHelpers, ToggleBool},
     tui::{
         buffer::Buffer,
-        centered_rect_size,
+        centered_rect_size, espflash_ui,
         prompts::{DisconnectPrompt, PromptTable, centered_rect},
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
@@ -154,8 +155,9 @@ pub enum PopupMenu {
     PortSettings,
     RenderingSettings,
     BehaviorSettings,
-    // #[cfg(feature = "espflash")]
-    // EspFlash,
+    #[cfg(feature = "espflash")]
+    #[strum(serialize = "ESP32 Flashing")]
+    EspFlash,
     Macros,
 }
 
@@ -200,10 +202,7 @@ pub struct App {
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
     serial_thread: Takeable<JoinHandle<()>>,
-    // Might ArcBool this in the Handle later
-    // Might be worth an enum instead?
-    // Or a SerialStatus struct with current_port_info and health status
-    serial_healthy: bool,
+
     carousel: CarouselHandle,
     carousel_thread: Takeable<JoinHandle<()>>,
 
@@ -281,19 +280,28 @@ impl App {
             Duration::from_secs(1),
         );
 
-        let serial_signal_tick_handle = serial_handle.clone();
-        event_carousel.add_repeating(
-            "SerialSignals",
-            Box::new(move || {
-                serial_signal_tick_handle
-                    .read_signals()
-                    .map_err(|e| e.to_string())
-            }),
-            Duration::from_millis(100),
-        );
+        // let serial_signal_tick_handle = serial_handle.clone();
+        // let mut cache = arc_swap::Cache::new(std::sync::Arc::clone(
+        //     &serial_signal_tick_handle.port_status,
+        // ));
+        // event_carousel.add_repeating(
+        //     "SerialSignals",
+        //     Box::new(move || {
+        //         let port_status = cache.load();
+        //         if port_status.state.is_healthy() {
+        //             serial_signal_tick_handle
+        //                 .read_signals()
+        //                 .map_err(|e| e.to_string())
+        //         } else {
+        //             Ok(())
+        //         }
+        //     }),
+        //     Duration::from_millis(100),
+        // );
 
         let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
         let buffer = Buffer::new(line_ending, settings.rendering.clone());
+        debug!("{buffer:#?}");
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection(PortSelectionElement::Ports),
@@ -311,7 +319,6 @@ impl App {
 
             serial: serial_handle,
             serial_thread: Takeable::new(serial_thread),
-            serial_healthy: false,
 
             user_input,
 
@@ -359,6 +366,11 @@ impl App {
                 end1, end2
             );
             // debug!("{msg:?}");
+            // Don't wait for another loop iteration to start shutting down workers.
+            // TODO convert into a loop {}, but see if clippy notices first (when i dont have 170+ warnings)
+            if !self.is_running() {
+                break;
+            }
         }
         // Shutting down worker threads, with timeouts
         debug!("Shutting down Serial worker");
@@ -407,7 +419,6 @@ impl App {
             Event::Serial(SerialEvent::Connected(reconnect)) => {
                 info!("Connected!");
                 self.buffer.scroll_by(0);
-                self.serial_healthy = true;
                 let text = match reconnect {
                     Some(ReconnectType::PerfectMatch) => "Reconnected to same device!",
                     Some(ReconnectType::UsbStrict) => "Reconnected to same device?",
@@ -422,7 +433,6 @@ impl App {
             }
             Event::Serial(SerialEvent::Disconnected(reason)) => {
                 // self.menu = Menu::PortSelection;
-                self.serial_healthy = false;
                 // if let Some(reason) = reason {
                 //     self.notify(format!("Disconnected from port! {reason}"), Color::Red);
                 // }
@@ -452,11 +462,23 @@ impl App {
                     }
                 }
             }
+            Event::Serial(SerialEvent::EspFlash(esp_event)) => match esp_event {
+                EspFlashEvent::BootloaderSuccess { chip } => self
+                    .notifs
+                    .notify_str(format!("{chip} rebooted into bootloader!"), Color::Green),
+                EspFlashEvent::HardResetAttempt => self
+                    .notifs
+                    .notify_str(format!("Attempted ESP hard reset!"), Color::LightYellow),
+                EspFlashEvent::PortBorrowed => (),
+                EspFlashEvent::Error(e) => self.notifs.notify_str(&e, Color::Red),
+            },
             Event::Tick(Tick::PerSecond) => match self.menu {
                 Menu::Terminal(TerminalPrompt::None) => {
+                    let serial_healthy = self.serial.port_status.load().state.is_healthy();
+
                     let reconnections_allowed =
                         self.serial.port_settings.load().reconnections != Reconnections::Disabled;
-                    if !self.serial_healthy && reconnections_allowed {
+                    if !serial_healthy && reconnections_allowed {
                         self.repeating_line_flip.flip();
                         self.serial.request_reconnect().unwrap();
                     }
@@ -528,7 +550,9 @@ impl App {
         self.state = RunningState::Finished;
     }
     fn send_one_macro(&mut self) {
-        if !self.serial_healthy {
+        let serial_healthy = self.serial.port_status.load().state.is_healthy();
+
+        if !serial_healthy {
             self.macros_tx_queue.clear();
             return;
         }
@@ -760,14 +784,16 @@ impl App {
                     }
                     return;
                 }
-                // TODO just do a macro queue with KeybindMacro or something
-                // or some other object that refers to Macros without having their content.
+
+                // TODO maybe just remove since the macro queue consumer won't send if unhealthy.
+                let serial_healthy = self.serial.port_status.load().state.is_healthy();
+
                 match self.macros.macro_from_key_combo(
                     key_combo,
                     &self.keybinds.macros,
                     self.settings.behavior.fuzzy_macro_match,
                 ) {
-                    Ok(somes) if self.serial_healthy => {
+                    Ok(somes) if serial_healthy => {
                         if !somes.is_empty() {
                             self.macros_tx_queue.extend(
                                 somes.into_iter().map(|tag| (Some(key_combo), tag.clone())),
@@ -915,6 +941,20 @@ impl App {
                     .unwrap();
             }
 
+            #[cfg(feature = "espflash")]
+            _ if m == SHOW_ESPFLASH => {
+                self.popup = Some(PopupMenu::EspFlash);
+                self.refresh_scratch();
+                self.popup_desc_scroll = -2;
+                self.popup_table_state.select(Some(0));
+                self.popup_single_line_state.active = false;
+
+                self.tx
+                    .send(Tick::Scroll.into())
+                    .map_err(|e| e.to_string())
+                    .unwrap();
+            }
+
             _ if m == RELOAD_MACROS => {
                 self.macros
                     .load_from_folder("../../example_macros")
@@ -943,13 +983,7 @@ impl App {
     fn esc_pressed(&mut self) {
         match self.popup {
             None => (),
-            Some(PopupMenu::BehaviorSettings)
-            | Some(PopupMenu::PortSettings)
-            | Some(PopupMenu::RenderingSettings) => {
-                self.dismiss_popup();
-                return;
-            }
-            Some(PopupMenu::Macros) => {
+            Some(_) => {
                 self.dismiss_popup();
                 return;
             }
@@ -1037,6 +1071,14 @@ impl App {
                     } else {
                         self.popup_single_line_state.active = true;
                     }
+                } else {
+                    self.scroll_menu_up();
+                }
+            }
+            Some(PopupMenu::EspFlash) => {
+                if self.popup_table_state.selected() == Some(0) {
+                    self.popup_table_state.select(None);
+                    self.popup_single_line_state.active = true;
                 } else {
                     self.scroll_menu_up();
                 }
@@ -1146,6 +1188,14 @@ impl App {
                     self.scroll_menu_down();
                 }
             }
+            Some(PopupMenu::EspFlash) => {
+                if self.popup_table_state.selected() >= Some(1) {
+                    self.popup_table_state.select(None);
+                    self.popup_single_line_state.active = true;
+                } else {
+                    self.scroll_menu_down();
+                }
+            }
         }
         if self.popup.is_some() {
             return;
@@ -1220,6 +1270,7 @@ impl App {
                     self.popup_table_state.select_first();
                 }
             }
+            Some(PopupMenu::EspFlash) => (),
         }
         if self.popup.is_some() {
             return;
@@ -1272,6 +1323,7 @@ impl App {
                     self.popup_table_state.select_first();
                 }
             }
+            Some(PopupMenu::EspFlash) => (),
         }
         if self.popup.is_some() {
             return;
@@ -1283,6 +1335,8 @@ impl App {
         }
     }
     fn enter_pressed(&mut self, ctrl_pressed: bool, shift_pressed: bool) {
+        let serial_healthy = self.serial.port_status.load().state.is_healthy();
+
         // debug!("{:?}", self.menu);
         use PortSelectionElement as Pse;
         match self.popup {
@@ -1343,7 +1397,7 @@ impl App {
                 // let macro_ref: MacroNameTag = macro_binding.into();
 
                 if ctrl_pressed || shift_pressed {
-                    if !self.serial_healthy {
+                    if !serial_healthy {
                         self.notifs.notify_str("Port isn't ready!", Color::Red);
                         return;
                     }
@@ -1361,7 +1415,7 @@ impl App {
                         }
                     }
                 } else {
-                    if !self.serial_healthy {
+                    if !serial_healthy {
                         self.notifs.notify_str("Port isn't ready!", Color::Red);
                         return;
                     }
@@ -1374,6 +1428,20 @@ impl App {
                             self.tx.send(Tick::MacroTx.into()).unwrap();
                         }
                     };
+                }
+            }
+            Some(PopupMenu::EspFlash) => {
+                let Some(selected) = self.popup_table_state.selected() else {
+                    return;
+                };
+                if !serial_healthy {
+                    self.notifs.notify_str("Port isn't ready!", Color::Red);
+                    return;
+                }
+                match selected {
+                    0 => self.serial.esp_restart(false).unwrap(),
+                    1 => self.serial.esp_restart(true).unwrap(),
+                    _ => (),
                 }
             }
         }
@@ -1419,7 +1487,7 @@ impl App {
             }
             Menu::PortSelection(_) => (),
             Menu::Terminal(TerminalPrompt::None) => {
-                if self.serial_healthy {
+                if serial_healthy {
                     let user_input = self.user_input.input_box.value();
 
                     if self.settings.behavior.fake_shell {
@@ -1602,6 +1670,7 @@ impl App {
             PopupMenu::RenderingSettings => Color::Red,
             PopupMenu::BehaviorSettings => Color::Blue,
             PopupMenu::PortSettings => Color::Cyan,
+            PopupMenu::EspFlash => Color::Magenta,
         };
 
         let macros_visible_amt = self.macros.visible_len();
@@ -1751,13 +1820,12 @@ impl App {
             PopupMenu::PortSettings => PortSettings::VISIBLE_FIELDS,
             PopupMenu::BehaviorSettings => Behavior::VISIBLE_FIELDS,
             PopupMenu::RenderingSettings => Rendering::VISIBLE_FIELDS,
+            PopupMenu::EspFlash => 2,
         };
 
         let height = match popup {
             PopupMenu::Macros => macros_table_area.height,
-            PopupMenu::PortSettings
-            | PopupMenu::BehaviorSettings
-            | PopupMenu::RenderingSettings => settings_area.height,
+            _ => settings_area.height,
         };
 
         self.popup_scrollbar_state = self
@@ -1994,6 +2062,25 @@ impl App {
                 //     _ => (),
                 // };
             }
+            PopupMenu::EspFlash => {
+                let table = espflash_ui::meow(&mut self.popup_table_state);
+
+                frame.render_widget(
+                    Line::raw("Powered by esp-rs/espflash!")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(),
+                    line_area,
+                );
+
+                frame.render_widget(
+                    Line::raw("Esc: Close | Enter: Select")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(),
+                    hint_text_area,
+                );
+
+                frame.render_stateful_widget(table, settings_area, &mut self.popup_table_state);
+            }
         }
     }
 
@@ -2061,12 +2148,31 @@ impl App {
         // self.buffer_rendered_lines = total_lines;
         // maybe debug_assert this when we roll our own line-counting?
 
-        repeating_pattern_widget(
-            frame,
-            line_area,
-            self.repeating_line_flip,
-            self.serial_healthy,
-        );
+        let (port_state, serial_signals, port_text) = {
+            let port_status_guard = self.serial.port_status.load();
+            let port_state = port_status_guard.state;
+
+            let port_text = match &port_status_guard.current_port {
+                Some(port_info) => {
+                    if port_state.is_healthy() || port_state.is_lent_out() {
+                        let baud_rate = self.serial.port_settings.load().baud_rate;
+                        port_info.info_as_string(Some(baud_rate))
+                    } else {
+                        // Might remove later
+                        let info = port_info.info_as_string(None);
+                        format!("[!] {info} [!]")
+                    }
+                }
+                None => {
+                    error!("Port info missing during render!");
+                    "Port info missing!".to_owned()
+                }
+            };
+
+            (port_state, port_status_guard.signals.clone(), port_text)
+        };
+
+        repeating_pattern_widget(frame, line_area, self.repeating_line_flip, port_state);
 
         #[cfg(debug_assertions)]
         {
@@ -2099,24 +2205,6 @@ impl App {
         }
 
         {
-            let port_status_guard = self.serial.port_status.load();
-            let port_text = match &port_status_guard.current_port {
-                Some(port_info) => {
-                    if self.serial_healthy {
-                        let baud_rate = self.serial.port_settings.load().baud_rate;
-                        port_info.info_as_string(Some(baud_rate))
-                    } else {
-                        // Might remove later
-                        let info = port_info.info_as_string(None);
-                        format!("[!] {info} [!]")
-                    }
-                }
-                None => {
-                    error!("Port info missing during render!");
-                    "Port info missing!".to_owned()
-                }
-            };
-
             let port_name_line = Line::raw(port_text).centered();
             frame.render_widget(port_name_line, line_area);
 
@@ -2129,13 +2217,13 @@ impl App {
             };
 
             let (dtr, rts, cts, dsr, ri, cd) = {
-                let dtr = reversed_if_true(port_status_guard.signals.dtr);
-                let rts = reversed_if_true(port_status_guard.signals.rts);
+                let dtr = reversed_if_true(serial_signals.dtr);
+                let rts = reversed_if_true(serial_signals.rts);
 
-                let cts = reversed_if_true(port_status_guard.signals.cts);
-                let dsr = reversed_if_true(port_status_guard.signals.dsr);
-                let ri = reversed_if_true(port_status_guard.signals.ri);
-                let cd = reversed_if_true(port_status_guard.signals.cd);
+                let cts = reversed_if_true(serial_signals.cts);
+                let dsr = reversed_if_true(serial_signals.dsr);
+                let ri = reversed_if_true(serial_signals.ri);
+                let cd = reversed_if_true(serial_signals.cd);
 
                 (dtr, rts, cts, dsr, ri, cd)
             };
@@ -2171,7 +2259,7 @@ impl App {
         };
 
         // TODO have this turn into `§` or something when in bytes mode.
-        let input_symbol = Span::raw(">").style(if self.serial_healthy {
+        let input_symbol = Span::raw(">").style(if port_state.is_healthy() {
             input_style.not_reversed().green()
         } else {
             input_style.red()
@@ -2428,7 +2516,7 @@ impl App {
     }
 }
 
-pub fn repeating_pattern_widget(frame: &mut Frame, area: Rect, swap: bool, healthy: bool) {
+pub fn repeating_pattern_widget(frame: &mut Frame, area: Rect, swap: bool, port_state: PortState) {
     let repeat_count = area.width as usize / 2;
     let remainder = area.width as usize % 2;
     let base_pattern = if swap { "-~" } else { "~-" };
@@ -2440,10 +2528,11 @@ pub fn repeating_pattern_widget(frame: &mut Frame, area: Rect, swap: bool, healt
     };
 
     let pattern_widget = ratatui::widgets::Paragraph::new(pattern);
-    let pattern_widget = if healthy {
-        pattern_widget.green()
-    } else {
-        pattern_widget.red()
+    let pattern_widget = match port_state {
+        PortState::Connected => pattern_widget.green(),
+        PortState::LentOut => pattern_widget.yellow(),
+        PortState::PrematureDisconnect => pattern_widget.red(),
+        PortState::Idle => pattern_widget.red(),
     };
     frame.render_widget(pattern_widget, area);
 }

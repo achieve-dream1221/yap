@@ -5,7 +5,7 @@ use std::{
         mpsc::{self, Receiver, Sender},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -50,12 +50,33 @@ pub enum ReconnectType {
     LastDitch,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub enum SerialEvent {
     Ports(Vec<SerialPortInfo>),
     Connected(Option<ReconnectType>),
     RxBuffer(Vec<u8>),
+    EspFlash(EspFlashEvent),
     Disconnected(Option<String>),
+}
+
+#[derive(Debug, Clone)]
+pub enum EspFlashEvent {
+    PortBorrowed,
+    BootloaderSuccess { chip: String },
+    HardResetAttempt,
+    Error(String),
+}
+
+impl From<EspFlashEvent> for SerialEvent {
+    fn from(value: EspFlashEvent) -> Self {
+        Self::EspFlash(value)
+    }
+}
+
+impl From<EspFlashEvent> for Event {
+    fn from(value: EspFlashEvent) -> Self {
+        Self::Serial(SerialEvent::EspFlash(value))
+    }
 }
 
 impl From<SerialEvent> for Event {
@@ -92,7 +113,9 @@ pub enum SerialCommand {
     PortSettings(PortSettings),
     TxBuffer(Vec<u8>),
     #[cfg(feature = "espflash")]
-    EspRestart(Option<u128>),
+    EspRestart {
+        bootloader: bool,
+    },
     WriteSignals {
         dtr: Option<bool>,
         rts: Option<bool>,
@@ -101,7 +124,7 @@ pub enum SerialCommand {
         dtr: bool,
         rts: bool,
     },
-    ReadSignals,
+    // ReadSignals,
     RequestReconnect,
     Disconnect,
     Shutdown(Sender<()>),
@@ -112,9 +135,27 @@ pub enum SerialCommand {
 // (between connections and app start)
 // maybe something better will come to me.
 
+#[derive(Debug, Clone, Copy, Default)]
+pub enum PortState {
+    #[default]
+    Idle,
+    PrematureDisconnect,
+    LentOut,
+    Connected,
+}
+
+impl PortState {
+    pub fn is_healthy(&self) -> bool {
+        matches!(self, PortState::Connected)
+    }
+    pub fn is_lent_out(&self) -> bool {
+        matches!(self, PortState::LentOut)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PortStatus {
-    pub healthy: bool,
+    pub state: PortState,
     pub current_port: Option<SerialPortInfo>,
 
     pub signals: SerialSignals,
@@ -133,14 +174,14 @@ impl PortStatus {
     /// Used when a port disconnects without the user's stated intent to do so.
     fn to_unhealthy(self) -> Self {
         Self {
-            healthy: false,
+            state: PortState::PrematureDisconnect,
             ..self
         }
     }
     /// Used when the user chooses to disconnect from the serial port
     fn to_idle(self, settings: &PortSettings) -> Self {
         Self {
-            healthy: false,
+            state: PortState::Idle,
             current_port: None,
             signals: SerialSignals {
                 dtr: settings.dtr_on_connect,
@@ -323,15 +364,15 @@ impl SerialHandle {
         };
         self.send_bytes(buffer, Some(line_ending))
     }
-    pub fn read_signals(&self) -> YapResult<()> {
-        self.command_tx
-            .send(SerialCommand::ReadSignals)
-            .map_err(|_| YapError::NoSerialWorker)
-    }
+    // pub fn read_signals(&self) -> YapResult<()> {
+    //     self.command_tx
+    //         .send(SerialCommand::ReadSignals)
+    //         .map_err(|_| YapError::NoSerialWorker)
+    // }
     #[cfg(feature = "espflash")]
-    pub fn esp_restart(&self, strategy: Option<u128>) -> YapResult<()> {
+    pub fn esp_restart(&self, bootloader: bool) -> YapResult<()> {
         self.command_tx
-            .send(SerialCommand::EspRestart(strategy))
+            .send(SerialCommand::EspRestart { bootloader })
             .map_err(|_| YapError::NoSerialWorker)
     }
     pub fn write_signals(&self, dtr: Option<bool>, rts: Option<bool>) -> YapResult<()> {
@@ -440,6 +481,7 @@ pub struct SerialWorker {
     command_rx: Receiver<SerialCommand>,
     event_tx: Sender<Event>,
     port: PortHandle,
+    last_signal_check: Instant,
     // settings: PortSettings,
     scan_snapshot: Vec<SerialPortInfo>,
     rx_buffer: Vec<u8>,
@@ -463,11 +505,15 @@ impl SerialWorker {
             // port_status: SerialStatus::idle(),
             // connected_port_info: None,
             port: PortHandle::default(),
+            last_signal_check: Instant::now(),
             // settings: PortSettings::default(),
             scan_snapshot: vec![],
             rx_buffer: vec![0; 1024 * 1024],
         }
     }
+    // Primary loop for this thread.
+    // Only use `?` on operations that we expect to run flawlessly, and that
+    // should kill the port connection if encountered.
     fn work_loop(&mut self) -> color_eyre::Result<()> {
         loop {
             // TODO consider sleeping here for a moment with a read_timeout?
@@ -483,204 +529,306 @@ impl SerialWorker {
             };
             // TODO Fuzz testing with this + buffer
             match self.command_rx.recv_timeout(sleep_time) {
-                Ok(cmd) => match cmd {
-                    // TODO: Catch failures to connect here instead of propogating to the whole task
-                    SerialCommand::Connect { port, settings } => {
-                        // self.settings.baud_rate = baud_rate;
-                        self.update_settings(settings)?;
-                        self.connect_to_port(&port, None)?;
-                    }
-                    SerialCommand::PortSettings(settings) => self.update_settings(settings)?,
-                    #[cfg(feature = "espflash")]
-                    SerialCommand::EspRestart(_) => {
-                        if let Some(port) = self.port.as_mut_native_port() {
-                            let strategy = espflash_stuff::TestReset::new();
-                            // let strategy = espflash::connection::reset::ClassicReset::new(false);
-                            strategy.reset(port)?;
-                            // let strategy = espflash::connection::reset::ClassicReset::new(true);
-                            // strategy.reset(port)?;
-                        } else {
-                            error!("Requested an ESP restart with no port active!");
+                Ok(cmd) => {
+                    match cmd {
+                        // TODO: Catch failures to connect here instead of propogating to the whole task
+                        SerialCommand::Connect { port, settings } => {
+                            // self.settings.baud_rate = baud_rate;
+                            self.update_settings(settings)?;
+                            self.connect_to_port(&port, None)?;
                         }
-                    }
+                        SerialCommand::PortSettings(settings) => self.update_settings(settings)?,
+                        #[cfg(feature = "espflash")]
+                        SerialCommand::EspRestart { bootloader } => {
+                            if let Some(port) = self.port.as_mut_native_port() {
+                                let strategy = espflash_stuff::TestReset::new();
+                                // let strategy = espflash::connection::reset::ClassicReset::new(false);
+                                strategy.reset(port)?;
+                                // let strategy = espflash::connection::reset::ClassicReset::new(true);
+                                // strategy.reset(port)?;
 
-                    // This actually does work!
-                    // Just needs a helluva lot of logic and polish to work in a presentable manner
-                    // SerialCommand::EspFlashing(_) => {
-                    //     let port_info = {
-                    //         let status_guard = self.shared_port_status.load();
-                    //         match &status_guard.current_port {
-                    //             None => panic!(),
-                    //             Some(info) => match &info.port_type {
-                    //                 SerialPortType::UsbPort(e) => e.clone(),
-                    //                 _ => unreachable!(),
-                    //             },
-                    //         }
-                    //     };
-                    //     let mut flasher = espflash::flasher::Flasher::connect(
-                    //         self.port.take().unwrap(),
-                    //         port_info,
-                    //         Some(921600),
-                    //         true,
-                    //         true,
-                    //         true,
-                    //         None,
-                    //         espflash::connection::reset::ResetAfterOperation::HardReset,
-                    //         espflash::connection::reset::ResetBeforeOperation::DefaultReset,
-                    //     )
-                    //     .unwrap();
-                    //     flasher
-                    //         .write_bin_to_flash(
-                    //             0,
-                    //             include_bytes!("../OpenShock_Pishock-2023_1.4.0.bin"),
-                    //             None,
-                    //         )
-                    //         .unwrap();
-                    //     let mut port = flasher.into_serial();
-                    //     port.set_timeout(Duration::from_millis(100))?;
-                    //     port.clear(serialport::ClearBuffer::All)?;
-                    //     port.flush()?;
-                    //     while let Ok(_) = self.command_rx.try_recv() {
-                    //         // draining messages that piled up during send
-                    //         // might need to instead move the flashing to a different thread..?
-                    //         // and return the port afterwards?
-                    //         // might work since i can send progress updates here?
-                    //         // but not sure why i wouldnt just send to main/ui thread
-                    //     }
-                    //     port.set_baud_rate(self.baud_rate)?;
-                    //     self.port = Some(port);
-                    //     info!("Port ownership returned to terminal!");
-                    // },
-                    SerialCommand::ReadSignals => self.read_and_share_serial_signals(false)?,
-                    SerialCommand::WriteSignals { dtr, rts } => {
-                        assert!(dtr.is_some() || rts.is_some());
-                        let mut status: PortStatus = self.shared_status.load().as_ref().clone();
-                        if let Some(dtr) = dtr {
-                            status.signals.dtr = dtr;
-                        }
-                        if let Some(rts) = rts {
-                            status.signals.rts = rts;
-                        }
-                        if let Some(port) = self.port.as_mut_port() {
-                            // Sending both signals regardless of which one changed
-                            // to keep them in line with the expected state in the struct.
-                            port.write_data_terminal_ready(status.signals.dtr)?;
-                            port.write_request_to_send(status.signals.rts)?;
-                        }
-                        self.shared_status.store(Arc::new(status));
-                        self.read_and_share_serial_signals(true)?;
-                    }
-                    SerialCommand::ToggleSignals { dtr, rts } => {
-                        assert!(dtr || rts);
+                                // espflash::flasher::Flasher::
 
-                        let mut status: PortStatus = self.shared_status.load().as_ref().clone();
+                                let mut status: PortStatus =
+                                    self.shared_status.load().as_ref().clone();
 
-                        if dtr {
-                            status.signals.dtr.flip();
-                        }
-                        if rts {
-                            status.signals.rts.flip();
-                        }
-                        if let Some(port) = self.port.as_mut_port() {
-                            // Sending both signals regardless of which one changed
-                            // to keep them in line with the expected state in the struct.
-                            port.write_data_terminal_ready(status.signals.dtr)?;
-                            port.write_request_to_send(status.signals.rts)?;
-                        }
-                        self.shared_status.store(Arc::new(status));
-                        self.read_and_share_serial_signals(true)?;
-                    }
-                    SerialCommand::Shutdown(shutdown_tx) => {
-                        shutdown_tx
-                            .send(())
-                            .expect("Failed to reply to shutdown request");
+                                let usb_port_info = {
+                                    match &status.current_port {
+                                        None => unreachable!(),
+                                        Some(info) => match &info.port_type {
+                                            SerialPortType::UsbPort(e) => e.clone(),
+                                            _ => unreachable!(),
+                                        },
+                                    }
+                                };
 
-                        self.shared_status
-                            .store(Arc::new(PortStatus::new_idle(&PortSettings::default())));
-                        self.port.drop();
-                        break;
-                    }
-                    SerialCommand::RequestPortScan => {
-                        let ports = self.scan_for_serial_ports().unwrap();
-                        self.scan_snapshot = ports.clone();
-                        self.event_tx
-                            .send(SerialEvent::Ports(ports).into())
-                            .unwrap();
-                    }
-                    SerialCommand::RequestReconnect => {
-                        self.attempt_reconnect().unwrap();
-                    }
-                    SerialCommand::Disconnect => {
-                        // self.port_status = SerialStatus::idle();
+                                status.state = PortState::LentOut;
 
-                        let settings = self.shared_settings.load();
+                                self.shared_status.store(Arc::new(status.clone()));
 
-                        let previous_status = { self.shared_status.load().as_ref().clone() };
+                                self.event_tx
+                                    .send(EspFlashEvent::PortBorrowed.into())
+                                    .unwrap();
 
-                        self.shared_status
-                            .store(Arc::new(previous_status.to_idle(&*settings)));
-                        self.port.drop();
-                        self.event_tx.send(SerialEvent::Disconnected(None).into())?;
-                    }
-                    // This should maybe reply with a success/fail in case the
-                    // port is having an issue, so the user's input buffer isn't consumed visually
-                    SerialCommand::TxBuffer(mut data) if self.port.is_owned() => {
-                        let port = self.port.as_mut_port().unwrap();
-                        info!(
-                            "bytes incoming: {}, bytes outcoming: {}",
-                            port.bytes_to_read().unwrap(),
-                            port.bytes_to_write().unwrap()
-                        );
+                                let lent_port = self.port.take_native().unwrap();
 
-                        let mut buf = &data[..];
+                                let mut returned_port = if bootloader {
+                                    let mut flasher = espflash::flasher::Flasher::connect(
+                                        lent_port,
+                                        usb_port_info,
+                                        Some(115200),
+                                        true,
+                                        true,
+                                        true,
+                                        None,
+                                        espflash::connection::reset::ResetAfterOperation::HardReset,
+                                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                                    )
+                                    .unwrap();
 
-                        // let mut writer = BufWriter::new(&mut port);
+                                    let esp_chip = flasher.chip();
 
-                        // TODO This is because the ESP32-S3's virtual USB serial port
-                        // has an issue with payloads larger than 256 bytes????
-                        // (Sending too fast causes the buffer to fill up too quickly for the
-                        // actual firmware to notice anything present and drain it before it hits the cap)
-                        // So this might need to be a throttle toggle,
-                        // maybe on by default since its not too bad?
-                        let slow_writes = true;
+                                    let esp_info = flasher.device_info().unwrap();
 
-                        let max_bytes = 8;
+                                    debug!("{esp_info:?}");
 
-                        while !buf.is_empty() {
-                            let write_size = if slow_writes {
-                                std::cmp::min(max_bytes, buf.len())
+                                    self.event_tx
+                                        .send(
+                                            EspFlashEvent::BootloaderSuccess {
+                                                chip: esp_chip.to_string().to_uppercase(),
+                                            }
+                                            .into(),
+                                        )
+                                        .unwrap();
+
+                                    flasher.into_serial()
+                                } else {
+                                    let mut connection = espflash::connection::Connection::new(
+                                        lent_port, usb_port_info, espflash::connection::reset::ResetAfterOperation::HardReset,
+                                        espflash::connection::reset::ResetBeforeOperation::DefaultReset);
+
+                                    connection.reset().unwrap();
+
+                                    self.event_tx
+                                        .send(EspFlashEvent::HardResetAttempt.into())
+                                        .unwrap();
+
+                                    connection.into_serial()
+                                };
+
+                                returned_port
+                                    .set_timeout(Duration::from_millis(100))
+                                    .unwrap();
+
+                                let baud_rate = self.shared_settings.load().baud_rate;
+                                returned_port.set_baud_rate(baud_rate).unwrap();
+                                returned_port
+                                    .write_data_terminal_ready(status.signals.dtr)
+                                    .unwrap();
+                                returned_port
+                                    .write_request_to_send(status.signals.rts)
+                                    .unwrap();
+
+                                self.port.return_native(returned_port);
+
+                                status.state = PortState::Connected;
+
+                                self.shared_status.store(Arc::new(status));
+
+                                self.event_tx
+                                    .send(SerialEvent::Connected(None).into())
+                                    .unwrap();
+
+                                // flasher
+                                //     .write_bin_to_flash(
+                                //         0,
+                                //         include_bytes!("../OpenShock_Pishock-2023_1.4.0.bin"),
+                                //         None,
+                                //     )
+                                //     .unwrap();
                             } else {
-                                buf.len()
-                            };
-                            match port.write(&buf[..write_size]) {
-                                Ok(0) => {
-                                    // return Err(Error::WRITE_ALL_EOF);
-                                    todo!();
-                                }
-                                Ok(n) => {
-                                    // info!(
-                                    //     "bytes incoming: {}, bytes outcoming: {}",
-                                    //     port.bytes_to_read().unwrap(),
-                                    //     port.bytes_to_write().unwrap()
-                                    // );
-                                    info!("buf n: {n}");
-                                    buf = &buf[n..];
-                                    self.event_tx.send(Tick::Tx.into()).unwrap();
-                                    std::thread::sleep(Duration::from_millis(1));
-                                }
-                                Err(e) => todo!("{e}"),
+                                error!("Requested an ESP restart with no port active!");
                             }
                         }
 
-                        // if let Err(e) = port.write_all(&data) {
-                        //     todo!("{e}");
-                        // } else {
-                        //     info!("{data:?}");
+                        // This actually does work!
+                        // Just needs a helluva lot of logic and polish to work in a presentable manner
+                        // SerialCommand::EspFlashing(_) => {
+                        // let port_info = {
+                        //     let status_guard = self.shared_port_status.load();
+                        //     match &status_guard.current_port {
+                        //         None => panic!(),
+                        //         Some(info) => match &info.port_type {
+                        //             SerialPortType::UsbPort(e) => e.clone(),
+                        //             _ => unreachable!(),
+                        //         },
+                        //     }
+                        // };
+                        // let mut flasher = espflash::flasher::Flasher::connect(
+                        //     self.port.take().unwrap(),
+                        //     port_info,
+                        //     Some(921600),
+                        //     true,
+                        //     true,
+                        //     true,
+                        //     None,
+                        //     espflash::connection::reset::ResetAfterOperation::HardReset,
+                        //     espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                        // )
+                        // .unwrap();
+                        // flasher
+                        //     .write_bin_to_flash(
+                        //         0,
+                        //         include_bytes!("../OpenShock_Pishock-2023_1.4.0.bin"),
+                        //         None,
+                        //     )
+                        //     .unwrap();
+                        //     let mut port = flasher.into_serial();
+                        //     port.set_timeout(Duration::from_millis(100))?;
+                        //     port.clear(serialport::ClearBuffer::All)?;
                         //     port.flush()?;
-                        // }
+                        //     while let Ok(_) = self.command_rx.try_recv() {
+                        //         // draining messages that piled up during send
+                        //         // might need to instead move the flashing to a different thread..?
+                        //         // and return the port afterwards?
+                        //         // might work since i can send progress updates here?
+                        //         // but not sure why i wouldnt just send to main/ui thread
+                        //     }
+                        //     port.set_baud_rate(self.baud_rate)?;
+                        //     self.port = Some(port);
+                        //     info!("Port ownership returned to terminal!");
+                        // },
+                        // SerialCommand::ReadSignals => self.read_and_share_serial_signals(false)?,
+                        SerialCommand::WriteSignals { dtr, rts } => {
+                            assert!(dtr.is_some() || rts.is_some());
+                            let mut status: PortStatus = self.shared_status.load().as_ref().clone();
+                            if let Some(dtr) = dtr {
+                                status.signals.dtr = dtr;
+                            }
+                            if let Some(rts) = rts {
+                                status.signals.rts = rts;
+                            }
+                            if let Some(port) = self.port.as_mut_port() {
+                                // Sending both signals regardless of which one changed
+                                // to keep them in line with the expected state in the struct.
+                                port.write_data_terminal_ready(status.signals.dtr)?;
+                                port.write_request_to_send(status.signals.rts)?;
+                            }
+                            self.shared_status.store(Arc::new(status));
+                            self.read_and_share_serial_signals(true)?;
+                        }
+                        SerialCommand::ToggleSignals { dtr, rts } => {
+                            assert!(dtr || rts);
+
+                            let mut status: PortStatus = self.shared_status.load().as_ref().clone();
+
+                            if dtr {
+                                status.signals.dtr.flip();
+                            }
+                            if rts {
+                                status.signals.rts.flip();
+                            }
+                            if let Some(port) = self.port.as_mut_port() {
+                                // Sending both signals regardless of which one changed
+                                // to keep them in line with the expected state in the struct.
+                                port.write_data_terminal_ready(status.signals.dtr)?;
+                                port.write_request_to_send(status.signals.rts)?;
+                            }
+                            self.shared_status.store(Arc::new(status));
+                            self.read_and_share_serial_signals(true)?;
+                        }
+                        SerialCommand::Shutdown(shutdown_tx) => {
+                            shutdown_tx
+                                .send(())
+                                .expect("Failed to reply to shutdown request");
+
+                            self.shared_status
+                                .store(Arc::new(PortStatus::new_idle(&PortSettings::default())));
+                            self.port.drop();
+                            break;
+                        }
+                        SerialCommand::RequestPortScan => {
+                            let ports = self.scan_for_serial_ports().unwrap();
+                            self.scan_snapshot = ports.clone();
+                            self.event_tx
+                                .send(SerialEvent::Ports(ports).into())
+                                .unwrap();
+                        }
+                        SerialCommand::RequestReconnect => {
+                            self.attempt_reconnect().unwrap();
+                        }
+                        SerialCommand::Disconnect => {
+                            // self.port_status = SerialStatus::idle();
+
+                            let settings = self.shared_settings.load();
+
+                            let previous_status = { self.shared_status.load().as_ref().clone() };
+
+                            self.shared_status
+                                .store(Arc::new(previous_status.to_idle(&*settings)));
+                            self.port.drop();
+                            self.event_tx.send(SerialEvent::Disconnected(None).into())?;
+                        }
+                        // This should maybe reply with a success/fail in case the
+                        // port is having an issue, so the user's input buffer isn't consumed visually
+                        SerialCommand::TxBuffer(mut data) if self.port.is_owned() => {
+                            let port = self.port.as_mut_port().unwrap();
+                            info!(
+                                "bytes incoming: {}, bytes outcoming: {}",
+                                port.bytes_to_read().unwrap(),
+                                port.bytes_to_write().unwrap()
+                            );
+
+                            let mut buf = &data[..];
+
+                            // let mut writer = BufWriter::new(&mut port);
+
+                            // TODO This is because the ESP32-S3's virtual USB serial port
+                            // has an issue with payloads larger than 256 bytes????
+                            // (Sending too fast causes the buffer to fill up too quickly for the
+                            // actual firmware to notice anything present and drain it before it hits the cap)
+                            // So this might need to be a throttle toggle,
+                            // maybe on by default since its not too bad?
+                            let slow_writes = true;
+
+                            let max_bytes = 8;
+
+                            while !buf.is_empty() {
+                                let write_size = if slow_writes {
+                                    std::cmp::min(max_bytes, buf.len())
+                                } else {
+                                    buf.len()
+                                };
+                                match port.write(&buf[..write_size]) {
+                                    Ok(0) => {
+                                        // return Err(Error::WRITE_ALL_EOF);
+                                        todo!();
+                                    }
+                                    Ok(n) => {
+                                        // info!(
+                                        //     "bytes incoming: {}, bytes outcoming: {}",
+                                        //     port.bytes_to_read().unwrap(),
+                                        //     port.bytes_to_write().unwrap()
+                                        // );
+                                        info!("buf n: {n}");
+                                        buf = &buf[n..];
+                                        self.event_tx.send(Tick::Tx.into()).unwrap();
+                                        std::thread::sleep(Duration::from_millis(1));
+                                    }
+                                    Err(e) => todo!("{e}"),
+                                }
+                            }
+
+                            // if let Err(e) = port.write_all(&data) {
+                            //     todo!("{e}");
+                            // } else {
+                            //     info!("{data:?}");
+                            //     port.flush()?;
+                            // }
+                        }
+                        SerialCommand::TxBuffer(_) => todo!("Tried to send with no port"), // Tried to send with no port
                     }
-                    SerialCommand::TxBuffer(_) => todo!("Tried to send with no port"), // Tried to send with no port
-                },
+                }
 
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     // info!("no message");
@@ -734,6 +882,11 @@ impl SerialWorker {
                         self.event_tx
                             .send(SerialEvent::Disconnected(Some(e.to_string())).into())?;
                     }
+                }
+
+                if self.last_signal_check.elapsed() >= Duration::from_millis(100) {
+                    self.read_and_share_serial_signals(false)?;
+                    self.last_signal_check = Instant::now();
                 }
             }
         }
@@ -940,7 +1093,7 @@ impl SerialWorker {
         // );
         port_status.signals.update_with_port(port)?;
         port_status.current_port = Some(port_info.to_owned());
-        port_status.healthy = true;
+        port_status.state = PortState::Connected;
         self.shared_status.store(Arc::new(port_status));
 
         // Blech, if connecting from current_ports in attempt_reconnect, this may not exist.

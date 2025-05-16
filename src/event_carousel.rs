@@ -169,10 +169,6 @@ impl CarouselWorker {
 
             // info!("Waiting for {sleep_time:?}");
         }
-        if send_error {
-            Err(())
-        } else {
-            Ok(())
-        }
+        if send_error { Err(()) } else { Ok(()) }
     }
 }
