@@ -1,37 +1,29 @@
 use std::{
-    io::{BufWriter, Read, Write},
+    io::Write,
     sync::{
         Arc,
-        mpsc::{self, Receiver, Sender},
+        mpsc::{Receiver, Sender},
     },
-    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-use arc_swap::{ArcSwap, ArcSwapOption};
-use bstr::ByteVec;
-use compact_str::CompactString;
-use serde::{Deserialize, Serializer};
-use serde_inline_default::serde_inline_default;
-use serialport::{
-    DataBits, FlowControl, Parity, SerialPort, SerialPortInfo, SerialPortType, StopBits,
-};
-use struct_table::StructTable;
+use arc_swap::ArcSwap;
+
+use serialport::{SerialPort, SerialPortInfo, SerialPortType};
 use tracing::{debug, error, info, warn};
 use virtual_serialport::VirtualPort;
 
 use crate::{
-    app::{COMMON_BAUD, DEFAULT_BAUD, Event, Tick},
+    app::{Event, Tick},
     errors::{YapError, YapResult},
-    settings::{
-        PortSettings,
-        ser::{
-            deserialize_from_u8, deserialize_line_ending, serialize_as_u8, serialize_line_ending,
-        },
-    },
+    serial::SerialEvent,
+    settings::PortSettings,
     traits::ToggleBool,
 };
 
+#[cfg(feature = "espflash")]
+use super::esp::EspFlashEvent;
+use super::{ReconnectType, Reconnections, SerialSignals, handle::SerialCommand};
 #[cfg(feature = "espflash")]
 use espflash::connection::reset::ResetStrategy;
 
@@ -40,387 +32,8 @@ pub type NativePort = serialport::TTYPort;
 #[cfg(windows)]
 pub type NativePort = serialport::COMPort;
 
-// TODO maybe relegate this to the serial worker thread in case it blocks?
-
-#[derive(Clone, Debug)]
-pub enum ReconnectType {
-    PerfectMatch,
-    UsbStrict,
-    UsbLoose,
-    LastDitch,
-}
-
-#[derive(Debug, Clone)]
-pub enum SerialEvent {
-    Ports(Vec<SerialPortInfo>),
-    Connected(Option<ReconnectType>),
-    RxBuffer(Vec<u8>),
-    EspFlash(EspFlashEvent),
-    Disconnected(Option<String>),
-}
-
-#[derive(Debug, Clone)]
-pub enum EspFlashEvent {
-    PortBorrowed,
-    BootloaderSuccess { chip: String },
-    HardResetAttempt,
-    Error(String),
-}
-
-impl From<EspFlashEvent> for SerialEvent {
-    fn from(value: EspFlashEvent) -> Self {
-        Self::EspFlash(value)
-    }
-}
-
-impl From<EspFlashEvent> for Event {
-    fn from(value: EspFlashEvent) -> Self {
-        Self::Serial(SerialEvent::EspFlash(value))
-    }
-}
-
-impl From<SerialEvent> for Event {
-    fn from(value: SerialEvent) -> Self {
-        Self::Serial(value)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Reconnections {
-    Disabled,
-    StrictChecks,
-    LooseChecks,
-}
-
-impl std::fmt::Display for Reconnections {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let reconnection_str = match self {
-            Reconnections::Disabled => "Disabled",
-            Reconnections::StrictChecks => "Strict Checks",
-            Reconnections::LooseChecks => "Loose Checks",
-        };
-        write!(f, "{}", reconnection_str)
-    }
-}
-
-#[derive(Debug)]
-pub enum SerialCommand {
-    RequestPortScan,
-    Connect {
-        port: SerialPortInfo,
-        settings: PortSettings,
-    },
-    PortSettings(PortSettings),
-    TxBuffer(Vec<u8>),
-    #[cfg(feature = "espflash")]
-    EspRestart {
-        bootloader: bool,
-    },
-    WriteSignals {
-        dtr: Option<bool>,
-        rts: Option<bool>,
-    },
-    ToggleSignals {
-        dtr: bool,
-        rts: bool,
-    },
-    // ReadSignals,
-    RequestReconnect,
-    Disconnect,
-    Shutdown(Sender<()>),
-}
-
-// This status struct leaves a bit to be desired
-// especially in terms of the signals and their initial states
-// (between connections and app start)
-// maybe something better will come to me.
-
-#[derive(Debug, Clone, Copy, Default)]
-pub enum PortState {
-    #[default]
-    Idle,
-    PrematureDisconnect,
-    LentOut,
-    Connected,
-}
-
-impl PortState {
-    pub fn is_healthy(&self) -> bool {
-        matches!(self, PortState::Connected)
-    }
-    pub fn is_lent_out(&self) -> bool {
-        matches!(self, PortState::LentOut)
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct PortStatus {
-    pub state: PortState,
-    pub current_port: Option<SerialPortInfo>,
-
-    pub signals: SerialSignals,
-}
-
-impl PortStatus {
-    fn new_idle(settings: &PortSettings) -> Self {
-        Self {
-            signals: SerialSignals {
-                dtr: settings.dtr_on_connect,
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    }
-    /// Used when a port disconnects without the user's stated intent to do so.
-    fn to_unhealthy(self) -> Self {
-        Self {
-            state: PortState::PrematureDisconnect,
-            ..self
-        }
-    }
-    /// Used when the user chooses to disconnect from the serial port
-    fn to_idle(self, settings: &PortSettings) -> Self {
-        Self {
-            state: PortState::Idle,
-            current_port: None,
-            signals: SerialSignals {
-                dtr: settings.dtr_on_connect,
-                ..Default::default()
-            },
-            ..self
-        }
-    }
-
-    // fn to_connected(
-    //     self,
-    //     port: SerialPortInfo, // , baud_rate: u32, signals: SerialSignals
-    // ) -> Self {
-    //     Self {
-    //         healthy: true,
-    //         current_port: Some(port),
-    //         ..self
-    //     }
-    // }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct SerialSignals {
-    // Host-controlled
-    /// RTS (Request To Send)
-    pub rts: bool,
-    /// DTR (Data Terminal Ready)
-    pub dtr: bool,
-    // Slave-controlled, polled periodically
-    /// CTS (Clear To Send)
-    pub cts: bool,
-    /// DSR (Data Set Ready)
-    pub dsr: bool,
-    /// RI (Ring Indicator)
-    pub ri: bool,
-    /// CD (Carrier Detect)
-    pub cd: bool,
-}
-
-impl SerialSignals {
-    // fn toggle_dtr(&mut self, serial_port: &mut dyn SerialPort) -> Result<bool, serialport::Error> {
-    //     let dtr = !self.dtr;
-    //     serial_port.write_data_terminal_ready(dtr)?;
-    //     Ok(dtr)
-    // }
-    // fn toggle_rts(&mut self, serial_port: &mut dyn SerialPort) -> Result<bool, serialport::Error> {
-    //     let rts = !self.rts;
-    //     serial_port.write_request_to_send(rts)?;
-    //     Ok(rts)
-    // }
-    // fn new_from_port(serial_port: &mut dyn SerialPort) -> Result<Self, serialport::Error> {
-    //     let mut signals = Self::default();
-    //     signals.update_with_port(serial_port)?;
-    //     Ok(signals)
-    // }
-    fn update_with_port(
-        &mut self,
-        serial_port: &mut dyn SerialPort,
-    ) -> Result<bool, serialport::Error> {
-        let cts = serial_port.read_clear_to_send()?;
-        let dsr = serial_port.read_data_set_ready()?;
-        let ri = serial_port.read_ring_indicator()?;
-        let cd = serial_port.read_carrier_detect()?;
-
-        let changed = self.cts != cts || self.dsr != dsr || self.ri != ri || self.cd != cd;
-
-        self.cts = cts;
-        self.dsr = dsr;
-        self.ri = ri;
-        self.cd = cd;
-
-        Ok(changed)
-    }
-}
-
-fn f() {
-    let port = serialport::new("1", 1).open().unwrap();
-    // port.read_
-}
-
-#[derive(Clone)]
-pub struct SerialHandle {
-    command_tx: Sender<SerialCommand>,
-    pub port_status: Arc<ArcSwap<PortStatus>>,
-    pub port_settings: Arc<ArcSwap<PortSettings>>,
-}
-
-pub trait PrintablePortInfo {
-    fn info_as_string(&self, baud_rate: Option<u32>) -> String;
-}
-
-impl PrintablePortInfo for SerialPortInfo {
-    fn info_as_string(&self, baud_rate: Option<u32>) -> String {
-        let extra_info = match &self.port_type {
-            SerialPortType::UsbPort(usb) => {
-                format!("VID: 0x{:04X}, PID: 0x{:04X}", usb.vid, usb.pid)
-            }
-            SerialPortType::Unknown => String::new(),
-            SerialPortType::PciPort => "PCI".to_owned(),
-            SerialPortType::BluetoothPort => "Bluetooth".to_owned(),
-        };
-        let port = &self.port_name;
-        match (baud_rate, extra_info.is_empty()) {
-            (Some(baud), false) => format!("{port} @ {baud} | {extra_info}"),
-            (Some(baud), true) => format!("{port} @ {baud}"),
-            (None, false) => format!("{port} | {extra_info}"),
-            (None, true) => format!("{port}"),
-        }
-
-        // if extra_info.is_empty() {
-        //     format!("{}", self.port_name)
-        // } else {
-        //     format!("{} | {extra_info}", self.port_name)
-        // }
-    }
-}
-
-impl SerialHandle {
-    pub fn new(event_tx: Sender<Event>, port_settings: PortSettings) -> (Self, JoinHandle<()>) {
-        let (command_tx, command_rx) = mpsc::channel();
-
-        let port_status = Arc::new(ArcSwap::from_pointee(PortStatus::new_idle(&port_settings)));
-
-        let port_settings = Arc::new(ArcSwap::from_pointee(port_settings));
-
-        let mut worker = SerialWorker::new(
-            command_rx,
-            event_tx,
-            port_status.clone(),
-            port_settings.clone(),
-        );
-
-        let worker = std::thread::spawn(move || {
-            worker
-                .work_loop()
-                .expect("Serial worker encountered a fatal error!");
-        });
-
-        let handle = Self {
-            command_tx,
-            port_status,
-            port_settings,
-        };
-        handle.request_port_scan().unwrap();
-        (handle, worker)
-    }
-    pub fn connect(&self, port: &SerialPortInfo, settings: PortSettings) -> YapResult<()> {
-        self.command_tx
-            .send(SerialCommand::Connect {
-                port: port.to_owned(),
-                settings,
-            })
-            .map_err(|_| YapError::NoSerialWorker)
-    }
-    pub fn disconnect(&self) -> YapResult<()> {
-        self.command_tx
-            .send(SerialCommand::Disconnect)
-            .map_err(|_| YapError::NoSerialWorker)
-    }
-    pub fn update_settings(&self, settings: PortSettings) -> YapResult<()> {
-        self.command_tx
-            .send(SerialCommand::PortSettings(settings))
-            .map_err(|_| YapError::NoSerialWorker)
-    }
-    /// Sends the supplied bytes through the connected Serial device.
-    pub fn send_bytes(&self, mut input: Vec<u8>, line_ending: Option<&[u8]>) -> YapResult<()> {
-        if let Some(ending) = line_ending {
-            input.extend(ending.iter());
-        }
-        self.command_tx
-            .send(SerialCommand::TxBuffer(input))
-            .map_err(|_| YapError::NoSerialWorker)
-    }
-    pub fn send_str(&self, input: &str, line_ending: &[u8], unescape_bytes: bool) -> YapResult<()> {
-        // debug!("Outputting to serial: {input}");
-        let buffer = if unescape_bytes {
-            Vec::unescape_bytes(input)
-        } else {
-            input.as_bytes().to_owned()
-        };
-        self.send_bytes(buffer, Some(line_ending))
-    }
-    // pub fn read_signals(&self) -> YapResult<()> {
-    //     self.command_tx
-    //         .send(SerialCommand::ReadSignals)
-    //         .map_err(|_| YapError::NoSerialWorker)
-    // }
-    #[cfg(feature = "espflash")]
-    pub fn esp_restart(&self, bootloader: bool) -> YapResult<()> {
-        self.command_tx
-            .send(SerialCommand::EspRestart { bootloader })
-            .map_err(|_| YapError::NoSerialWorker)
-    }
-    pub fn write_signals(&self, dtr: Option<bool>, rts: Option<bool>) -> YapResult<()> {
-        self.command_tx
-            .send(SerialCommand::WriteSignals { dtr, rts })
-            .map_err(|_| YapError::NoSerialWorker)
-    }
-    pub fn toggle_signals(&self, dtr: bool, rts: bool) -> YapResult<()> {
-        self.command_tx
-            .send(SerialCommand::ToggleSignals { dtr, rts })
-            .map_err(|_| YapError::NoSerialWorker)
-    }
-    /// Non-blocking request for the serial worker to scan for ports and send a list of available ports
-    pub fn request_port_scan(&self) -> YapResult<()> {
-        self.command_tx
-            .send(SerialCommand::RequestPortScan)
-            .map_err(|_| YapError::NoSerialWorker)
-    }
-    /// Non-blocking request for the serial worker to attempt to reconnect to the "current" device
-    pub fn request_reconnect(&self) -> YapResult<()> {
-        self.command_tx
-            .send(SerialCommand::RequestReconnect)
-            .map_err(|_| YapError::NoSerialWorker)
-    }
-    // TODO maybe just shut down when we lose all Tx handles?
-    // Would still want to detect a locked thread and handle it though
-    /// Tells the worker thread to shutdown, blocking for up to three seconds before aborting.
-    pub fn shutdown(&self) -> Result<(), ()> {
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-        if self
-            .command_tx
-            .send(SerialCommand::Shutdown(shutdown_tx))
-            .is_ok()
-        {
-            if shutdown_rx.recv_timeout(Duration::from_secs(3)).is_ok() {
-                Ok(())
-            } else {
-                error!("Serial worker didn't react to shutdown request.");
-                Err(())
-            }
-        } else {
-            error!("Couldn't send serial worker shutdown.");
-            Err(())
-        }
-    }
-}
 #[derive(Default)]
-enum PortHandle {
+enum TakeablePort {
     #[default]
     None,
     Borrowed,
@@ -428,25 +41,25 @@ enum PortHandle {
     Loopback(VirtualPort),
 }
 
-impl PortHandle {
+impl TakeablePort {
     fn is_none(&self) -> bool {
-        matches!(self, PortHandle::None)
+        matches!(self, TakeablePort::None)
     }
     fn is_some(&self) -> bool {
         !self.is_none()
     }
     fn is_borrowed(&self) -> bool {
-        matches!(self, PortHandle::Borrowed)
+        matches!(self, TakeablePort::Borrowed)
     }
     fn is_owned(&self) -> bool {
-        matches!(self, PortHandle::Native(_) | PortHandle::Loopback(_))
+        matches!(self, TakeablePort::Native(_) | TakeablePort::Loopback(_))
     }
     fn drop(&mut self) {
-        *self = PortHandle::None;
+        *self = TakeablePort::None;
     }
     fn take_native(&mut self) -> Option<NativePort> {
-        if let PortHandle::Native(_) = self {
-            if let PortHandle::Native(port) = std::mem::replace(self, PortHandle::Borrowed) {
+        if let TakeablePort::Native(_) = self {
+            if let TakeablePort::Native(port) = std::mem::replace(self, TakeablePort::Borrowed) {
                 Some(port)
             } else {
                 unreachable!()
@@ -456,20 +69,20 @@ impl PortHandle {
         }
     }
     fn return_native(&mut self, port: NativePort) {
-        *self = PortHandle::Native(port);
+        *self = TakeablePort::Native(port);
     }
     fn return_loopback(&mut self, port: VirtualPort) {
-        *self = PortHandle::Loopback(port);
+        *self = TakeablePort::Loopback(port);
     }
     fn as_mut_port(&mut self) -> Option<&mut dyn SerialPort> {
         match self {
-            PortHandle::Native(port) => Some(port),
-            PortHandle::Loopback(port) => Some(port),
+            TakeablePort::Native(port) => Some(port),
+            TakeablePort::Loopback(port) => Some(port),
             _ => None,
         }
     }
     fn as_mut_native_port(&mut self) -> Option<&mut NativePort> {
-        if let PortHandle::Native(port) = self {
+        if let TakeablePort::Native(port) = self {
             Some(port)
         } else {
             None
@@ -480,7 +93,7 @@ impl PortHandle {
 pub struct SerialWorker {
     command_rx: Receiver<SerialCommand>,
     event_tx: Sender<Event>,
-    port: PortHandle,
+    port: TakeablePort,
     last_signal_check: Instant,
     // settings: PortSettings,
     scan_snapshot: Vec<SerialPortInfo>,
@@ -491,7 +104,7 @@ pub struct SerialWorker {
 }
 
 impl SerialWorker {
-    fn new(
+    pub fn new(
         command_rx: Receiver<SerialCommand>,
         event_tx: Sender<Event>,
         port_status: Arc<ArcSwap<PortStatus>>,
@@ -504,7 +117,7 @@ impl SerialWorker {
             shared_settings: port_settings,
             // port_status: SerialStatus::idle(),
             // connected_port_info: None,
-            port: PortHandle::default(),
+            port: TakeablePort::default(),
             last_signal_check: Instant::now(),
             // settings: PortSettings::default(),
             scan_snapshot: vec![],
@@ -514,7 +127,7 @@ impl SerialWorker {
     // Primary loop for this thread.
     // Only use `?` on operations that we expect to run flawlessly, and that
     // should kill the port connection if encountered.
-    fn work_loop(&mut self) -> color_eyre::Result<()> {
+    pub fn work_loop(&mut self) -> color_eyre::Result<()> {
         loop {
             // TODO consider sleeping here for a moment with a read_timeout?
             // or have some kind of cooldown after a 0-size serial read
@@ -541,7 +154,7 @@ impl SerialWorker {
                         #[cfg(feature = "espflash")]
                         SerialCommand::EspRestart { bootloader } => {
                             if let Some(port) = self.port.as_mut_native_port() {
-                                let strategy = espflash_stuff::TestReset::new();
+                                let strategy = super::esp::TestReset::new();
                                 // let strategy = espflash::connection::reset::ClassicReset::new(false);
                                 strategy.reset(port)?;
                                 // let strategy = espflash::connection::reset::ClassicReset::new(true);
@@ -1145,52 +758,77 @@ impl SerialWorker {
     }
 }
 
-#[cfg(feature = "espflash")]
-mod espflash_stuff {
-    use std::time::Duration;
+// This status struct leaves a bit to be desired
+// especially in terms of the signals and their initial states
+// (between connections and app start)
+// maybe something better will come to me.
 
-    use espflash::connection::reset::ResetStrategy;
-    use tracing::debug;
+#[derive(Debug, Clone, Copy, Default)]
+pub enum PortState {
+    #[default]
+    Idle,
+    PrematureDisconnect,
+    LentOut,
+    Connected,
+}
 
-    pub struct TestReset {
-        delay: u64,
+impl PortState {
+    pub fn is_healthy(&self) -> bool {
+        matches!(self, PortState::Connected)
     }
-    impl TestReset {
-        pub fn new() -> Self {
-            Self { delay: 50 }
+    pub fn is_lent_out(&self) -> bool {
+        matches!(self, PortState::LentOut)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PortStatus {
+    pub state: PortState,
+    pub current_port: Option<SerialPortInfo>,
+
+    pub signals: SerialSignals,
+}
+
+impl PortStatus {
+    pub fn new_idle(settings: &PortSettings) -> Self {
+        Self {
+            signals: SerialSignals {
+                dtr: settings.dtr_on_connect,
+                ..Default::default()
+            },
+            ..Default::default()
         }
     }
-    impl ResetStrategy for TestReset {
-        fn reset(
-            &self,
-            serial_port: &mut espflash::connection::Port,
-        ) -> Result<(), espflash::error::Error> {
-            debug!(
-                "Using Classic reset strategy with delay of {}ms",
-                self.delay
-            );
-            self.set_dtr(serial_port, false)?;
-            self.set_rts(serial_port, false)?;
-
-            self.set_dtr(serial_port, true)?;
-            self.set_rts(serial_port, true)?;
-
-            self.set_dtr(serial_port, false)?; // IO0 = HIGH
-            self.set_rts(serial_port, true)?; // EN = LOW, chip in reset
-
-            std::thread::sleep(Duration::from_millis(100));
-
-            self.set_dtr(serial_port, true)?; // IO0 = LOW
-            self.set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
-
-            std::thread::sleep(Duration::from_millis(self.delay));
-
-            self.set_dtr(serial_port, false)?; // IO0 = HIGH, done
-            self.set_rts(serial_port, false)?;
-
-            Ok(())
+    /// Used when a port disconnects without the user's stated intent to do so.
+    fn to_unhealthy(self) -> Self {
+        Self {
+            state: PortState::PrematureDisconnect,
+            ..self
         }
     }
+    /// Used when the user chooses to disconnect from the serial port
+    fn to_idle(self, settings: &PortSettings) -> Self {
+        Self {
+            state: PortState::Idle,
+            current_port: None,
+            signals: SerialSignals {
+                dtr: settings.dtr_on_connect,
+                ..Default::default()
+            },
+            ..self
+        }
+    }
+
+    // fn to_connected(
+    //     self,
+    //     port: SerialPortInfo, // , baud_rate: u32, signals: SerialSignals
+    // ) -> Self {
+    //     Self {
+    //         healthy: true,
+    //         current_port: Some(port),
+    //         ..self
+    //     }
+    // }
 }
 
 pub const MOCK_PORT_NAME: &str = "lorem-ipsum";

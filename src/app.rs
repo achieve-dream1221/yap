@@ -46,18 +46,24 @@ use crate::{
         EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
     },
     serial::{
-        EspFlashEvent, MOCK_PORT_NAME, PortState, PrintablePortInfo, ReconnectType, Reconnections,
-        SerialEvent, SerialHandle,
+        PrintablePortInfo, ReconnectType, Reconnections, SerialEvent,
+        handle::SerialHandle,
+        worker::{MOCK_PORT_NAME, PortState},
     },
     settings::{Behavior, PortSettings, Rendering, Settings},
     traits::{LastIndex, LineHelpers, ToggleBool},
     tui::{
         buffer::Buffer,
-        centered_rect_size, espflash_ui,
+        centered_rect_size,
         prompts::{DisconnectPrompt, PromptTable, centered_rect},
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
 };
+
+#[cfg(feature = "espflash")]
+use crate::serial::esp::EspFlashEvent;
+#[cfg(feature = "espflash")]
+use crate::tui::esp;
 
 #[derive(Clone, Debug)]
 pub enum CrosstermEvent {
@@ -462,6 +468,7 @@ impl App {
                     }
                 }
             }
+            #[cfg(feature = "espflash")]
             Event::Serial(SerialEvent::EspFlash(esp_event)) => match esp_event {
                 EspFlashEvent::BootloaderSuccess { chip } => self
                     .notifs
@@ -1075,6 +1082,7 @@ impl App {
                     self.scroll_menu_up();
                 }
             }
+            #[cfg(feature = "espflash")]
             Some(PopupMenu::EspFlash) => {
                 if self.popup_table_state.selected() == Some(0) {
                     self.popup_table_state.select(None);
@@ -1188,6 +1196,7 @@ impl App {
                     self.scroll_menu_down();
                 }
             }
+            #[cfg(feature = "espflash")]
             Some(PopupMenu::EspFlash) => {
                 if self.popup_table_state.selected() >= Some(1) {
                     self.popup_table_state.select(None);
@@ -1270,6 +1279,7 @@ impl App {
                     self.popup_table_state.select_first();
                 }
             }
+            #[cfg(feature = "espflash")]
             Some(PopupMenu::EspFlash) => (),
         }
         if self.popup.is_some() {
@@ -1323,6 +1333,7 @@ impl App {
                     self.popup_table_state.select_first();
                 }
             }
+            #[cfg(feature = "espflash")]
             Some(PopupMenu::EspFlash) => (),
         }
         if self.popup.is_some() {
@@ -1430,6 +1441,7 @@ impl App {
                     };
                 }
             }
+            #[cfg(feature = "espflash")]
             Some(PopupMenu::EspFlash) => {
                 let Some(selected) = self.popup_table_state.selected() else {
                     return;
@@ -1670,6 +1682,7 @@ impl App {
             PopupMenu::RenderingSettings => Color::Red,
             PopupMenu::BehaviorSettings => Color::Blue,
             PopupMenu::PortSettings => Color::Cyan,
+            #[cfg(feature = "espflash")]
             PopupMenu::EspFlash => Color::Magenta,
         };
 
@@ -1820,6 +1833,7 @@ impl App {
             PopupMenu::PortSettings => PortSettings::VISIBLE_FIELDS,
             PopupMenu::BehaviorSettings => Behavior::VISIBLE_FIELDS,
             PopupMenu::RenderingSettings => Rendering::VISIBLE_FIELDS,
+            #[cfg(feature = "espflash")]
             PopupMenu::EspFlash => 2,
         };
 
@@ -2062,8 +2076,9 @@ impl App {
                 //     _ => (),
                 // };
             }
+            #[cfg(feature = "espflash")]
             PopupMenu::EspFlash => {
-                let table = espflash_ui::meow(&mut self.popup_table_state);
+                let table = esp::meow(&mut self.popup_table_state);
 
                 frame.render_widget(
                     Line::raw("Powered by esp-rs/espflash!")

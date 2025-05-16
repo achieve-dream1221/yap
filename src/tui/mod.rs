@@ -1,7 +1,7 @@
 use ratatui::layout::{Rect, Size};
 
 #[cfg(feature = "espflash")]
-pub mod espflash_ui;
+pub mod esp;
 
 pub mod buffer;
 pub mod color_rules;
