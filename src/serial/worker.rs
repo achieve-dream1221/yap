@@ -21,9 +21,10 @@ use crate::{
     traits::ToggleBool,
 };
 
-#[cfg(feature = "espflash")]
-use super::esp::EspFlashEvent;
 use super::{ReconnectType, Reconnections, SerialSignals, handle::SerialCommand};
+
+#[cfg(feature = "espflash")]
+use super::esp::{EspCommand, EspFlashEvent};
 #[cfg(feature = "espflash")]
 use espflash::connection::reset::ResetStrategy;
 
@@ -152,117 +153,7 @@ impl SerialWorker {
                         }
                         SerialCommand::PortSettings(settings) => self.update_settings(settings)?,
                         #[cfg(feature = "espflash")]
-                        SerialCommand::EspRestart { bootloader } => {
-                            if let Some(port) = self.port.as_mut_native_port() {
-                                let strategy = super::esp::TestReset::new();
-                                // let strategy = espflash::connection::reset::ClassicReset::new(false);
-                                strategy.reset(port)?;
-                                // let strategy = espflash::connection::reset::ClassicReset::new(true);
-                                // strategy.reset(port)?;
-
-                                // espflash::flasher::Flasher::
-
-                                let mut status: PortStatus =
-                                    self.shared_status.load().as_ref().clone();
-
-                                let usb_port_info = {
-                                    match &status.current_port {
-                                        None => unreachable!(),
-                                        Some(info) => match &info.port_type {
-                                            SerialPortType::UsbPort(e) => e.clone(),
-                                            _ => unreachable!(),
-                                        },
-                                    }
-                                };
-
-                                status.state = PortState::LentOut;
-
-                                self.shared_status.store(Arc::new(status.clone()));
-
-                                self.event_tx
-                                    .send(EspFlashEvent::PortBorrowed.into())
-                                    .unwrap();
-
-                                let lent_port = self.port.take_native().unwrap();
-
-                                let mut returned_port = if bootloader {
-                                    let mut flasher = espflash::flasher::Flasher::connect(
-                                        lent_port,
-                                        usb_port_info,
-                                        Some(115200),
-                                        true,
-                                        true,
-                                        true,
-                                        None,
-                                        espflash::connection::reset::ResetAfterOperation::HardReset,
-                                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
-                                    )
-                                    .unwrap();
-
-                                    let esp_chip = flasher.chip();
-
-                                    let esp_info = flasher.device_info().unwrap();
-
-                                    debug!("{esp_info:?}");
-
-                                    self.event_tx
-                                        .send(
-                                            EspFlashEvent::BootloaderSuccess {
-                                                chip: esp_chip.to_string().to_uppercase(),
-                                            }
-                                            .into(),
-                                        )
-                                        .unwrap();
-
-                                    flasher.into_serial()
-                                } else {
-                                    let mut connection = espflash::connection::Connection::new(
-                                        lent_port, usb_port_info, espflash::connection::reset::ResetAfterOperation::HardReset,
-                                        espflash::connection::reset::ResetBeforeOperation::DefaultReset);
-
-                                    connection.reset().unwrap();
-
-                                    self.event_tx
-                                        .send(EspFlashEvent::HardResetAttempt.into())
-                                        .unwrap();
-
-                                    connection.into_serial()
-                                };
-
-                                returned_port
-                                    .set_timeout(Duration::from_millis(100))
-                                    .unwrap();
-
-                                let baud_rate = self.shared_settings.load().baud_rate;
-                                returned_port.set_baud_rate(baud_rate).unwrap();
-                                returned_port
-                                    .write_data_terminal_ready(status.signals.dtr)
-                                    .unwrap();
-                                returned_port
-                                    .write_request_to_send(status.signals.rts)
-                                    .unwrap();
-
-                                self.port.return_native(returned_port);
-
-                                status.state = PortState::Connected;
-
-                                self.shared_status.store(Arc::new(status));
-
-                                self.event_tx
-                                    .send(SerialEvent::Connected(None).into())
-                                    .unwrap();
-
-                                // flasher
-                                //     .write_bin_to_flash(
-                                //         0,
-                                //         include_bytes!("../OpenShock_Pishock-2023_1.4.0.bin"),
-                                //         None,
-                                //     )
-                                //     .unwrap();
-                            } else {
-                                error!("Requested an ESP restart with no port active!");
-                            }
-                        }
+                        SerialCommand::Esp(esp_command) => self.handle_esp_command(esp_command)?,
 
                         // This actually does work!
                         // Just needs a helluva lot of logic and polish to work in a presentable manner
@@ -506,6 +397,7 @@ impl SerialWorker {
 
         Ok(())
     }
+
     fn update_settings(&mut self, settings: PortSettings) -> Result<(), serialport::Error> {
         let status = { self.shared_status.load().as_ref().clone() };
         if let Some(port) = self.port.as_mut_port() {
@@ -524,6 +416,7 @@ impl SerialWorker {
         self.shared_settings.store(Arc::new(settings));
         Ok(())
     }
+
     fn attempt_reconnect(&mut self) -> Result<(), serialport::Error> {
         // assert!(self.connected_port_info.read().unwrap().is_some());
         // assert!(self.port.is_none());
@@ -625,6 +518,7 @@ impl SerialWorker {
 
         Ok(())
     }
+
     fn scan_for_serial_ports(&self) -> Result<Vec<SerialPortInfo>, serialport::Error> {
         // TODO error handling
         let mut ports = serialport::available_ports()?;
@@ -706,7 +600,7 @@ impl SerialWorker {
         // );
         port_status.signals.update_with_port(port)?;
         port_status.current_port = Some(port_info.to_owned());
-        port_status.state = PortState::Connected;
+        port_status.inner = InnerPortStatus::Connected;
         self.shared_status.store(Arc::new(port_status));
 
         // Blech, if connecting from current_ports in attempt_reconnect, this may not exist.
@@ -727,6 +621,7 @@ impl SerialWorker {
             .unwrap();
         Ok(())
     }
+
     fn read_and_share_serial_signals(
         &mut self,
         force_share: bool,
@@ -756,6 +651,344 @@ impl SerialWorker {
 
         Ok(())
     }
+
+    #[cfg(feature = "espflash")]
+    fn handle_esp_command(&mut self, esp_command: EspCommand) -> color_eyre::Result<()> {
+        use std::{borrow::Cow, fs};
+
+        use espflash::{elf::RomSegment, flasher::ProgressCallbacks};
+
+        match esp_command {
+            EspCommand::DeviceInfo if self.port.is_owned() => {
+                let mut status: PortStatus = self.shared_status.load().as_ref().clone();
+
+                let usb_port_info = {
+                    match &status.current_port {
+                        None => unreachable!(),
+                        Some(info) => match &info.port_type {
+                            SerialPortType::UsbPort(e) => e.clone(),
+                            _ => unreachable!(),
+                        },
+                    }
+                };
+
+                status.inner = InnerPortStatus::LentOut;
+
+                self.shared_status.store(Arc::new(status.clone()));
+
+                self.event_tx
+                    .send(EspFlashEvent::PortBorrowed.into())
+                    .unwrap();
+
+                let lent_port = self.port.take_native().unwrap();
+
+                let returned_port = {
+                    let mut flasher = espflash::flasher::Flasher::connect(
+                        lent_port,
+                        usb_port_info,
+                        Some(115200),
+                        true,
+                        true,
+                        true,
+                        None,
+                        espflash::connection::reset::ResetAfterOperation::HardReset,
+                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                    )
+                    .unwrap();
+
+                    let esp_info = flasher.device_info().unwrap();
+
+                    debug!("{esp_info:#?}");
+
+                    self.event_tx
+                        .send(EspFlashEvent::DeviceInfo(esp_info).into())
+                        .unwrap();
+
+                    flasher.connection().reset().unwrap();
+
+                    flasher.into_serial()
+                };
+
+                self.return_native_port(returned_port)?;
+            }
+            EspCommand::DeviceInfo => {
+                warn!("No owned port to query for ESP32 device info!");
+            }
+            EspCommand::Restart { bootloader } if self.port.is_owned() => {
+                let mut status: PortStatus = self.shared_status.load().as_ref().clone();
+
+                let usb_port_info = {
+                    match &status.current_port {
+                        None => unreachable!(),
+                        Some(info) => match &info.port_type {
+                            SerialPortType::UsbPort(e) => e.clone(),
+                            _ => unreachable!(),
+                        },
+                    }
+                };
+
+                status.inner = InnerPortStatus::LentOut;
+
+                self.shared_status.store(Arc::new(status.clone()));
+
+                self.event_tx
+                    .send(EspFlashEvent::PortBorrowed.into())
+                    .unwrap();
+
+                let lent_port = self.port.take_native().unwrap();
+
+                let mut returned_port = if bootloader {
+                    let mut flasher = espflash::flasher::Flasher::connect(
+                        lent_port,
+                        usb_port_info,
+                        Some(115200),
+                        true,
+                        true,
+                        true,
+                        None,
+                        espflash::connection::reset::ResetAfterOperation::HardReset,
+                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                    )
+                    .unwrap();
+
+                    let esp_chip = flasher.chip();
+
+                    let esp_info = flasher.device_info().unwrap();
+
+                    debug!("{esp_info:?}");
+
+                    self.event_tx
+                        .send(
+                            EspFlashEvent::BootloaderSuccess {
+                                chip: esp_chip.to_string().to_uppercase(),
+                            }
+                            .into(),
+                        )
+                        .unwrap();
+
+                    flasher.into_serial()
+                } else {
+                    let mut connection = espflash::connection::Connection::new(
+                        lent_port,
+                        usb_port_info,
+                        espflash::connection::reset::ResetAfterOperation::HardReset,
+                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                    );
+
+                    connection.reset().unwrap();
+
+                    self.event_tx
+                        .send(EspFlashEvent::HardResetAttempt.into())
+                        .unwrap();
+
+                    connection.into_serial()
+                };
+
+                self.return_native_port(returned_port)?;
+
+                // flasher
+                //     .write_bin_to_flash(
+                //         0,
+                //         include_bytes!("../OpenShock_Pishock-2023_1.4.0.bin"),
+                //         None,
+                //     )
+                //     .unwrap();
+            }
+            EspCommand::Restart { .. } => error!("Requested an ESP restart with no port active!"),
+            EspCommand::WriteBins(bins) if self.port.is_owned() => {
+                let mut status: PortStatus = self.shared_status.load().as_ref().clone();
+
+                let usb_port_info = {
+                    match &status.current_port {
+                        None => unreachable!(),
+                        Some(info) => match &info.port_type {
+                            SerialPortType::UsbPort(e) => e.clone(),
+                            _ => unreachable!(),
+                        },
+                    }
+                };
+
+                status.inner = InnerPortStatus::LentOut;
+
+                self.shared_status.store(Arc::new(status.clone()));
+
+                self.event_tx
+                    .send(EspFlashEvent::PortBorrowed.into())
+                    .unwrap();
+
+                let lent_port = self.port.take_native().unwrap();
+
+                let mut returned_port = {
+                    let mut flasher = espflash::flasher::Flasher::connect(
+                        lent_port,
+                        usb_port_info,
+                        Some(115200),
+                        true,
+                        true,
+                        true,
+                        None,
+                        espflash::connection::reset::ResetAfterOperation::HardReset,
+                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                    )
+                    .unwrap();
+
+                    let matches = bins.expected_chip.map_or(true, |expected| {
+                        if expected == flasher.chip() {
+                            true
+                        } else {
+                            warn!("Not acting! Chip doesn't match!");
+                            false
+                        }
+                    });
+
+                    if matches {
+                        if let Some(baud) = bins.upload_baud {
+                            flasher.change_baud(baud)?;
+                        }
+
+                        let rom_segs: Vec<RomSegment> = bins
+                            .bins
+                            .iter()
+                            .map(|(addr, path)| {
+                                let bytes = fs::read(path).unwrap();
+                                RomSegment {
+                                    addr: *addr,
+                                    data: Cow::Owned(bytes),
+                                }
+                            })
+                            .collect();
+
+                        struct Meoww;
+
+                        impl ProgressCallbacks for Meoww {
+                            fn init(&mut self, addr: u32, total: usize) {
+                                debug!("flashing {total}b to 0x{addr:X}");
+                            }
+                            fn update(&mut self, current: usize) {
+                                debug!("flashing 0x{current:X}");
+                            }
+                            fn finish(&mut self) {
+                                debug!("flashed!");
+                            }
+                        }
+
+                        flasher
+                            .write_bins_to_flash(
+                                &rom_segs,
+                                Some(&mut Meoww),
+                                !bins.no_verify,
+                                !bins.no_skip,
+                            )
+                            .unwrap();
+                    }
+
+                    flasher.into_serial()
+                };
+
+                self.return_native_port(returned_port)?;
+
+                // flasher
+                //     .write_bin_to_flash(
+                //         0,
+                //         include_bytes!("../OpenShock_Pishock-2023_1.4.0.bin"),
+                //         None,
+                //     )
+                //     .unwrap();
+            }
+            EspCommand::WriteBins(_) => {
+                error!("Requested an ESP flash bin write with no port active!")
+            }
+            EspCommand::EraseFlash if self.port.is_owned() => {
+                let mut status: PortStatus = self.shared_status.load().as_ref().clone();
+
+                let usb_port_info = {
+                    match &status.current_port {
+                        None => unreachable!(),
+                        Some(info) => match &info.port_type {
+                            SerialPortType::UsbPort(e) => e.clone(),
+                            _ => unreachable!(),
+                        },
+                    }
+                };
+
+                status.inner = InnerPortStatus::LentOut;
+
+                self.shared_status.store(Arc::new(status.clone()));
+
+                self.event_tx
+                    .send(EspFlashEvent::PortBorrowed.into())
+                    .unwrap();
+
+                let lent_port = self.port.take_native().unwrap();
+
+                let mut returned_port = {
+                    let mut flasher = espflash::flasher::Flasher::connect(
+                        lent_port,
+                        usb_port_info,
+                        Some(115200),
+                        true,
+                        true,
+                        true,
+                        None,
+                        espflash::connection::reset::ResetAfterOperation::HardReset,
+                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                    )
+                    .unwrap();
+
+                    flasher.erase_flash().unwrap();
+
+                    let esp_chip = flasher.chip();
+
+                    self.event_tx
+                        .send(
+                            EspFlashEvent::EraseSuccess {
+                                chip: esp_chip.to_string().to_uppercase(),
+                            }
+                            .into(),
+                        )
+                        .unwrap();
+
+                    flasher.into_serial()
+                };
+
+                self.return_native_port(returned_port)?;
+
+                // flasher
+                //     .write_bin_to_flash(
+                //         0,
+                //         include_bytes!("../OpenShock_Pishock-2023_1.4.0.bin"),
+                //         None,
+                //     )
+                //     .unwrap();
+            }
+            EspCommand::EraseFlash => {
+                error!("Requested an ESP flash erase with no port active!")
+            }
+        }
+
+        Ok(())
+    }
+
+    fn return_native_port(&mut self, mut port: NativePort) -> color_eyre::Result<()> {
+        let mut status = self.shared_status.load().as_ref().clone();
+
+        port.set_timeout(Duration::from_millis(100))?;
+
+        let baud_rate = self.shared_settings.load().baud_rate;
+        port.set_baud_rate(baud_rate)?;
+        port.write_data_terminal_ready(status.signals.dtr)?;
+        port.write_request_to_send(status.signals.rts)?;
+
+        self.port.return_native(port);
+
+        status.inner = InnerPortStatus::Connected;
+
+        self.shared_status.store(Arc::new(status));
+
+        self.event_tx.send(SerialEvent::Connected(None).into())?;
+
+        Ok(())
+    }
 }
 
 // This status struct leaves a bit to be desired
@@ -764,7 +997,7 @@ impl SerialWorker {
 // maybe something better will come to me.
 
 #[derive(Debug, Clone, Copy, Default)]
-pub enum PortState {
+pub enum InnerPortStatus {
     #[default]
     Idle,
     PrematureDisconnect,
@@ -772,18 +1005,18 @@ pub enum PortState {
     Connected,
 }
 
-impl PortState {
+impl InnerPortStatus {
     pub fn is_healthy(&self) -> bool {
-        matches!(self, PortState::Connected)
+        matches!(self, InnerPortStatus::Connected)
     }
     pub fn is_lent_out(&self) -> bool {
-        matches!(self, PortState::LentOut)
+        matches!(self, InnerPortStatus::LentOut)
     }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct PortStatus {
-    pub state: PortState,
+    pub inner: InnerPortStatus,
     pub current_port: Option<SerialPortInfo>,
 
     pub signals: SerialSignals,
@@ -802,14 +1035,14 @@ impl PortStatus {
     /// Used when a port disconnects without the user's stated intent to do so.
     fn to_unhealthy(self) -> Self {
         Self {
-            state: PortState::PrematureDisconnect,
+            inner: InnerPortStatus::PrematureDisconnect,
             ..self
         }
     }
     /// Used when the user chooses to disconnect from the serial port
     fn to_idle(self, settings: &PortSettings) -> Self {
         Self {
-            state: PortState::Idle,
+            inner: InnerPortStatus::Idle,
             current_port: None,
             signals: SerialSignals {
                 dtr: settings.dtr_on_connect,

@@ -18,6 +18,11 @@ use crate::{
     settings::PortSettings,
 };
 
+#[cfg(feature = "espflash")]
+use super::esp::EspCommand;
+#[cfg(feature = "espflash")]
+use crate::tui::esp::EspBins;
+
 use super::worker::{PortStatus, SerialWorker};
 
 #[derive(Debug)]
@@ -30,9 +35,7 @@ pub enum SerialCommand {
     PortSettings(PortSettings),
     TxBuffer(Vec<u8>),
     #[cfg(feature = "espflash")]
-    EspRestart {
-        bootloader: bool,
-    },
+    Esp(EspCommand),
     WriteSignals {
         dtr: Option<bool>,
         rts: Option<bool>,
@@ -49,7 +52,7 @@ pub enum SerialCommand {
 
 #[derive(Clone)]
 pub struct SerialHandle {
-    command_tx: Sender<SerialCommand>,
+    pub(super) command_tx: Sender<SerialCommand>,
     pub port_status: Arc<ArcSwap<PortStatus>>,
     pub port_settings: Arc<ArcSwap<PortSettings>>,
 }
@@ -124,12 +127,6 @@ impl SerialHandle {
     //         .send(SerialCommand::ReadSignals)
     //         .map_err(|_| YapError::NoSerialWorker)
     // }
-    #[cfg(feature = "espflash")]
-    pub fn esp_restart(&self, bootloader: bool) -> YapResult<()> {
-        self.command_tx
-            .send(SerialCommand::EspRestart { bootloader })
-            .map_err(|_| YapError::NoSerialWorker)
-    }
     pub fn write_signals(&self, dtr: Option<bool>, rts: Option<bool>) -> YapResult<()> {
         self.command_tx
             .send(SerialCommand::WriteSignals { dtr, rts })

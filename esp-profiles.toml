@@ -1,0 +1,21 @@
+[[elf]]
+#partition_table = "../"
+chip = "esp32s3"
+upload_baud = 921600
+
+[[bin]]
+name = "PIO Core v2"
+0x0 = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\ShockLinkFirmware\.pio\build\OpenShock-Core-V2\bootloader.bin'
+0x8000 = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\ShockLinkFirmware\.pio\build\OpenShock-Core-V2\partitions.bin'
+0xe000 = 'C:\Users\nullstalgia\.platformio\packages\framework-arduinoespressif32\tools\partitions\boot_app0.bin'
+0x10000 = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\ShockLinkFirmware\.pio\build\OpenShock-Core-V2\app.bin'
+#partition_table = "../"
+chip = "esp32s3"
+upload_baud = 921600
+
+[[bin]]
+name = "Core v2 1.3.0"
+0x0 = 'C:\Users\nullstalgia\Downloads\OpenShock_OpenShock-Core-V2_1.3.0.bin'
+chip = "esp32"
+upload_baud = 921600
+no_skip = true

@@ -1,15 +1,58 @@
-use espflash::connection::reset::ResetStrategy;
+use espflash::{connection::reset::ResetStrategy, flasher::DeviceInfo};
 use std::time::Duration;
 use tracing::debug;
 
-use super::SerialEvent;
-use crate::app::Event;
+use super::{
+    SerialEvent,
+    handle::{SerialCommand, SerialHandle},
+};
+use crate::{
+    app::Event,
+    errors::{YapError, YapResult},
+    tui::esp::EspBins,
+};
+
+#[derive(Debug)]
+pub enum EspCommand {
+    EraseFlash,
+    WriteBins(EspBins),
+    Restart { bootloader: bool },
+    DeviceInfo,
+}
+
+impl SerialHandle {
+    pub fn esp_restart(&self, bootloader: bool) -> YapResult<()> {
+        self.command_tx
+            .send(SerialCommand::Esp(EspCommand::Restart { bootloader }))
+            .map_err(|_| YapError::NoSerialWorker)
+    }
+
+    pub fn esp_device_info(&self) -> YapResult<()> {
+        self.command_tx
+            .send(SerialCommand::Esp(EspCommand::DeviceInfo))
+            .map_err(|_| YapError::NoSerialWorker)
+    }
+
+    pub fn esp_write_bins(&self, bins: EspBins) -> YapResult<()> {
+        self.command_tx
+            .send(SerialCommand::Esp(EspCommand::WriteBins(bins)))
+            .map_err(|_| YapError::NoSerialWorker)
+    }
+
+    pub fn esp_erase_flash(&self) -> YapResult<()> {
+        self.command_tx
+            .send(SerialCommand::Esp(EspCommand::EraseFlash))
+            .map_err(|_| YapError::NoSerialWorker)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum EspFlashEvent {
     PortBorrowed,
     BootloaderSuccess { chip: String },
+    EraseSuccess { chip: String },
     HardResetAttempt,
+    DeviceInfo(DeviceInfo),
     Error(String),
 }
 

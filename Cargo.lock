@@ -1117,8 +1117,6 @@ dependencies = [
 [[package]]
 name = "espflash"
 version = "3.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75ee2834a4000ab046f7a2a439ac1c54366a2f6b91db92a147ca7fbaf7c2e1eb"
 dependencies = [
  "addr2line 0.22.0",
  "base64",

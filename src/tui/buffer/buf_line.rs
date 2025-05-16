@@ -242,14 +242,14 @@ impl BufLine {
 fn index_info(full_line_slice: &[u8], start_index: usize, line_type: LineType) -> CompactString {
     if let LineType::User { .. } = line_type {
         format_compact!(
-            "({start:06}->{end:06}, {len:2}) ",
+            "({start:06}->{end:06}, {len:3}) ",
             start = start_index,
             end = start_index + full_line_slice.len(),
             len = full_line_slice.len(),
         )
     } else {
         format_compact!(
-            "({start:06}..{end:06}, {len:2}) ",
+            "({start:06}..{end:06}, {len:3}) ",
             start = start_index,
             end = start_index + full_line_slice.len(),
             len = full_line_slice.len(),
