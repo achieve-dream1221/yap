@@ -148,7 +148,7 @@ pub struct Flashing {
 pub enum EspPopup {
     Connecting,
     Connected { chip: CompactString },
-    DeviceInfo(Text<'static>),
+    DeviceInfo(Table<'static>),
     Flashing(Flashing),
     Erasing { chip: CompactString },
 }
@@ -157,6 +157,7 @@ pub enum EspPopup {
 pub struct EspFlashState {
     popup: Option<EspPopup>,
     pub bins: Vec<EspBins>,
+    pub bins_active: bool,
 }
 
 impl EspFlashState {
@@ -167,7 +168,19 @@ impl EspFlashState {
         Self {
             popup: None,
             bins: bin,
+            bins_active: false,
         }
+    }
+    pub fn reload(&mut self) -> color_eyre::Result<()> {
+        self.reset();
+
+        let meow = fs::read_to_string("../../esp_profiles.toml")?;
+        let SerializedEspFiles { bin } = toml::from_str(&meow)?;
+        debug!("{bin:#?}");
+
+        self.bins = bin;
+
+        Ok(())
     }
     pub fn consume_event(&mut self, event: EspFlashEvent) {
         match event {
@@ -182,16 +195,41 @@ impl EspFlashState {
                     mac_address,
                 } = info;
 
-                let text = Text::from(vec![
-                    line!["Chip: ", chip.to_string().to_uppercase()],
-                    line!["Revision: ", format!("{revision:?}")],
-                    line!["Crystal Osc. Frequency: ", format!("{crystal_frequency}")],
-                    line!["Flash Size: ", format!("{flash_size}")],
-                    line!["Features: ", format!("{features:?}")],
-                    line!["MAC Address: ", format!("{mac_address}")],
-                ]);
+                let rows: Vec<Row> = vec![
+                    Row::new([
+                        line!["Chip:"].right_aligned(),
+                        line![chip.to_string().to_uppercase()].centered(),
+                    ]),
+                    Row::new([
+                        line!["Revision:"].right_aligned(),
+                        line![format!("{revision:?}")].centered(),
+                    ]),
+                    Row::new([
+                        line!["Crystal Osc. Frequency:"].right_aligned(),
+                        line![format!("{crystal_frequency}")].centered(),
+                    ]),
+                    Row::new([
+                        line!["Flash Size:"].right_aligned(),
+                        line![format!("{flash_size}")].centered(),
+                    ]),
+                    Row::new([
+                        line!["Features:"].right_aligned(),
+                        line![format!("{features:?}")].centered(),
+                    ]),
+                    Row::new([
+                        line!["MAC Address:"].right_aligned(),
+                        line![format!("{mac_address}")].centered(),
+                    ]),
+                ];
 
-                self.popup = Some(EspPopup::DeviceInfo(text));
+                let table = Table::new(
+                    rows,
+                    [Constraint::Percentage(60), Constraint::Percentage(40)],
+                )
+                .column_highlight_style(Style::new())
+                .row_highlight_style(Style::new());
+
+                self.popup = Some(EspPopup::DeviceInfo(table));
             }
             EspFlashEvent::FlashProgress(progress) => match progress {
                 FlashProgress::Init { addr, size } => {
@@ -231,6 +269,7 @@ impl EspFlashState {
     }
     pub fn reset(&mut self) {
         _ = self.popup.take();
+        self.bins_active = false;
     }
     pub fn render_espflash(&self, frame: &mut Frame, screen: Rect) {
         let center_area = centered_rect_size(
@@ -343,14 +382,41 @@ impl EspFlashState {
             _ => (),
         }
     }
+    pub fn bins_table(&self, table_state: &mut TableState) -> Table {
+        table_state.select_first_column();
+        let selected_row_style = Style::new().reversed();
+        let first_column_style = Style::new().reset();
+
+        let rows: Vec<_> = self
+            .bins
+            .iter()
+            .map(|b| {
+                Row::new([
+                    Text::raw(format!("{} ", b.name)).right_aligned(),
+                    Text::raw("Flash!").centered().italic(),
+                ])
+            })
+            .collect();
+
+        let option_table = Table::new(
+            rows,
+            [Constraint::Percentage(60), Constraint::Percentage(40)],
+        )
+        .column_highlight_style(first_column_style)
+        .row_highlight_style(selected_row_style);
+
+        option_table
+    }
 }
 
-pub fn meow(table_state: &mut TableState, bins: &Vec<EspBins>) -> Table<'static> {
+pub const ESPFLASH_BUTTON_COUNT: usize = 4;
+
+pub fn espflash_buttons(table_state: &mut TableState) -> Table<'static> {
     table_state.select_first_column();
     let selected_row_style = Style::new().reversed();
     let first_column_style = Style::new().reset();
 
-    let mut rows: Vec<Row> = vec![
+    let rows: Vec<Row> = vec![
         Row::new([
             Text::raw("ESP->User Code  ").right_aligned(),
             Text::raw("Reboot!").centered().italic(),
@@ -368,13 +434,6 @@ pub fn meow(table_state: &mut TableState, bins: &Vec<EspBins>) -> Table<'static>
             Text::raw("Erase!").centered().italic(),
         ]),
     ];
-
-    for bin_profile in bins {
-        rows.push(Row::new([
-            Text::raw(format!("{} ", bin_profile.name)).right_aligned(),
-            Text::raw("Flash!").centered().italic(),
-        ]));
-    }
 
     let option_table = Table::new(
         rows,

@@ -65,7 +65,7 @@ use crate::keybinds::esp_methods::*;
 #[cfg(feature = "espflash")]
 use crate::serial::esp::EspFlashEvent;
 #[cfg(feature = "espflash")]
-use crate::tui::esp::meow;
+use crate::tui::esp::espflash_buttons;
 #[cfg(feature = "espflash")]
 use crate::tui::esp::{self, EspFlashState};
 
@@ -804,6 +804,10 @@ impl App {
             key!(ctrl - r) if self.popup == Some(PopupMenu::Macros) => {
                 self.run_method_from_string(RELOAD_MACROS).unwrap();
             }
+            #[cfg(feature = "espflash")]
+            key!(ctrl - r) if self.popup == Some(PopupMenu::EspFlash) => {
+                self.run_method_from_string(RELOAD_ESPFLASH).unwrap();
+            }
             key!(esc) => self.esc_pressed(),
             key_combo => {
                 // TODO move all these into diff func
@@ -1054,6 +1058,12 @@ impl App {
             _ if m == ESP_ERASE_FLASH => {
                 self.serial.esp_erase_flash().unwrap();
             }
+            #[cfg(feature = "espflash")]
+            _ if m == RELOAD_ESPFLASH => {
+                self.notifs
+                    .notify_str("Reloaded espflash profiles!", Color::Green);
+                self.espflash.reload().unwrap();
+            }
 
             _ if m == RELOAD_MACROS => {
                 self.macros
@@ -1110,8 +1120,14 @@ impl App {
             None => (),
             Some(popup) if self.popup_single_line_state.active => {
                 match popup {
-                    // Currently Macros is the only one that can be content-less.
                     PopupMenu::Macros if self.macros.none_visible() => return,
+                    PopupMenu::EspFlash if self.espflash.bins.is_empty() => {
+                        self.popup_table_state.select_last();
+                    }
+                    PopupMenu::EspFlash => {
+                        self.popup_table_state.select_last();
+                        self.espflash.bins_active = true;
+                    }
                     _ => (),
                 }
                 self.popup_single_line_state.active = false;
@@ -1171,6 +1187,15 @@ impl App {
                     } else {
                         self.popup_single_line_state.active = true;
                     }
+                } else {
+                    self.scroll_menu_up();
+                }
+            }
+            #[cfg(feature = "espflash")]
+            Some(PopupMenu::EspFlash) if self.espflash.bins_active => {
+                if self.popup_table_state.selected() == Some(0) {
+                    self.popup_table_state.select_last();
+                    self.espflash.bins_active = false;
                 } else {
                     self.scroll_menu_up();
                 }
@@ -1290,10 +1315,25 @@ impl App {
                 }
             }
             #[cfg(feature = "espflash")]
-            Some(PopupMenu::EspFlash) => {
-                if self.popup_table_state.selected() >= Some(self.espflash.bins.len() + (4 - 1)) {
+            Some(PopupMenu::EspFlash) if self.espflash.bins_active => {
+                if self.popup_table_state.selected() >= Some(self.espflash.bins.last_index()) {
                     self.popup_table_state.select(None);
                     self.popup_single_line_state.active = true;
+                    self.espflash.bins_active = false;
+                } else {
+                    self.scroll_menu_down();
+                }
+            }
+            #[cfg(feature = "espflash")]
+            Some(PopupMenu::EspFlash) => {
+                if self.popup_table_state.selected() >= Some(esp::ESPFLASH_BUTTON_COUNT - 1) {
+                    if self.espflash.bins.is_empty() {
+                        self.popup_table_state.select(None);
+                        self.popup_single_line_state.active = true;
+                    } else {
+                        self.popup_table_state.select_first();
+                        self.espflash.bins_active = true;
+                    }
                 } else {
                     self.scroll_menu_down();
                 }
@@ -1543,28 +1583,30 @@ impl App {
                     self.notifs.notify_str("Port isn't ready!", Color::Red);
                     return;
                 }
-                match selected {
-                    0 => self.run_method_from_string(ESP_HARD_RESET).unwrap(),
-                    1 => self.run_method_from_string(ESP_BOOTLOADER).unwrap(),
-                    2 => self.run_method_from_string(ESP_DEVICE_INFO).unwrap(),
-                    3 => {
-                        if !shift_pressed && !ctrl_pressed {
-                            self.notifs.notify_str(
-                                "Press Shift/Ctrl+Enter to erase flash!",
-                                Color::Yellow,
-                            );
-                        } else {
-                            self.run_method_from_string(ESP_ERASE_FLASH).unwrap();
+                if self.espflash.bins_active {
+                    assert!(
+                        !self.espflash.bins.is_empty(),
+                        "shouldn't have selected a non-existant flash profile"
+                    );
+                    self.serial
+                        .esp_write_bins(self.espflash.bins[selected].clone())
+                        .unwrap();
+                } else {
+                    match selected {
+                        0 => self.run_method_from_string(ESP_HARD_RESET).unwrap(),
+                        1 => self.run_method_from_string(ESP_BOOTLOADER).unwrap(),
+                        2 => self.run_method_from_string(ESP_DEVICE_INFO).unwrap(),
+                        3 => {
+                            if !shift_pressed && !ctrl_pressed {
+                                self.notifs.notify_str(
+                                    "Press Shift/Ctrl+Enter to erase flash!",
+                                    Color::Yellow,
+                                );
+                            } else {
+                                self.run_method_from_string(ESP_ERASE_FLASH).unwrap();
+                            }
                         }
-                    }
-                    flashing => {
-                        if flashing > self.espflash.bins.len() + (4 - 1) {
-                            return;
-                        }
-                        let index = flashing - 4;
-                        self.serial
-                            .esp_write_bins(self.espflash.bins[index].clone())
-                            .unwrap();
+                        unknown => unreachable!("unknown espflash command index {unknown}"),
                     }
                 }
             }
@@ -2050,7 +2092,6 @@ impl App {
                 );
             }
             PopupMenu::Macros => {
-                // TODO categories selector
                 let new_seperator = {
                     let mut area = center_inner.clone();
                     area.y = area.top().saturating_add(1);
@@ -2193,8 +2234,21 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             PopupMenu::EspFlash => {
-                let table = esp::meow(&mut self.popup_table_state, &self.espflash.bins);
-
+                let new_seperator = {
+                    let mut area = center_inner.clone();
+                    area.y = area.top().saturating_add(4);
+                    area.height = 1;
+                    area
+                };
+                let bins_area = {
+                    let mut area = center_inner.clone();
+                    area.y = area.top().saturating_add(5);
+                    area.height = area.height.saturating_sub(7);
+                    area
+                };
+                let line_block = Block::new()
+                    .borders(Borders::TOP)
+                    .border_style(Style::from(popup_color));
                 frame.render_widget(
                     Line::raw("Powered by esp-rs/espflash!")
                         .all_spans_styled(Color::DarkGray.into())
@@ -2209,7 +2263,35 @@ impl App {
                     hint_text_area,
                 );
 
-                frame.render_stateful_widget(table, settings_area, &mut self.popup_table_state);
+                if self.espflash.bins_active {
+                    frame.render_widget(
+                        esp::espflash_buttons(&mut self.popup_table_state),
+                        settings_area,
+                    );
+                    frame.render_widget(&line_block, new_seperator);
+                    frame.render_stateful_widget(
+                        self.espflash.bins_table(&mut self.popup_table_state),
+                        bins_area,
+                        &mut self.popup_table_state,
+                    );
+                } else {
+                    frame.render_stateful_widget(
+                        esp::espflash_buttons(&mut self.popup_table_state),
+                        settings_area,
+                        &mut self.popup_table_state,
+                    );
+                    frame.render_widget(&line_block, new_seperator);
+                    frame.render_widget(
+                        self.espflash.bins_table(&mut self.popup_table_state),
+                        bins_area,
+                    );
+                }
+                frame.render_widget(
+                    Line::raw("Flash Profiles | Ctrl+R: Reload")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(),
+                    new_seperator,
+                );
             }
         }
     }
@@ -2304,6 +2386,8 @@ impl App {
 
         repeating_pattern_widget(frame, line_area, self.repeating_line_flip, port_state);
 
+        let widget_margin: u16 = if area.width >= 100 { 3 } else { 0 };
+
         #[cfg(debug_assertions)]
         {
             let line = Line::raw(format!(
@@ -2315,7 +2399,7 @@ impl App {
             frame.render_widget(
                 line,
                 line_area.inner(Margin {
-                    horizontal: 3,
+                    horizontal: widget_margin,
                     vertical: 0,
                 }),
             );
@@ -2328,7 +2412,7 @@ impl App {
             frame.render_widget(
                 line,
                 line_area.inner(Margin {
-                    horizontal: 3,
+                    horizontal: widget_margin,
                     vertical: 0,
                 }),
             );
@@ -2374,7 +2458,13 @@ impl App {
                 span!["]"],
             ];
             let signals_line = Line::from(signals_spans);
-            frame.render_widget(signals_line, line_area.offset(Offset { x: 3, y: 0 }));
+            frame.render_widget(
+                signals_line,
+                line_area.offset(Offset {
+                    x: widget_margin as i32,
+                    y: 0,
+                }),
+            );
         }
 
         let input_style = match (&self.failed_send_at, self.user_input.all_text_selected) {
@@ -2643,6 +2733,10 @@ impl App {
         self.refresh_scratch();
         self.popup_desc_scroll = -2;
         self.macros.search_input.reset();
+        #[cfg(feature = "espflash")]
+        {
+            self.espflash.bins_active = false;
+        }
     }
 }
 

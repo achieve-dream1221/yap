@@ -26,6 +26,7 @@ pub mod methods {
 #[cfg(feature = "espflash")]
 pub mod esp_methods {
     pub const SHOW_ESPFLASH: &str = "show-espflash";
+    pub const RELOAD_ESPFLASH: &str = "reload-espflash";
     pub const ESP_HARD_RESET: &str = "esp-hard-reset";
     pub const ESP_BOOTLOADER: &str = "esp-bootloader";
     pub const ESP_DEVICE_INFO: &str = "esp-device-info";
