@@ -311,13 +311,16 @@ impl LineMutator for Line<'_> {
                         new_spans.push(Span::styled(Cow::Owned(pre.to_string()), orig_style));
                     }
                     if !mid.is_empty() {
-                        // Actually perform the censorship: replace internal chars with '•'
-                        let bullet = '*';
-                        let mid_bullet = bullet.to_string().repeat(mid.chars().count().max(1));
-                        new_spans.push(Span::styled(
-                            Cow::Owned(mid_bullet),
-                            style.unwrap_or(orig_style),
-                        ));
+                        // Actually perform the censorship: replace internal bytes with '*'
+                        // (bytes instead of chars due to us working on the byte-scale, and we might replace
+                        // a multi-byte char)
+                        let bullet = "*";
+                        for _ in 0..mid.len() {
+                            new_spans.push(Span::styled(
+                                Cow::Borrowed(bullet),
+                                style.unwrap_or(orig_style),
+                            ));
+                        }
                     }
                     if !post.is_empty() {
                         new_spans.push(Span::styled(Cow::Owned(post.to_string()), orig_style));

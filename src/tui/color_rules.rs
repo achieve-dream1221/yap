@@ -218,8 +218,6 @@ impl ColorRules {
             char_to_byte[y] = i;
         }
 
-        let mut removed_ranges: Vec<Range<usize>> = Vec::new();
-
         // For style_all_spans, we don't care -- just color the whole line.
         // For style_slice, we use byte_to_char to map the matched byte span to the rendered string indices.
 
@@ -245,6 +243,9 @@ impl ColorRules {
                 }
             }
         }
+
+        let mut removed_ranges: Vec<Range<usize>> = Vec::new();
+
         for (lit_rule, rule_type) in &self.literal_words {
             let rule_len = lit_rule.finder.needle().len();
             let ranges_iter = lit_rule.finder.find_iter(original).filter_map(|oc_idx| {
@@ -280,7 +281,11 @@ impl ColorRules {
             match rule_type {
                 RuleType::Color(color) => {
                     for range in ranges_iter {
-                        line.style_slice(range, Style::from(*color));
+                        if let Some(new_range) =
+                            act_if_possible(rendered.len(), &removed_ranges, range)
+                        {
+                            line.style_slice(new_range, Style::from(*color));
+                        }
                     }
                 }
                 RuleType::Hide => {
@@ -294,7 +299,11 @@ impl ColorRules {
                 }
                 RuleType::Censor(color_opt) => {
                     for range in ranges_iter {
-                        line.censor_slice(range, color_opt.map(Style::from));
+                        if let Some(new_range) =
+                            act_if_possible(rendered.len(), &removed_ranges, range)
+                        {
+                            line.censor_slice(new_range, color_opt.map(Style::from));
+                        }
                     }
                 }
             }
@@ -339,7 +348,11 @@ impl ColorRules {
             match rule_type {
                 RuleType::Color(color) => {
                     for range in ranges_iter {
-                        line.style_slice(range, Style::from(*color));
+                        if let Some(new_range) =
+                            act_if_possible(rendered.len(), &removed_ranges, range)
+                        {
+                            line.style_slice(new_range, Style::from(*color));
+                        }
                     }
                 }
                 RuleType::Hide => {
@@ -353,7 +366,11 @@ impl ColorRules {
                 }
                 RuleType::Censor(color_opt) => {
                     for range in ranges_iter {
-                        line.censor_slice(range, color_opt.map(Style::from));
+                        if let Some(new_range) =
+                            act_if_possible(rendered.len(), &removed_ranges, range)
+                        {
+                            line.censor_slice(new_range, color_opt.map(Style::from));
+                        }
                     }
                 }
             }
@@ -404,5 +421,42 @@ fn remove_if_possible(
     }
     let new_range = new_start..new_end;
     already_removed.push(current);
+    Some(new_range)
+}
+
+fn act_if_possible(
+    slice_len: usize,
+    already_removed: &[Range<usize>],
+    current: Range<usize>,
+) -> Option<Range<usize>> {
+    // act_if_possible: Returns the adjusted current range (in the *current* string),
+    // if none of its positions overlap an already_removed range from the original.
+
+    // If any part of `current` overlaps any range already_removed, skip (None).
+    for rem in already_removed {
+        if rem.start < current.end && rem.end > current.start {
+            // overlapping
+            return None;
+        }
+    }
+
+    // Calculate the shift: how many chars have been removed before current.start.
+    let mut shift = 0;
+    for rem in already_removed {
+        if rem.end <= current.start {
+            shift += rem.end - rem.start;
+        } else if rem.start < current.start && rem.end > current.start {
+            // Only the part before current.start is counted
+            shift += current.start - rem.start;
+        }
+    }
+
+    let new_start = current.start - shift;
+    let mut new_end = current.end - shift;
+    let slice_len = slice_len.saturating_sub(shift);
+    if new_end > slice_len {
+        new_end = slice_len;
+    }
+    let new_range = new_start..new_end;
     Some(new_range)
 }
