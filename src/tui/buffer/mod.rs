@@ -23,7 +23,7 @@ use crate::{
     changed,
     errors::YapResult,
     settings::Rendering,
-    traits::{ByteSuffixCheck, LineColor, LineHelpers},
+    traits::{ByteSuffixCheck, LineHelpers, LineMutator},
 };
 
 use super::color_rules::ColorRules;
@@ -373,9 +373,15 @@ impl Buffer {
             //     line.style_slice(1..3, Style::new().red().italic());
             // }
 
-            self.color_rules.apply_onto(slice, &mut line);
+            let line_opt = self.color_rules.apply_onto(slice, line);
 
-            last_line.update_line(line, slice, self.last_terminal_size.width, &self.rendering);
+            if let Some(line) = line_opt {
+                last_line.update_line(line, slice, self.last_terminal_size.width, &self.rendering);
+            } else {
+                _ = self.port_lines.pop();
+                self.last_line_completed = true;
+                // last_line.clear_line();
+            }
         } else {
             let lossy_flavor = if self.rendering.escape_invalid_bytes {
                 LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
@@ -390,7 +396,7 @@ impl Buffer {
                 }
             };
 
-            self.color_rules.apply_onto(trunc, &mut line);
+            let line_opt = self.color_rules.apply_onto(trunc, line);
 
             // if line.width() >= 5 {
             //     line.style_slice(1..3, Style::new().red().italic());
@@ -409,15 +415,19 @@ impl Buffer {
             //         .join("")
             //         .escape_default()
             // );
-            self.port_lines.push(BufLine::new_with_line(
-                line,
-                orig,
-                start_index,
-                self.last_terminal_size.width,
-                &self.rendering,
-                known_time.unwrap_or_else(Local::now),
-                LineType::Port,
-            ));
+
+            // let line = line_opt.unwrap_or_default();
+            if let Some(line) = line_opt {
+                self.port_lines.push(BufLine::new_with_line(
+                    line,
+                    orig,
+                    start_index,
+                    self.last_terminal_size.width,
+                    &self.rendering,
+                    known_time.unwrap_or_else(Local::now),
+                    LineType::Port,
+                ));
+            }
         };
         self.last_line_completed = self.raw_buffer.has_line_ending(&self.line_ending);
     }

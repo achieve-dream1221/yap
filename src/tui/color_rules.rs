@@ -1,4 +1,4 @@
-use std::{path::Path, str::FromStr};
+use std::{ops::Range, path::Path, str::FromStr};
 
 use compact_str::{CompactString, CompactStringExt};
 use fs_err as fs;
@@ -8,15 +8,16 @@ use ratatui::{
     text::Line,
 };
 use regex::bytes::Regex;
+use tracing::debug;
 
-use crate::traits::{LineColor, LineHelpers};
+use crate::traits::{LineHelpers, LineMutator};
 
 #[derive(Debug)]
 pub struct ColorRules {
-    regex_lines: Vec<(RegexRule, Color)>,
-    regex_words: Vec<(RegexRule, Color)>,
-    literal_lines: Vec<(LiteralRule, Color)>,
-    literal_words: Vec<(LiteralRule, Color)>,
+    regex_lines: Vec<(RegexRule, RuleType)>,
+    regex_words: Vec<(RegexRule, RuleType)>,
+    literal_lines: Vec<(LiteralRule, RuleType)>,
+    literal_words: Vec<(LiteralRule, RuleType)>,
 }
 #[derive(Debug)]
 struct RegexRule {
@@ -26,7 +27,12 @@ struct RegexRule {
 struct LiteralRule {
     finder: Finder<'static>,
 }
-
+#[derive(Debug)]
+enum RuleType {
+    Color(Color),
+    Hide,
+    Censor(Option<Color>),
+}
 #[derive(Debug, serde::Deserialize)]
 struct ColorRulesFile {
     #[serde(default)]
@@ -37,9 +43,13 @@ struct ColorRulesFile {
 #[derive(Debug, serde::Deserialize)]
 struct SerializedRule {
     rule: CompactString,
-    color: CompactString,
+    color: Option<CompactString>,
     #[serde(default)]
     line: bool,
+    #[serde(default)]
+    hide: bool,
+    #[serde(default)]
+    censor: bool,
 }
 
 impl ColorRules {
@@ -53,22 +63,54 @@ impl ColorRules {
         let mut literal_words = Vec::new();
 
         for rule in regex {
-            let color = Color::from_str(&rule.color).unwrap();
+            let color_opt = rule
+                .color
+                .as_ref()
+                .map(|color_str| Color::from_str(color_str).unwrap());
+
+            let rule_type = {
+                if rule.hide {
+                    RuleType::Hide
+                } else if rule.censor {
+                    RuleType::Censor(color_opt)
+                } else if let Some(color) = color_opt {
+                    RuleType::Color(color)
+                } else {
+                    todo!("invalid rule; TODO make proper error")
+                }
+            };
+
             let regex = Regex::new(&rule.rule).unwrap();
             if rule.line {
-                regex_lines.push((RegexRule { regex }, color));
+                regex_lines.push((RegexRule { regex }, rule_type));
             } else {
-                regex_words.push((RegexRule { regex }, color));
+                regex_words.push((RegexRule { regex }, rule_type));
             }
         }
 
         for rule in literal {
-            let color = Color::from_str(&rule.color).unwrap();
+            let color_opt = rule
+                .color
+                .as_ref()
+                .map(|color_str| Color::from_str(color_str).unwrap());
+
+            let rule_type = {
+                if rule.hide {
+                    RuleType::Hide
+                } else if rule.censor {
+                    RuleType::Censor(color_opt)
+                } else if let Some(color) = color_opt {
+                    RuleType::Color(color)
+                } else {
+                    todo!("invalid rule; TODO make proper error")
+                }
+            };
+
             let finder = Finder::new(rule.rule.as_bytes()).into_owned();
             if rule.line {
-                literal_lines.push((LiteralRule { finder }, color));
+                literal_lines.push((LiteralRule { finder }, rule_type));
             } else {
-                literal_words.push((LiteralRule { finder }, color));
+                literal_words.push((LiteralRule { finder }, rule_type));
             }
         }
 
@@ -80,7 +122,7 @@ impl ColorRules {
         }
     }
 
-    pub fn apply_onto<'a>(&self, original: &[u8], line: &'a mut Line<'_>) {
+    pub fn apply_onto<'a, 'b>(&self, original: &[u8], mut line: Line<'b>) -> Option<Line<'b>> {
         // Handle mapping between original bytes and visible characters,
         // so that styling with ANSI escapes/arbitrary bytes is handled correctly.
 
@@ -176,72 +218,191 @@ impl ColorRules {
             char_to_byte[y] = i;
         }
 
+        let mut removed_ranges: Vec<Range<usize>> = Vec::new();
+
         // For style_all_spans, we don't care -- just color the whole line.
         // For style_slice, we use byte_to_char to map the matched byte span to the rendered string indices.
 
-        for (lit_rule, color) in &self.literal_lines {
+        for (lit_rule, rule_type) in &self.literal_lines {
             if lit_rule.finder.find(original).is_some() {
-                line.style_all_spans(Style::from(*color));
+                match rule_type {
+                    RuleType::Color(color) => line.style_all_spans(Style::from(*color)),
+                    RuleType::Hide => return None,
+                    RuleType::Censor(color_opt) => {
+                        line.censor_slice(0..rendered.len(), color_opt.map(Style::from))
+                    }
+                }
             }
         }
-        for (reg_rule, color) in &self.regex_lines {
+        for (reg_rule, rule_type) in &self.regex_lines {
             if reg_rule.regex.is_match(original) {
-                line.style_all_spans(Style::from(*color));
+                match rule_type {
+                    RuleType::Color(color) => line.style_all_spans(Style::from(*color)),
+                    RuleType::Hide => return None,
+                    RuleType::Censor(color_opt) => {
+                        line.censor_slice(0..rendered.len(), color_opt.map(Style::from))
+                    }
+                }
             }
         }
-        for (lit_rule, color) in &self.literal_words {
+        for (lit_rule, rule_type) in &self.literal_words {
             let rule_len = lit_rule.finder.needle().len();
-            for occurance_idx in lit_rule.finder.find_iter(original) {
-                let byte_start = occurance_idx;
-                let byte_end = occurance_idx + rule_len;
+            let ranges_iter = lit_rule.finder.find_iter(original).filter_map(|oc_idx| {
+                let byte_start = oc_idx;
+                let byte_end = oc_idx + rule_len;
                 // Map these to char indices in rendered
                 let char_start = if byte_start < byte_to_char.len() {
                     byte_to_char[byte_start]
                 } else {
                     0
                 };
-                let char_end = if byte_end < byte_to_char.len() {
+                let mut char_end = if byte_end < byte_to_char.len() {
                     byte_to_char[byte_end]
                 } else {
                     rendered.len()
                 };
-
+                if char_end == 0 {
+                    char_end = rendered.len();
+                }
                 // Clamp to bounds of rendered string
                 let char_start = char_start.min(rendered.len());
                 let char_end = char_end.min(rendered.len());
 
                 if char_start < char_end {
-                    line.style_slice(char_start..char_end, Style::from(*color));
+                    Some(char_start..char_end)
+                } else {
+                    debug!("AGH1 {char_start}..{char_end} {byte_start}..{byte_end}");
+                    debug!("{byte_to_char:#?}");
+                    None
+                }
+            });
+
+            match rule_type {
+                RuleType::Color(color) => {
+                    for range in ranges_iter {
+                        line.style_slice(range, Style::from(*color));
+                    }
+                }
+                RuleType::Hide => {
+                    for range in ranges_iter {
+                        if let Some(new_range) =
+                            remove_if_possible(rendered.len(), &mut removed_ranges, range)
+                        {
+                            line.remove_slice(new_range);
+                        }
+                    }
+                }
+                RuleType::Censor(color_opt) => {
+                    for range in ranges_iter {
+                        line.censor_slice(range, color_opt.map(Style::from));
+                    }
                 }
             }
+
+            // if lit_rule.hide {
+
+            // } else if lit_rule.else {
+            //     for range in ranges_iter {
+            //         line.style_slice(range, Style::from(*color));
+            //     }
+            // }
         }
-        for (reg_rule, color) in &self.regex_words {
-            for occurance in reg_rule.regex.find_iter(original) {
-                let byte_start = occurance.start();
-                let byte_end = occurance.end();
+        for (reg_rule, rule_type) in &self.regex_words {
+            let ranges_iter = reg_rule.regex.find_iter(original).filter_map(|occ| {
+                let byte_start = occ.start();
+                let byte_end = occ.end();
 
                 let char_start = if byte_start < byte_to_char.len() {
                     byte_to_char[byte_start]
                 } else {
                     0
                 };
-                let char_end = if byte_end < byte_to_char.len() {
+                let mut char_end = if byte_end < byte_to_char.len() {
                     byte_to_char[byte_end]
                 } else {
                     rendered.len()
                 };
+                if char_end == 0 {
+                    char_end = rendered.len();
+                }
 
                 let char_start = char_start.min(rendered.len());
                 let char_end = char_end.min(rendered.len());
 
                 if char_start < char_end {
-                    line.style_slice(char_start..char_end, Style::from(*color));
+                    Some(char_start..char_end)
+                } else {
+                    debug!("AGH2 {char_start}..{char_end} {byte_start}..{byte_end}");
+                    None
+                }
+            });
+            match rule_type {
+                RuleType::Color(color) => {
+                    for range in ranges_iter {
+                        line.style_slice(range, Style::from(*color));
+                    }
+                }
+                RuleType::Hide => {
+                    for range in ranges_iter {
+                        if let Some(new_range) =
+                            remove_if_possible(rendered.len(), &mut removed_ranges, range)
+                        {
+                            line.remove_slice(new_range);
+                        }
+                    }
+                }
+                RuleType::Censor(color_opt) => {
+                    for range in ranges_iter {
+                        line.censor_slice(range, color_opt.map(Style::from));
+                    }
                 }
             }
         }
+
+        Some(line)
     }
 }
 
 fn bytes_to_char(bytes: &[u8]) -> Option<char> {
     std::str::from_utf8(bytes).ok()?.chars().next()
+}
+
+fn remove_if_possible(
+    slice_len: usize,
+    already_removed: &mut Vec<Range<usize>>,
+    current: Range<usize>,
+) -> Option<Range<usize>> {
+    // `already_removed` contains ranges (in the initial string) that have already been removed.
+    // As we remove ranges, the string shrinks. We need to compute the corresponding range for the *current* string.
+    // That is, subtract the number of removed characters before the `current` range.
+
+    // Count number of removed positions *before* current.start
+    let mut shift = 0;
+    for rem in already_removed.iter() {
+        if rem.end <= current.start {
+            shift += rem.end - rem.start;
+        } else if rem.start < current.start && rem.end > current.start {
+            // Overlaps the start
+            shift += current.start - rem.start;
+        }
+    }
+    // Count if the current range overlaps any already removed ranges; if so, skip (don't remove again)
+    for rem in already_removed.iter() {
+        // In the *initial* string, check for overlap
+        if rem.start < current.end && rem.end > current.start {
+            // overlap
+            return None;
+        }
+    }
+
+    let new_start = current.start - shift;
+    let mut new_end = current.end - shift;
+    // Cap at current slice_len
+    let slice_len = slice_len.saturating_sub(shift);
+    if new_end > slice_len {
+        new_end = slice_len;
+    }
+    let new_range = new_start..new_end;
+    already_removed.push(current);
+    Some(new_range)
 }

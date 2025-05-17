@@ -36,3 +36,8 @@ color = "BrightCyan"
 rule = '(?-u)\x1b\x5b\x4b'
 color = "red"
 line = true
+
+# Censor scanned networks from OpenShock captive portal
+[[regex]]
+rule = 'network\s+(.+?)\s*\(([0-9A-Fa-f:]+)\)'
+censor = true
