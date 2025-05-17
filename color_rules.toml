@@ -39,5 +39,5 @@ line = true
 
 # Censor scanned networks from OpenShock captive portal
 [[regex]]
-rule = 'network\s+(.+?)\s*\(([0-9A-Fa-f:]+)\)'
+rule = '[Nn]etwork\s+(.+?)\s*\(([0-9A-Fa-f:]+)\)'
 censor = true

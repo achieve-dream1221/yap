@@ -29,7 +29,7 @@ use crate::{
 use super::color_rules::ColorRules;
 
 mod buf_line;
-mod wrap;
+// mod wrap;
 
 // use crate::app::{LINE_ENDINGS, LINE_ENDINGS_DEFAULT};
 

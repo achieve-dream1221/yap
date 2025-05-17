@@ -79,6 +79,7 @@ pub enum FlashProgress {
     },
     Progress(usize),
     SegmentFinished,
+    // TODO Verifying + Skipping popups
 }
 
 impl From<EspFlashEvent> for SerialEvent {

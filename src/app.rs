@@ -106,8 +106,6 @@ pub enum Tick {
     /// Used to force UI updates when a notification is on screen
     Notification,
     /// Used to trigger consumption of the Macro TX Queue
-    ///
-    /// TODO: I hate this.
     MacroTx,
 }
 

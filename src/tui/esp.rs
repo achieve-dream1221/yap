@@ -256,8 +256,6 @@ impl EspFlashState {
                         current_progress: flashing.current_file_len,
                         ..flashing
                     }));
-                    // TODO with last
-                    ();
                 }
             },
             EspFlashEvent::Connecting => self.popup = Some(EspPopup::Connecting),

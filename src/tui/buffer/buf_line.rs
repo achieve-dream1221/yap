@@ -35,7 +35,6 @@ pub struct BufLine {
     rendered_line_height: u16,
 
     pub(super) raw_buffer_index: usize,
-    // TODO turn into enum
     pub(super) line_type: LineType,
 }
 

@@ -280,7 +280,7 @@ impl SerialWorker {
             }
 
             SerialWorkerCommand::RequestPortScan => {
-                let ports = self.scan_for_serial_ports().unwrap();
+                let ports = self.scan_for_serial_ports()?;
                 self.scan_snapshot = ports.clone();
                 self.event_tx.send(SerialEvent::Ports(ports).into())?;
             }
@@ -344,7 +344,7 @@ impl SerialWorker {
             // This should maybe reply with a success/fail in case the
             // port is having an issue, so the user's input buffer isn't consumed visually
             PortCommand::TxBuffer(data) if self.port.is_owned() => {
-                let port = self.port.as_mut_port().unwrap();
+                let port = self.port.as_mut_port().expect("was told port was owned");
                 // info!(
                 //     "bytes incoming: {}, bytes outcoming: {}",
                 //     port.bytes_to_read().unwrap(),
@@ -898,14 +898,15 @@ impl SerialWorker {
 
                         let mut propagator = ProgressPropagator::new(self.event_tx.clone());
 
-                        flasher
-                            .write_bins_to_flash(
-                                &rom_segs,
-                                Some(&mut propagator),
-                                !bins.no_verify,
-                                !bins.no_skip,
-                            )
-                            .unwrap();
+                        if let Err(e) = flasher.write_bins_to_flash(
+                            &rom_segs,
+                            Some(&mut propagator),
+                            !bins.no_verify,
+                            !bins.no_skip,
+                        ) {
+                            // TODO show on UI
+                            error!("Error during flashing: {e}");
+                        }
 
                         self.event_tx
                             .send(EspFlashEvent::PortReturned.into())
