@@ -1,7 +1,7 @@
-[[elf]]
-#partition_table = "../"
-chip = "esp32s3"
-upload_baud = 921600
+# [[elf]]
+# #partition_table = "../"
+# chip = "esp32s3"
+# upload_baud = 921600
 
 [[bin]]
 name = "PIO Core v2"
@@ -19,3 +19,13 @@ name = "Core v2 1.3.0"
 chip = "esp32"
 upload_baud = 921600
 no_skip = true
+
+[[elf]]
+name = "PIO Elf Core v2"
+path = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\ShockLinkFirmware\.pio\build\OpenShock-Core-V2\app.elf'
+partition_table = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\ShockLinkFirmware\chips\partitions_4MB_OTA.csv'
+bootloader = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\ShockLinkFirmware\.pio\build\OpenShock-Core-V2\bootloader.bin'
+chip = "esp32s3"
+upload_baud = 2000000
+# ram = true
+# upload_baud = 921600

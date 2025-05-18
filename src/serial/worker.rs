@@ -28,7 +28,7 @@ use super::{
 };
 
 #[cfg(feature = "espflash")]
-use super::esp::{EspCommand, EspFlashEvent};
+use super::esp::{EspCommand, EspEvent};
 #[cfg(feature = "espflash")]
 use espflash::connection::reset::ResetStrategy;
 
@@ -661,9 +661,15 @@ impl SerialWorker {
         use std::{borrow::Cow, fs};
 
         use compact_str::{CompactString, ToCompactString};
-        use espflash::{elf::RomSegment, flasher::ProgressCallbacks};
+        use espflash::{
+            elf::RomSegment,
+            flasher::{FlashData, FlashSettings, ProgressCallbacks},
+        };
 
-        use crate::serial::esp::{FlashProgress, ProgressPropagator};
+        use crate::{
+            serial::esp::{FlashProgress, ProgressPropagator},
+            tui::esp::EspProfile,
+        };
 
         match esp_command {
             EspCommand::DeviceInfo => {
@@ -684,7 +690,7 @@ impl SerialWorker {
                 self.shared_status.store(Arc::new(status.clone()));
 
                 self.event_tx
-                    .send(EspFlashEvent::Connecting.into())
+                    .send(EspEvent::Connecting.into())
                     .map_err(|_| SerialError::FailedSend)?;
 
                 let lent_port = self
@@ -707,7 +713,7 @@ impl SerialWorker {
 
                     self.event_tx
                         .send(
-                            EspFlashEvent::Connected {
+                            EspEvent::Connected {
                                 chip: flasher.chip().to_compact_string().to_uppercase(),
                             }
                             .into(),
@@ -718,7 +724,7 @@ impl SerialWorker {
                         debug!("{esp_info:#?}");
 
                         self.event_tx
-                            .send(EspFlashEvent::DeviceInfo(esp_info).into())
+                            .send(EspEvent::DeviceInfo(esp_info).into())
                             .map_err(|_| SerialError::FailedSend)?;
                     }
 
@@ -747,7 +753,7 @@ impl SerialWorker {
                 self.shared_status.store(Arc::new(status.clone()));
 
                 self.event_tx
-                    .send(EspFlashEvent::Connecting.into())
+                    .send(EspEvent::Connecting.into())
                     .map_err(|_| SerialError::FailedSend)?;
 
                 let lent_port = self
@@ -770,7 +776,7 @@ impl SerialWorker {
 
                     self.event_tx
                         .send(
-                            EspFlashEvent::Connected {
+                            EspEvent::Connected {
                                 chip: flasher.chip().to_compact_string().to_uppercase(),
                             }
                             .into(),
@@ -780,7 +786,7 @@ impl SerialWorker {
                     let esp_chip = flasher.chip();
                     self.event_tx
                         .send(
-                            EspFlashEvent::BootloaderSuccess {
+                            EspEvent::BootloaderSuccess {
                                 chip: esp_chip.to_compact_string().to_uppercase(),
                             }
                             .into(),
@@ -799,7 +805,7 @@ impl SerialWorker {
                     connection.reset()?;
 
                     self.event_tx
-                        .send(EspFlashEvent::HardResetAttempt.into())
+                        .send(EspEvent::HardResetAttempt.into())
                         .map_err(|_| SerialError::FailedSend)?;
 
                     connection.into_serial()
@@ -807,10 +813,10 @@ impl SerialWorker {
 
                 self.return_native_port(returned_port)?;
                 self.event_tx
-                    .send(EspFlashEvent::PortReturned.into())
+                    .send(EspEvent::PortReturned.into())
                     .map_err(|_| SerialError::FailedSend)?;
             }
-            EspCommand::WriteBins(bins) => {
+            EspCommand::FlashProfile(EspProfile::Bins(bins)) => {
                 assert!(!bins.bins.is_empty(), "expected at least one bin to flash");
 
                 let mut status: PortStatus = self.shared_status.load().as_ref().clone();
@@ -830,7 +836,7 @@ impl SerialWorker {
                 self.shared_status.store(Arc::new(status.clone()));
 
                 self.event_tx
-                    .send(EspFlashEvent::Connecting.into())
+                    .send(EspEvent::Connecting.into())
                     .map_err(|_| SerialError::FailedSend)?;
 
                 let lent_port = self
@@ -844,8 +850,8 @@ impl SerialWorker {
                         usb_port_info,
                         Some(115200),
                         true,
-                        true,
-                        true,
+                        !bins.no_verify,
+                        !bins.no_skip,
                         None,
                         espflash::connection::reset::ResetAfterOperation::HardReset,
                         espflash::connection::reset::ResetBeforeOperation::DefaultReset,
@@ -853,7 +859,7 @@ impl SerialWorker {
 
                     self.event_tx
                         .send(
-                            EspFlashEvent::Connected {
+                            EspEvent::Connected {
                                 chip: flasher.chip().to_compact_string().to_uppercase(),
                             }
                             .into(),
@@ -896,20 +902,162 @@ impl SerialWorker {
                         //     })
                         //     .collect();
 
-                        let mut propagator = ProgressPropagator::new(self.event_tx.clone());
+                        let mut propagator = ProgressPropagator::new(
+                            self.event_tx.clone(),
+                            flasher.chip().to_compact_string().to_uppercase(),
+                        );
 
-                        if let Err(e) = flasher.write_bins_to_flash(
-                            &rom_segs,
-                            Some(&mut propagator),
-                            !bins.no_verify,
-                            !bins.no_skip,
-                        ) {
+                        if let Err(e) =
+                            flasher.write_bins_to_flash(&rom_segs, Some(&mut propagator))
+                        {
                             // TODO show on UI
+                            self.event_tx
+                                .send(EspEvent::Error(format!("espflash error: {e}")).into())
+                                .map_err(|_| SerialError::FailedSend)?;
                             error!("Error during flashing: {e}");
                         }
 
                         self.event_tx
-                            .send(EspFlashEvent::PortReturned.into())
+                            .send(EspEvent::PortReturned.into())
+                            .map_err(|_| SerialError::FailedSend)?;
+                    } else {
+                        self.event_tx
+                            .send(
+                                EspEvent::Error(
+                                    "Not flashing! ESP variant doesn't match expected!".to_owned(),
+                                )
+                                .into(),
+                            )
+                            .map_err(|_| SerialError::FailedSend)?;
+                    }
+
+                    flasher.into_serial()
+                };
+
+                self.return_native_port(returned_port)?;
+            }
+            EspCommand::FlashProfile(EspProfile::Elf(elf)) => {
+                // assert!(!elf.path.is_empty(), "expected path");
+
+                let mut status: PortStatus = self.shared_status.load().as_ref().clone();
+
+                let usb_port_info = {
+                    match &status.current_port {
+                        None => unreachable!(),
+                        Some(info) => match &info.port_type {
+                            SerialPortType::UsbPort(e) => e.clone(),
+                            _ => todo!(),
+                        },
+                    }
+                };
+
+                status.inner = InnerPortStatus::LentOut;
+
+                self.shared_status.store(Arc::new(status.clone()));
+
+                self.event_tx
+                    .send(EspEvent::Connecting.into())
+                    .map_err(|_| SerialError::FailedSend)?;
+
+                let lent_port = self
+                    .port
+                    .take_native()
+                    .expect("worker should have port ownership");
+
+                let returned_port = {
+                    let mut flasher = espflash::flasher::Flasher::connect(
+                        lent_port,
+                        usb_port_info,
+                        Some(115200),
+                        true,
+                        !elf.no_verify,
+                        !elf.no_skip,
+                        None,
+                        espflash::connection::reset::ResetAfterOperation::HardReset,
+                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                    )?;
+
+                    self.event_tx
+                        .send(
+                            EspEvent::Connected {
+                                chip: flasher.chip().to_compact_string().to_uppercase(),
+                            }
+                            .into(),
+                        )
+                        .map_err(|_| SerialError::FailedSend)?;
+
+                    let matches = elf.expected_chip.map_or(true, |expected| {
+                        if expected == flasher.chip() {
+                            true
+                        } else {
+                            warn!("Not acting! Chip doesn't match!");
+                            false
+                        }
+                    });
+
+                    if matches {
+                        if let Some(baud) = elf.upload_baud {
+                            flasher.change_baud(baud)?;
+                        }
+
+                        let elf_data = fs::read(elf.path).unwrap();
+
+                        let mut propagator = ProgressPropagator::new(
+                            self.event_tx.clone(),
+                            flasher.chip().to_compact_string().to_uppercase(),
+                        );
+
+                        if elf.ram {
+                            if let Err(e) =
+                                flasher.load_elf_to_ram(&elf_data, Some(&mut propagator))
+                            {
+                                // TODO show on UI
+                                self.event_tx
+                                    .send(EspEvent::Error(format!("espflash error: {e}")).into())
+                                    .map_err(|_| SerialError::FailedSend)?;
+                                error!("Error during RAM load: {e}");
+                            }
+                        } else {
+                            if let Ok(esp_info) = flasher.device_info() {
+                                let flash_data = FlashData::new(
+                                    elf.bootloader.as_ref().map(AsRef::as_ref),
+                                    elf.partition_table.as_ref().map(AsRef::as_ref),
+                                    // TODO?
+                                    None,
+                                    // TODO?
+                                    None,
+                                    FlashSettings::default(),
+                                    0,
+                                )
+                                .unwrap();
+                                if let Err(e) = flasher.load_elf_to_flash(
+                                    &elf_data,
+                                    flash_data,
+                                    Some(&mut propagator),
+                                    esp_info.crystal_frequency,
+                                ) {
+                                    // TODO show on UI
+                                    self.event_tx
+                                        .send(
+                                            EspEvent::Error(format!("espflash error: {e}")).into(),
+                                        )
+                                        .map_err(|_| SerialError::FailedSend)?;
+                                    error!("Error during flashing: {e}");
+                                }
+                            }
+                        }
+
+                        self.event_tx
+                            .send(EspEvent::PortReturned.into())
+                            .map_err(|_| SerialError::FailedSend)?;
+                    } else {
+                        self.event_tx
+                            .send(
+                                EspEvent::Error(
+                                    "Not flashing! ESP variant doesn't match expected!".to_owned(),
+                                )
+                                .into(),
+                            )
                             .map_err(|_| SerialError::FailedSend)?;
                     }
 
@@ -936,7 +1084,7 @@ impl SerialWorker {
                 self.shared_status.store(Arc::new(status.clone()));
 
                 self.event_tx
-                    .send(EspFlashEvent::Connecting.into())
+                    .send(EspEvent::Connecting.into())
                     .map_err(|_| SerialError::FailedSend)?;
 
                 let lent_port = self
@@ -961,7 +1109,7 @@ impl SerialWorker {
 
                     self.event_tx
                         .send(
-                            EspFlashEvent::EraseStart {
+                            EspEvent::EraseStart {
                                 chip: esp_chip.to_compact_string().to_uppercase(),
                             }
                             .into(),
@@ -971,7 +1119,7 @@ impl SerialWorker {
                     if let Ok(()) = flasher.erase_flash() {
                         self.event_tx
                             .send(
-                                EspFlashEvent::EraseSuccess {
+                                EspEvent::EraseSuccess {
                                     chip: esp_chip.to_compact_string().to_uppercase(),
                                 }
                                 .into(),
@@ -985,7 +1133,7 @@ impl SerialWorker {
                 self.return_native_port(returned_port)?;
 
                 self.event_tx
-                    .send(EspFlashEvent::PortReturned.into())
+                    .send(EspEvent::PortReturned.into())
                     .map_err(|_| SerialError::FailedSend)?;
             }
         }

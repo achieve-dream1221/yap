@@ -30,7 +30,7 @@ enum-rotate = "0.1.1"
 # enum_rotate = { path = "../enum-rotate" }
 # espflash = { version = "3.3.0", optional = true, features = ["serialport"] }
 # espflash = { path = "../espflash/espflash", optional = true, features = ["serialport"] }
-espflash = { git = "https://github.com/nullstalgia/espflash", branch = "public_verify_and_skip", optional = true, features = ["serialport"] }
+espflash = { git = "https://github.com/nullstalgia/espflash", branch = "public_verify_and_skip", optional = true, default-features = false, features = ["serialport"] }
 fs-err = "3.1.0"
 hex = "0.4.3"
 human-panic = "2.0.2"

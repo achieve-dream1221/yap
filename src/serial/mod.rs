@@ -12,7 +12,7 @@ pub mod worker;
 #[cfg(feature = "espflash")]
 pub mod esp;
 #[cfg(feature = "espflash")]
-use esp::EspFlashEvent;
+use esp::EspEvent;
 
 #[derive(Clone, Debug)]
 pub enum ReconnectType {
@@ -28,7 +28,7 @@ pub enum SerialEvent {
     Connected(Option<ReconnectType>),
     RxBuffer(Vec<u8>),
     #[cfg(feature = "espflash")]
-    EspFlash(EspFlashEvent),
+    EspFlash(EspEvent),
     Disconnected(Option<String>),
 }
 

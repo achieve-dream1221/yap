@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{borrow::Cow, f32::consts::PI, path::PathBuf};
 
 use compact_str::CompactString;
 use espflash::{flasher::DeviceInfo, targets::Chip};
@@ -11,8 +11,8 @@ use ratatui_macros::{line, vertical};
 use tracing::debug;
 
 use crate::{
-    serial::esp::{EspFlashEvent, FlashProgress},
-    traits::LineHelpers,
+    serial::esp::{EspEvent, FlashProgress},
+    traits::{LastIndex, LineHelpers},
 };
 
 use std::collections::BTreeMap;
@@ -21,15 +21,58 @@ use serde::Deserialize;
 
 use super::centered_rect_size;
 
+#[derive(Debug)]
+pub enum EspProfile {
+    Bins(EspBins),
+    Elf(EspElf),
+}
+
 #[derive(Debug, Clone)]
 pub struct EspBins {
     pub name: CompactString,
     pub bins: Vec<(u32, PathBuf)>,
     pub upload_baud: Option<u32>,
     pub expected_chip: Option<Chip>,
-    pub partition_table: Option<PathBuf>,
+    // pub partition_table: Option<PathBuf>,
     pub no_skip: bool,
     pub no_verify: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct EspElf {
+    pub name: CompactString,
+    pub path: PathBuf,
+    #[serde(default)]
+    pub upload_baud: Option<u32>,
+    #[serde(deserialize_with = "deserialize_chip")]
+    #[serde(rename = "chip")]
+    #[serde(default)]
+    pub expected_chip: Option<Chip>,
+    #[serde(default)]
+    pub partition_table: Option<PathBuf>,
+    #[serde(default)]
+    pub bootloader: Option<PathBuf>,
+    #[serde(default)]
+    pub no_skip: bool,
+    #[serde(default)]
+    pub no_verify: bool,
+    #[serde(default)]
+    pub ram: bool,
+}
+
+fn deserialize_chip<'de, D>(deserializer: D) -> Result<Option<Chip>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    use std::str::FromStr;
+    let opt = Option::<String>::deserialize(deserializer)?;
+    match opt {
+        Some(s) => Chip::from_str(&s)
+            .map(Some)
+            .map_err(|_| D::Error::custom("invalid chip type given")),
+        None => Ok(None),
+    }
 }
 
 impl<'de> Deserialize<'de> for EspBins {
@@ -37,7 +80,7 @@ impl<'de> Deserialize<'de> for EspBins {
     where
         D: serde::Deserializer<'de>,
     {
-        use serde::de::{self, MapAccess, Visitor};
+        use serde::de::{MapAccess, Visitor};
         use std::fmt;
 
         struct EspBinsVisitor;
@@ -59,7 +102,6 @@ impl<'de> Deserialize<'de> for EspBins {
                 let mut bins = Vec::new();
                 let mut upload_baud = None;
                 let mut expected_chip = None;
-                let mut partition_table = None;
                 let mut no_skip = false;
                 let mut no_verify = false;
 
@@ -79,10 +121,6 @@ impl<'de> Deserialize<'de> for EspBins {
                                     .parse::<Chip>()
                                     .map_err(|_| A::Error::custom("invalid chip type given"))?,
                             );
-                        }
-                        "partition_table" => {
-                            let value: String = map.next_value()?;
-                            partition_table = Some(PathBuf::from(value));
                         }
                         "no_verify" => {
                             no_verify = map.next_value()?;
@@ -119,7 +157,6 @@ impl<'de> Deserialize<'de> for EspBins {
                     bins,
                     upload_baud,
                     expected_chip,
-                    partition_table,
                     no_skip,
                     no_verify,
                 })
@@ -132,13 +169,14 @@ impl<'de> Deserialize<'de> for EspBins {
 
 #[derive(Debug, serde::Deserialize)]
 pub struct SerializedEspFiles {
-    // elf: Vec<_>,
+    elf: Vec<EspElf>,
     bin: Vec<EspBins>,
 }
 
 #[derive(Debug, Default)]
 pub struct Flashing {
     // current_file_name: CompactString,
+    chip: CompactString,
     current_file_addr: u32,
     current_file_len: usize,
     current_progress: usize,
@@ -156,35 +194,38 @@ pub enum EspPopup {
 #[derive(Debug)]
 pub struct EspFlashState {
     popup: Option<EspPopup>,
-    pub bins: Vec<EspBins>,
-    pub bins_active: bool,
+    bins: Vec<EspBins>,
+    elfs: Vec<EspElf>,
+    pub profiles_selected: bool,
 }
 
 impl EspFlashState {
     pub fn new() -> Self {
         let meow = fs::read_to_string("../../esp_profiles.toml").unwrap();
-        let SerializedEspFiles { bin } = toml::from_str(&meow).unwrap();
+        let SerializedEspFiles { bin, elf } = toml::from_str(&meow).unwrap();
         debug!("{bin:#?}");
         Self {
             popup: None,
             bins: bin,
-            bins_active: false,
+            elfs: elf,
+            profiles_selected: false,
         }
     }
     pub fn reload(&mut self) -> color_eyre::Result<()> {
         self.reset();
 
         let meow = fs::read_to_string("../../esp_profiles.toml")?;
-        let SerializedEspFiles { bin } = toml::from_str(&meow)?;
+        let SerializedEspFiles { bin, elf } = toml::from_str(&meow)?;
         debug!("{bin:#?}");
 
         self.bins = bin;
+        self.elfs = elf;
 
         Ok(())
     }
-    pub fn consume_event(&mut self, event: EspFlashEvent) {
+    pub fn consume_event(&mut self, event: EspEvent) {
         match event {
-            EspFlashEvent::DeviceInfo(info) => {
+            EspEvent::DeviceInfo(info) => {
                 debug!("{info:#?}");
                 let DeviceInfo {
                     chip,
@@ -231,9 +272,10 @@ impl EspFlashState {
 
                 self.popup = Some(EspPopup::DeviceInfo(table));
             }
-            EspFlashEvent::FlashProgress(progress) => match progress {
-                FlashProgress::Init { addr, size } => {
+            EspEvent::FlashProgress(progress) => match progress {
+                FlashProgress::Init { chip, addr, size } => {
                     self.popup = Some(EspPopup::Flashing(Flashing {
+                        chip,
                         current_file_addr: addr,
                         current_file_len: size,
                         current_progress: 0,
@@ -258,16 +300,16 @@ impl EspFlashState {
                     }));
                 }
             },
-            EspFlashEvent::Connecting => self.popup = Some(EspPopup::Connecting),
-            EspFlashEvent::Connected { chip } => self.popup = Some(EspPopup::Connected { chip }),
-            EspFlashEvent::EraseStart { chip } => self.popup = Some(EspPopup::Erasing { chip }),
-            EspFlashEvent::PortReturned => self.popup = None,
+            EspEvent::Connecting => self.popup = Some(EspPopup::Connecting),
+            EspEvent::Connected { chip } => self.popup = Some(EspPopup::Connected { chip }),
+            EspEvent::EraseStart { chip } => self.popup = Some(EspPopup::Erasing { chip }),
+            EspEvent::PortReturned => self.popup = None,
             _ => (),
         }
     }
     pub fn reset(&mut self) {
         _ = self.popup.take();
-        self.bins_active = false;
+        self.profiles_selected = false;
     }
     pub fn render_espflash(&self, frame: &mut Frame, screen: Rect) {
         let center_area = centered_rect_size(
@@ -296,9 +338,11 @@ impl EspFlashState {
             // EspPopup::Connected { .. } => " Connected! ",
             // EspPopup::Connecting { .. } => " Connecting... ",
             // EspPopup::Erasing { .. } => " Erasing... ",
-            EspPopup::Erasing { .. } | EspPopup::Connected { .. } | EspPopup::Connecting => "",
-            EspPopup::DeviceInfo { .. } => " Retrieved ESP Info ",
-            EspPopup::Flashing { .. } => " Flashing... ",
+            EspPopup::Erasing { .. } | EspPopup::Connected { .. } | EspPopup::Connecting => {
+                Cow::from("")
+            }
+            EspPopup::DeviceInfo { .. } => Cow::from(" Retrieved ESP Info "),
+            EspPopup::Flashing(Flashing { chip, .. }) => Cow::from(format!(" Flashing {chip}... ")),
         };
 
         let block = Block::bordered()
@@ -324,6 +368,7 @@ impl EspFlashState {
 
         match popup {
             EspPopup::Flashing(Flashing {
+                chip,
                 current_file_addr,
                 current_file_len,
                 current_progress,
@@ -380,18 +425,24 @@ impl EspFlashState {
             _ => (),
         }
     }
-    pub fn bins_table(&self, table_state: &mut TableState) -> Table {
+    pub fn profiles_table(&self, table_state: &mut TableState) -> Table {
         table_state.select_first_column();
         let selected_row_style = Style::new().reversed();
         let first_column_style = Style::new().reset();
 
         let rows: Vec<_> = self
-            .bins
-            .iter()
-            .map(|b| {
+            .profiles()
+            .map(|(name, is_elf, is_elf_ram)| {
+                let flavor = if is_elf_ram {
+                    "Load ELF!"
+                } else if is_elf {
+                    "Flash ELF!"
+                } else {
+                    "Flash BIN!"
+                };
                 Row::new([
-                    Text::raw(format!("{} ", b.name)).right_aligned(),
-                    Text::raw("Flash!").centered().italic(),
+                    Text::raw(format!("{} ", name)).right_aligned(),
+                    Text::raw(flavor).centered().italic(),
                 ])
             })
             .collect();
@@ -404,6 +455,64 @@ impl EspFlashState {
         .row_highlight_style(selected_row_style);
 
         option_table
+    }
+    pub fn profiles(&self) -> impl DoubleEndedIterator<Item = (&str, bool, bool)> {
+        let elf_iter = self.elfs.iter().map(|e| (e.name.as_str(), true, e.ram));
+        let bin_iter = self.bins.iter().map(|b| (b.name.as_str(), false, false));
+
+        elf_iter.chain(bin_iter)
+    }
+    pub fn profile_from_name(&self, query: &str) -> Option<EspProfile> {
+        // Search elfs first
+        if let Some(elf) = self.elfs.iter().find(|e| e.name == query) {
+            return Some(EspProfile::Elf(elf.clone()));
+        }
+        // Then bins
+        if let Some(bin) = self.bins.iter().find(|b| b.name == query) {
+            return Some(EspProfile::Bins(bin.clone()));
+        }
+        None
+    }
+    pub fn profile_from_index(&self, index: usize) -> Option<EspProfile> {
+        // Elfs first, then bins, matching the order in profiles()
+        let elf_len = self.elfs.len();
+        if index < elf_len {
+            self.elfs.get(index).cloned().map(EspProfile::Elf)
+        } else {
+            let bin_index = index - elf_len;
+            self.bins.get(bin_index).cloned().map(EspProfile::Bins)
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.elfs.is_empty() && self.bins.is_empty()
+    }
+}
+
+impl LastIndex for EspFlashState {
+    fn last_index_checked(&self) -> Option<usize> {
+        if self.is_empty() {
+            None
+        } else {
+            Some((self.elfs.len() + self.bins.len()) - 1)
+        }
+    }
+    fn last_index_eq(&self, index: usize) -> bool {
+        if self.is_empty() {
+            false
+        } else if index == (self.elfs.len() + self.bins.len()) - 1 {
+            true
+        } else {
+            false
+        }
+    }
+    fn last_index_eq_or_greater(&self, index: usize) -> bool {
+        if self.is_empty() {
+            false
+        } else if index >= (self.elfs.len() + self.bins.len()) - 1 {
+            true
+        } else {
+            false
+        }
     }
 }
 

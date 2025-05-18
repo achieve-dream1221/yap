@@ -13,13 +13,13 @@ use super::{
 use crate::{
     app::Event,
     errors::{YapError, YapResult},
-    tui::esp::EspBins,
+    tui::esp::{EspBins, EspProfile},
 };
 
 #[derive(Debug)]
 pub enum EspCommand {
     EraseFlash,
-    WriteBins(EspBins),
+    FlashProfile(EspProfile),
     Restart { bootloader: bool },
     DeviceInfo,
 }
@@ -43,9 +43,9 @@ impl SerialHandle {
             .map_err(|_| YapError::NoSerialWorker)
     }
 
-    pub fn esp_write_bins(&self, bins: EspBins) -> YapResult<()> {
+    pub fn esp_flash_profile(&self, profile: EspProfile) -> YapResult<()> {
         self.command_tx
-            .send(EspCommand::WriteBins(bins).into())
+            .send(EspCommand::FlashProfile(profile).into())
             .map_err(|_| YapError::NoSerialWorker)
     }
 
@@ -57,7 +57,7 @@ impl SerialHandle {
 }
 
 #[derive(Debug, Clone)]
-pub enum EspFlashEvent {
+pub enum EspEvent {
     Connecting,
     Connected { chip: CompactString },
     BootloaderSuccess { chip: CompactString },
@@ -73,7 +73,7 @@ pub enum EspFlashEvent {
 #[derive(Debug, Clone)]
 pub enum FlashProgress {
     Init {
-        // name: CompactString,
+        chip: CompactString,
         addr: u32,
         size: usize,
     },
@@ -82,32 +82,34 @@ pub enum FlashProgress {
     // TODO Verifying + Skipping popups
 }
 
-impl From<EspFlashEvent> for SerialEvent {
-    fn from(value: EspFlashEvent) -> Self {
+impl From<EspEvent> for SerialEvent {
+    fn from(value: EspEvent) -> Self {
         Self::EspFlash(value)
     }
 }
 
-impl From<EspFlashEvent> for Event {
-    fn from(value: EspFlashEvent) -> Self {
+impl From<EspEvent> for Event {
+    fn from(value: EspEvent) -> Self {
         Self::Serial(SerialEvent::EspFlash(value))
     }
 }
 
 impl From<FlashProgress> for Event {
     fn from(value: FlashProgress) -> Self {
-        Self::Serial(SerialEvent::EspFlash(EspFlashEvent::FlashProgress(value)))
+        Self::Serial(SerialEvent::EspFlash(EspEvent::FlashProgress(value)))
     }
 }
 
 pub struct ProgressPropagator {
+    chip: CompactString,
     tx: Sender<Event>,
     // filenames: Vec<&'a str>,
     // current_index: i16,
 }
 impl ProgressPropagator {
-    pub fn new(tx: Sender<Event>) -> Self {
+    pub fn new(tx: Sender<Event>, chip: CompactString) -> Self {
         Self {
+            chip,
             tx,
             // filenames: Vec::from_iter(filenames.iter().map(AsRef::as_ref)),
             // current_index: -1,
@@ -124,6 +126,7 @@ impl ProgressCallbacks for ProgressPropagator {
 
         _ = self.tx.send(
             FlashProgress::Init {
+                chip: self.chip.clone(),
                 addr,
                 size: total,
                 // name: self.filenames[self.current_index as usize].to_compact_string(),

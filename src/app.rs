@@ -63,7 +63,7 @@ use crate::{
 #[cfg(feature = "espflash")]
 use crate::keybinds::esp_methods::*;
 #[cfg(feature = "espflash")]
-use crate::serial::esp::EspFlashEvent;
+use crate::serial::esp::EspEvent;
 #[cfg(feature = "espflash")]
 use crate::tui::esp::espflash_buttons;
 #[cfg(feature = "espflash")]
@@ -236,6 +236,8 @@ pub struct App {
 
     #[cfg(feature = "espflash")]
     espflash: EspFlashState,
+    // TODO
+    // error_message: Option<String>,
 }
 
 impl App {
@@ -484,16 +486,16 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             Event::Serial(SerialEvent::EspFlash(esp_event)) => match esp_event {
-                EspFlashEvent::BootloaderSuccess { chip } => self
+                EspEvent::BootloaderSuccess { chip } => self
                     .notifs
                     .notify_str(format!("{chip} rebooted into bootloader!"), Color::Green),
-                EspFlashEvent::EraseSuccess { chip } => self
+                EspEvent::EraseSuccess { chip } => self
                     .notifs
                     .notify_str(format!("{chip} flash erased!"), Color::Green),
-                EspFlashEvent::HardResetAttempt => self
+                EspEvent::HardResetAttempt => self
                     .notifs
                     .notify_str(format!("Attempted ESP hard reset!"), Color::LightYellow),
-                EspFlashEvent::Error(e) => self.notifs.notify_str(&e, Color::Red),
+                EspEvent::Error(e) => self.notifs.notify_str(&e, Color::Red),
                 _ => self.espflash.consume_event(esp_event),
             },
             Event::Tick(Tick::PerSecond) => match self.menu {
@@ -662,8 +664,6 @@ impl App {
     fn handle_key_press(&mut self, key: KeyEvent) {
         let key_combo = KeyCombination::from(key);
         // debug!("{key_combo}");
-        let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
-        let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
 
         // let at_port_selection = matches!(self.menu, Menu::PortSelection);
         // TODO soon, redo this variable's name + use
@@ -691,7 +691,7 @@ impl App {
                 at_terminal = true;
                 match key_combo {
                     // Consuming Ctrl+A so input_box.handle_event doesn't move my cursor.
-                    key!(a) if ctrl_pressed => (),
+                    key!(ctrl - a) => (),
                     key!(del) | key!(backspace) if self.user_input.all_text_selected => (),
 
                     // TODO move into UserInput impl?
@@ -828,8 +828,10 @@ impl App {
                     .espflash_profile_from_key_combo(key_combo)
                     .map(ToOwned::to_owned)
                 {
-                    if let Some(profile) =
-                        self.espflash.bins.iter().find(|p| p.name == profile_name)
+                    if let Some(profile) = self
+                        .espflash
+                        .profiles()
+                        .find(|(name, _, _)| *name == profile_name)
                     {
                         let italic = Style::new().italic();
                         if serial_healthy {
@@ -843,7 +845,11 @@ impl App {
                                 ],
                                 Color::LightGreen,
                             );
-                            self.serial.esp_write_bins(profile.to_owned()).unwrap();
+                            self.serial
+                                .esp_flash_profile(
+                                    self.espflash.profile_from_name(&profile_name).unwrap(),
+                                )
+                                .unwrap();
                         } else {
                             self.notifs.notify(
                                 line![
@@ -1119,12 +1125,14 @@ impl App {
             Some(popup) if self.popup_single_line_state.active => {
                 match popup {
                     PopupMenu::Macros if self.macros.none_visible() => return,
-                    PopupMenu::EspFlash if self.espflash.bins.is_empty() => {
+                    #[cfg(feature = "espflash")]
+                    PopupMenu::EspFlash if self.espflash.is_empty() => {
                         self.popup_table_state.select_last();
                     }
+                    #[cfg(feature = "espflash")]
                     PopupMenu::EspFlash => {
                         self.popup_table_state.select_last();
-                        self.espflash.bins_active = true;
+                        self.espflash.profiles_selected = true;
                     }
                     _ => (),
                 }
@@ -1190,10 +1198,10 @@ impl App {
                 }
             }
             #[cfg(feature = "espflash")]
-            Some(PopupMenu::EspFlash) if self.espflash.bins_active => {
+            Some(PopupMenu::EspFlash) if self.espflash.profiles_selected => {
                 if self.popup_table_state.selected() == Some(0) {
                     self.popup_table_state.select_last();
-                    self.espflash.bins_active = false;
+                    self.espflash.profiles_selected = false;
                 } else {
                     self.scroll_menu_up();
                 }
@@ -1313,11 +1321,11 @@ impl App {
                 }
             }
             #[cfg(feature = "espflash")]
-            Some(PopupMenu::EspFlash) if self.espflash.bins_active => {
-                if self.popup_table_state.selected() >= Some(self.espflash.bins.last_index()) {
+            Some(PopupMenu::EspFlash) if self.espflash.profiles_selected => {
+                if self.popup_table_state.selected() >= Some(self.espflash.last_index()) {
                     self.popup_table_state.select(None);
                     self.popup_single_line_state.active = true;
-                    self.espflash.bins_active = false;
+                    self.espflash.profiles_selected = false;
                 } else {
                     self.scroll_menu_down();
                 }
@@ -1325,12 +1333,12 @@ impl App {
             #[cfg(feature = "espflash")]
             Some(PopupMenu::EspFlash) => {
                 if self.popup_table_state.selected() >= Some(esp::ESPFLASH_BUTTON_COUNT - 1) {
-                    if self.espflash.bins.is_empty() {
+                    if self.espflash.is_empty() {
                         self.popup_table_state.select(None);
                         self.popup_single_line_state.active = true;
                     } else {
                         self.popup_table_state.select_first();
-                        self.espflash.bins_active = true;
+                        self.espflash.profiles_selected = true;
                     }
                 } else {
                     self.scroll_menu_down();
@@ -1581,13 +1589,14 @@ impl App {
                     self.notifs.notify_str("Port isn't ready!", Color::Red);
                     return;
                 }
-                if self.espflash.bins_active {
+                if self.espflash.profiles_selected {
                     assert!(
-                        !self.espflash.bins.is_empty(),
+                        !self.espflash.is_empty(),
                         "shouldn't have selected a non-existant flash profile"
                     );
+
                     self.serial
-                        .esp_write_bins(self.espflash.bins[selected].clone())
+                        .esp_flash_profile(self.espflash.profile_from_index(selected).unwrap())
                         .unwrap();
                 } else {
                     match selected {
@@ -2261,14 +2270,14 @@ impl App {
                     hint_text_area,
                 );
 
-                if self.espflash.bins_active {
+                if self.espflash.profiles_selected {
                     frame.render_widget(
                         esp::espflash_buttons(&mut self.popup_table_state),
                         settings_area,
                     );
                     frame.render_widget(&line_block, new_seperator);
                     frame.render_stateful_widget(
-                        self.espflash.bins_table(&mut self.popup_table_state),
+                        self.espflash.profiles_table(&mut self.popup_table_state),
                         bins_area,
                         &mut self.popup_table_state,
                     );
@@ -2280,7 +2289,7 @@ impl App {
                     );
                     frame.render_widget(&line_block, new_seperator);
                     frame.render_widget(
-                        self.espflash.bins_table(&mut self.popup_table_state),
+                        self.espflash.profiles_table(&mut self.popup_table_state),
                         bins_area,
                     );
                 }
@@ -2733,7 +2742,7 @@ impl App {
         self.macros.search_input.reset();
         #[cfg(feature = "espflash")]
         {
-            self.espflash.bins_active = false;
+            self.espflash.profiles_selected = false;
         }
     }
 }
