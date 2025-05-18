@@ -29,6 +29,7 @@ pub mod esp_methods {
     pub const RELOAD_ESPFLASH: &str = "reload-espflash";
     pub const ESP_HARD_RESET: &str = "esp-hard-reset";
     pub const ESP_BOOTLOADER: &str = "esp-bootloader";
+    pub const ESP_BOOTLOADER_UNCHECKED: &str = "esp-bootloader-unchecked";
     pub const ESP_DEVICE_INFO: &str = "esp-device-info";
     pub const ESP_ERASE_FLASH: &str = "esp-erase-flash";
 }
@@ -49,6 +50,7 @@ ctrl-d = "toggle-indices"
 ctrl-f = "reload-colors"
 F20 = "esp-hard-reset"
 F21 = "esp-bootloader"
+ctrl-z = "esp-bootloader-unchecked"
 
 [macros]
 F19 = "Restart"

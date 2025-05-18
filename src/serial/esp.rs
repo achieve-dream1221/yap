@@ -20,8 +20,14 @@ use crate::{
 pub enum EspCommand {
     EraseFlash,
     FlashProfile(EspProfile),
-    Restart { bootloader: bool },
+    Restart(EspRestartType),
     DeviceInfo,
+}
+
+#[derive(Debug)]
+pub enum EspRestartType {
+    Bootloader { active: bool },
+    UserCode,
 }
 
 impl From<EspCommand> for SerialWorkerCommand {
@@ -31,9 +37,9 @@ impl From<EspCommand> for SerialWorkerCommand {
 }
 
 impl SerialHandle {
-    pub fn esp_restart(&self, bootloader: bool) -> YapResult<()> {
+    pub fn esp_restart(&self, restart_type: EspRestartType) -> YapResult<()> {
         self.command_tx
-            .send(EspCommand::Restart { bootloader }.into())
+            .send(EspCommand::Restart(restart_type).into())
             .map_err(|_| YapError::NoSerialWorker)
     }
 

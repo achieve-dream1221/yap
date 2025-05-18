@@ -63,7 +63,7 @@ use crate::{
 #[cfg(feature = "espflash")]
 use crate::keybinds::esp_methods::*;
 #[cfg(feature = "espflash")]
-use crate::serial::esp::EspEvent;
+use crate::serial::esp::{EspEvent, EspRestartType};
 #[cfg(feature = "espflash")]
 use crate::tui::esp::espflash_buttons;
 #[cfg(feature = "espflash")]
@@ -1045,12 +1045,21 @@ impl App {
 
             #[cfg(feature = "espflash")]
             _ if m == ESP_HARD_RESET => {
-                self.serial.esp_restart(false).unwrap();
+                self.serial.esp_restart(EspRestartType::UserCode).unwrap();
             }
 
             #[cfg(feature = "espflash")]
             _ if m == ESP_BOOTLOADER => {
-                self.serial.esp_restart(true).unwrap();
+                self.serial
+                    .esp_restart(EspRestartType::Bootloader { active: true })
+                    .unwrap();
+            }
+
+            #[cfg(feature = "espflash")]
+            _ if m == ESP_BOOTLOADER_UNCHECKED => {
+                self.serial
+                    .esp_restart(EspRestartType::Bootloader { active: false })
+                    .unwrap();
             }
 
             #[cfg(feature = "espflash")]
@@ -1601,6 +1610,9 @@ impl App {
                 } else {
                     match selected {
                         0 => self.run_method_from_string(ESP_HARD_RESET).unwrap(),
+                        1 if ctrl_pressed || shift_pressed => self
+                            .run_method_from_string(ESP_BOOTLOADER_UNCHECKED)
+                            .unwrap(),
                         1 => self.run_method_from_string(ESP_BOOTLOADER).unwrap(),
                         2 => self.run_method_from_string(ESP_DEVICE_INFO).unwrap(),
                         3 => {
@@ -2281,6 +2293,26 @@ impl App {
                         bins_area,
                         &mut self.popup_table_state,
                     );
+
+                    if let Some(profile) = self
+                        .popup_table_state
+                        .selected()
+                        .and_then(|idx| self.espflash.profile_from_index(idx))
+                    {
+                        let hint_text = match profile {
+                            esp::EspProfile::Bins(_) => "Flash profile binaries to ESP Flash.",
+                            esp::EspProfile::Elf(profile) if profile.ram => {
+                                "Load profile ELF into RAM."
+                            }
+                            esp::EspProfile::Elf(_) => "Flash profile ELF to ESP Flash.",
+                        };
+                        render_scrolling_line(
+                            hint_text,
+                            frame,
+                            scrolling_text_area,
+                            &mut self.popup_desc_scroll,
+                        );
+                    }
                 } else {
                     frame.render_stateful_widget(
                         esp::espflash_buttons(&mut self.popup_table_state),
@@ -2292,6 +2324,23 @@ impl App {
                         self.espflash.profiles_table(&mut self.popup_table_state),
                         bins_area,
                     );
+
+                    let hints = [
+                        "Attempt to remotely reset the chip.",
+                        "Attempt to reboot into bootloader. Shift/Ctrl to skip check.",
+                        "Query ESP for Flash Size, MAC Address, etc.",
+                        "Erase all flash contents.",
+                    ];
+                    if let Some(idx) = self.popup_table_state.selected() {
+                        if let Some(&hint_text) = hints.get(idx) {
+                            render_scrolling_line(
+                                hint_text,
+                                frame,
+                                scrolling_text_area,
+                                &mut self.popup_desc_scroll,
+                            );
+                        }
+                    }
                 }
                 frame.render_widget(
                     Line::raw("Flash Profiles | Ctrl+R: Reload")

@@ -654,6 +654,7 @@ impl SerialWorker {
     // and the connection needs to be re-established.
     fn handle_esp_command(&mut self, esp_command: EspCommand) -> Result<(), SerialError> {
         if !self.port.is_owned() {
+            // TODO decide if i wanna keep this or just return Ok(())
             error!("ESP Command given when we don't own port!");
             return Err(SerialError::MissingPort);
         }
@@ -665,136 +666,93 @@ impl SerialWorker {
             elf::RomSegment,
             flasher::{FlashData, FlashSettings, ProgressCallbacks},
         };
+        use serialport::UsbPortInfo;
 
         use crate::{
-            serial::esp::{FlashProgress, ProgressPropagator},
+            serial::esp::{EspRestartType, FlashProgress, ProgressPropagator},
             tui::esp::EspProfile,
         };
 
-        match esp_command {
-            EspCommand::DeviceInfo => {
-                let mut status: PortStatus = self.shared_status.load().as_ref().clone();
+        let mut status: PortStatus = self.shared_status.load().as_ref().clone();
 
-                let usb_port_info = {
-                    match &status.current_port {
-                        None => unreachable!(),
-                        Some(info) => match &info.port_type {
-                            SerialPortType::UsbPort(e) => e.clone(),
-                            _ => todo!(),
-                        },
-                    }
-                };
-
-                status.inner = InnerPortStatus::LentOut;
-
-                self.shared_status.store(Arc::new(status.clone()));
-
-                self.event_tx
-                    .send(EspEvent::Connecting.into())
-                    .map_err(|_| SerialError::FailedSend)?;
-
-                let lent_port = self
-                    .port
-                    .take_native()
-                    .expect("worker should have port ownership");
-
-                let returned_port = {
-                    let mut flasher = espflash::flasher::Flasher::connect(
-                        lent_port,
-                        usb_port_info,
-                        Some(115200),
-                        true,
-                        true,
-                        true,
-                        None,
-                        espflash::connection::reset::ResetAfterOperation::HardReset,
-                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
-                    )?;
-
-                    self.event_tx
-                        .send(
-                            EspEvent::Connected {
-                                chip: flasher.chip().to_compact_string().to_uppercase(),
-                            }
-                            .into(),
-                        )
-                        .map_err(|_| SerialError::FailedSend)?;
-
-                    if let Ok(esp_info) = flasher.device_info() {
-                        debug!("{esp_info:#?}");
-
-                        self.event_tx
-                            .send(EspEvent::DeviceInfo(esp_info).into())
-                            .map_err(|_| SerialError::FailedSend)?;
-                    }
-
-                    flasher.connection().reset()?;
-
-                    flasher.into_serial()
-                };
-
-                self.return_native_port(returned_port)?;
+        let usb_port_info = {
+            match &status.current_port {
+                None => unreachable!(),
+                Some(info) => match &info.port_type {
+                    SerialPortType::UsbPort(e) => e.clone(),
+                    _ => UsbPortInfo {
+                        vid: 0,
+                        pid: 0,
+                        serial_number: None,
+                        manufacturer: None,
+                        product: None,
+                    },
+                },
             }
-            EspCommand::Restart { bootloader } => {
-                let mut status: PortStatus = self.shared_status.load().as_ref().clone();
+        };
 
-                let usb_port_info = {
-                    match &status.current_port {
-                        None => unreachable!(),
-                        Some(info) => match &info.port_type {
-                            SerialPortType::UsbPort(e) => e.clone(),
-                            _ => todo!(),
-                        },
-                    }
-                };
+        status.inner = InnerPortStatus::LentOut;
 
-                status.inner = InnerPortStatus::LentOut;
+        self.shared_status.store(Arc::new(status.clone()));
 
-                self.shared_status.store(Arc::new(status.clone()));
+        self.event_tx
+            .send(EspEvent::Connecting.into())
+            .map_err(|_| SerialError::FailedSend)?;
 
-                self.event_tx
-                    .send(EspEvent::Connecting.into())
-                    .map_err(|_| SerialError::FailedSend)?;
+        let lent_port = self
+            .port
+            .take_native()
+            .expect("worker should have port ownership");
 
-                let lent_port = self
-                    .port
-                    .take_native()
-                    .expect("worker should have port ownership");
+        let returned_port = match esp_command {
+            EspCommand::DeviceInfo => {
+                let mut flasher = self.connect_esp_flasher(lent_port, usb_port_info, true, true)?;
 
-                let returned_port = if bootloader {
-                    let flasher = espflash::flasher::Flasher::connect(
-                        lent_port,
-                        usb_port_info,
-                        Some(115200),
-                        true,
-                        true,
-                        true,
-                        None,
-                        espflash::connection::reset::ResetAfterOperation::HardReset,
-                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
-                    )?;
+                if let Ok(esp_info) = flasher.device_info() {
+                    debug!("{esp_info:#?}");
 
                     self.event_tx
-                        .send(
-                            EspEvent::Connected {
-                                chip: flasher.chip().to_compact_string().to_uppercase(),
-                            }
-                            .into(),
-                        )
+                        .send(EspEvent::DeviceInfo(esp_info).into())
                         .map_err(|_| SerialError::FailedSend)?;
+                }
 
-                    let esp_chip = flasher.chip();
+                flasher.connection().reset()?;
+
+                flasher.into_serial()
+            }
+
+            EspCommand::Restart(restart_type) => match restart_type {
+                EspRestartType::Bootloader { active: true } => {
+                    let flasher = self.connect_esp_flasher(lent_port, usb_port_info, true, true)?;
+
                     self.event_tx
                         .send(
                             EspEvent::BootloaderSuccess {
-                                chip: esp_chip.to_compact_string().to_uppercase(),
+                                chip: flasher.chip().to_compact_string().to_uppercase(),
                             }
                             .into(),
                         )
                         .map_err(|_| SerialError::FailedSend)?;
 
                     flasher.into_serial()
-                } else {
+                }
+                EspRestartType::Bootloader { active: false } => {
+                    let mut connection = espflash::connection::Connection::new(
+                        lent_port,
+                        usb_port_info,
+                        espflash::connection::reset::ResetAfterOperation::HardReset,
+                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                    );
+
+                    connection.reset_to_flash(true)?;
+
+                    self.event_tx
+                        .send(EspEvent::HardResetAttempt.into())
+                        .map_err(|_| SerialError::FailedSend)?;
+
+                    connection.into_serial()
+                }
+                EspRestartType::UserCode => {
                     let mut connection = espflash::connection::Connection::new(
                         lent_port,
                         usb_port_info,
@@ -809,334 +767,187 @@ impl SerialWorker {
                         .map_err(|_| SerialError::FailedSend)?;
 
                     connection.into_serial()
-                };
-
-                self.return_native_port(returned_port)?;
-                self.event_tx
-                    .send(EspEvent::PortReturned.into())
-                    .map_err(|_| SerialError::FailedSend)?;
-            }
+                }
+            },
             EspCommand::FlashProfile(EspProfile::Bins(bins)) => {
                 assert!(!bins.bins.is_empty(), "expected at least one bin to flash");
+                let mut flasher = self.connect_esp_flasher(
+                    lent_port,
+                    usb_port_info,
+                    !bins.no_verify,
+                    !bins.no_skip,
+                )?;
 
-                let mut status: PortStatus = self.shared_status.load().as_ref().clone();
-
-                let usb_port_info = {
-                    match &status.current_port {
-                        None => unreachable!(),
-                        Some(info) => match &info.port_type {
-                            SerialPortType::UsbPort(e) => e.clone(),
-                            _ => todo!(),
-                        },
+                let matches = bins.expected_chip.map_or(true, |expected| {
+                    if expected == flasher.chip() {
+                        true
+                    } else {
+                        warn!("Not acting! Chip doesn't match!");
+                        false
                     }
-                };
+                });
 
-                status.inner = InnerPortStatus::LentOut;
+                if matches {
+                    if let Some(baud) = bins.upload_baud {
+                        flasher.change_baud(baud)?;
+                    }
 
-                self.shared_status.store(Arc::new(status.clone()));
+                    let rom_segs: Vec<RomSegment> = bins
+                        .bins
+                        .iter()
+                        .map(|(addr, path)| {
+                            let bytes = fs::read(path).unwrap();
+                            RomSegment {
+                                addr: *addr,
+                                data: Cow::Owned(bytes),
+                            }
+                        })
+                        .collect();
 
-                self.event_tx
-                    .send(EspEvent::Connecting.into())
-                    .map_err(|_| SerialError::FailedSend)?;
+                    // let filenames: Vec<_> = bins
+                    //     .bins
+                    //     .iter()
+                    //     .map(|(index, name)| {
+                    //         name.file_name()
+                    //             .map(|n| n.to_string_lossy())
+                    //             .expect("can't have file without name")
+                    //     })
+                    //     .collect();
 
-                let lent_port = self
-                    .port
-                    .take_native()
-                    .expect("worker should have port ownership");
+                    let mut propagator = ProgressPropagator::new(
+                        self.event_tx.clone(),
+                        flasher.chip().to_compact_string().to_uppercase(),
+                    );
 
-                let returned_port = {
-                    let mut flasher = espflash::flasher::Flasher::connect(
-                        lent_port,
-                        usb_port_info,
-                        Some(115200),
-                        true,
-                        !bins.no_verify,
-                        !bins.no_skip,
-                        None,
-                        espflash::connection::reset::ResetAfterOperation::HardReset,
-                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
-                    )?;
+                    if let Err(e) = flasher.write_bins_to_flash(&rom_segs, Some(&mut propagator)) {
+                        // TODO show on UI
+                        self.event_tx
+                            .send(EspEvent::Error(format!("espflash error: {e}")).into())
+                            .map_err(|_| SerialError::FailedSend)?;
+                        error!("Error during flashing: {e}");
+                    }
 
                     self.event_tx
+                        .send(EspEvent::PortReturned.into())
+                        .map_err(|_| SerialError::FailedSend)?;
+                } else {
+                    self.event_tx
                         .send(
-                            EspEvent::Connected {
-                                chip: flasher.chip().to_compact_string().to_uppercase(),
-                            }
+                            EspEvent::Error(
+                                "Not flashing! ESP variant doesn't match expected!".to_owned(),
+                            )
                             .into(),
                         )
                         .map_err(|_| SerialError::FailedSend)?;
+                }
 
-                    let matches = bins.expected_chip.map_or(true, |expected| {
-                        if expected == flasher.chip() {
-                            true
-                        } else {
-                            warn!("Not acting! Chip doesn't match!");
-                            false
-                        }
-                    });
+                flasher.into_serial()
+            }
+            EspCommand::FlashProfile(EspProfile::Elf(elf)) => {
+                // assert!(!elf.path.is_empty(), "expected path");
+                let mut flasher = self.connect_esp_flasher(
+                    lent_port,
+                    usb_port_info,
+                    !elf.no_verify,
+                    !elf.no_skip,
+                )?;
 
-                    if matches {
-                        if let Some(baud) = bins.upload_baud {
-                            flasher.change_baud(baud)?;
-                        }
+                let matches = elf.expected_chip.map_or(true, |expected| {
+                    if expected == flasher.chip() {
+                        true
+                    } else {
+                        warn!("Not acting! Chip doesn't match!");
+                        false
+                    }
+                });
 
-                        let rom_segs: Vec<RomSegment> = bins
-                            .bins
-                            .iter()
-                            .map(|(addr, path)| {
-                                let bytes = fs::read(path).unwrap();
-                                RomSegment {
-                                    addr: *addr,
-                                    data: Cow::Owned(bytes),
-                                }
-                            })
-                            .collect();
+                if matches {
+                    if let Some(baud) = elf.upload_baud {
+                        flasher.change_baud(baud)?;
+                    }
 
-                        // let filenames: Vec<_> = bins
-                        //     .bins
-                        //     .iter()
-                        //     .map(|(index, name)| {
-                        //         name.file_name()
-                        //             .map(|n| n.to_string_lossy())
-                        //             .expect("can't have file without name")
-                        //     })
-                        //     .collect();
+                    let elf_data = fs::read(elf.path).unwrap();
 
-                        let mut propagator = ProgressPropagator::new(
-                            self.event_tx.clone(),
-                            flasher.chip().to_compact_string().to_uppercase(),
-                        );
+                    let mut propagator = ProgressPropagator::new(
+                        self.event_tx.clone(),
+                        flasher.chip().to_compact_string().to_uppercase(),
+                    );
 
-                        if let Err(e) =
-                            flasher.write_bins_to_flash(&rom_segs, Some(&mut propagator))
-                        {
+                    if elf.ram {
+                        if let Err(e) = flasher.load_elf_to_ram(&elf_data, Some(&mut propagator)) {
                             // TODO show on UI
                             self.event_tx
                                 .send(EspEvent::Error(format!("espflash error: {e}")).into())
                                 .map_err(|_| SerialError::FailedSend)?;
-                            error!("Error during flashing: {e}");
+                            error!("Error during RAM load: {e}");
                         }
-
-                        self.event_tx
-                            .send(EspEvent::PortReturned.into())
-                            .map_err(|_| SerialError::FailedSend)?;
                     } else {
-                        self.event_tx
-                            .send(
-                                EspEvent::Error(
-                                    "Not flashing! ESP variant doesn't match expected!".to_owned(),
-                                )
-                                .into(),
+                        if let Ok(esp_info) = flasher.device_info() {
+                            let flash_data = FlashData::new(
+                                elf.bootloader.as_ref().map(AsRef::as_ref),
+                                elf.partition_table.as_ref().map(AsRef::as_ref),
+                                // TODO?
+                                None,
+                                // TODO?
+                                None,
+                                FlashSettings::default(),
+                                0,
                             )
-                            .map_err(|_| SerialError::FailedSend)?;
-                    }
-
-                    flasher.into_serial()
-                };
-
-                self.return_native_port(returned_port)?;
-            }
-            EspCommand::FlashProfile(EspProfile::Elf(elf)) => {
-                // assert!(!elf.path.is_empty(), "expected path");
-
-                let mut status: PortStatus = self.shared_status.load().as_ref().clone();
-
-                let usb_port_info = {
-                    match &status.current_port {
-                        None => unreachable!(),
-                        Some(info) => match &info.port_type {
-                            SerialPortType::UsbPort(e) => e.clone(),
-                            _ => todo!(),
-                        },
-                    }
-                };
-
-                status.inner = InnerPortStatus::LentOut;
-
-                self.shared_status.store(Arc::new(status.clone()));
-
-                self.event_tx
-                    .send(EspEvent::Connecting.into())
-                    .map_err(|_| SerialError::FailedSend)?;
-
-                let lent_port = self
-                    .port
-                    .take_native()
-                    .expect("worker should have port ownership");
-
-                let returned_port = {
-                    let mut flasher = espflash::flasher::Flasher::connect(
-                        lent_port,
-                        usb_port_info,
-                        Some(115200),
-                        true,
-                        !elf.no_verify,
-                        !elf.no_skip,
-                        None,
-                        espflash::connection::reset::ResetAfterOperation::HardReset,
-                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
-                    )?;
-
-                    self.event_tx
-                        .send(
-                            EspEvent::Connected {
-                                chip: flasher.chip().to_compact_string().to_uppercase(),
-                            }
-                            .into(),
-                        )
-                        .map_err(|_| SerialError::FailedSend)?;
-
-                    let matches = elf.expected_chip.map_or(true, |expected| {
-                        if expected == flasher.chip() {
-                            true
-                        } else {
-                            warn!("Not acting! Chip doesn't match!");
-                            false
-                        }
-                    });
-
-                    if matches {
-                        if let Some(baud) = elf.upload_baud {
-                            flasher.change_baud(baud)?;
-                        }
-
-                        let elf_data = fs::read(elf.path).unwrap();
-
-                        let mut propagator = ProgressPropagator::new(
-                            self.event_tx.clone(),
-                            flasher.chip().to_compact_string().to_uppercase(),
-                        );
-
-                        if elf.ram {
-                            if let Err(e) =
-                                flasher.load_elf_to_ram(&elf_data, Some(&mut propagator))
-                            {
+                            .unwrap();
+                            if let Err(e) = flasher.load_elf_to_flash(
+                                &elf_data,
+                                flash_data,
+                                Some(&mut propagator),
+                                esp_info.crystal_frequency,
+                            ) {
                                 // TODO show on UI
                                 self.event_tx
                                     .send(EspEvent::Error(format!("espflash error: {e}")).into())
                                     .map_err(|_| SerialError::FailedSend)?;
-                                error!("Error during RAM load: {e}");
-                            }
-                        } else {
-                            if let Ok(esp_info) = flasher.device_info() {
-                                let flash_data = FlashData::new(
-                                    elf.bootloader.as_ref().map(AsRef::as_ref),
-                                    elf.partition_table.as_ref().map(AsRef::as_ref),
-                                    // TODO?
-                                    None,
-                                    // TODO?
-                                    None,
-                                    FlashSettings::default(),
-                                    0,
-                                )
-                                .unwrap();
-                                if let Err(e) = flasher.load_elf_to_flash(
-                                    &elf_data,
-                                    flash_data,
-                                    Some(&mut propagator),
-                                    esp_info.crystal_frequency,
-                                ) {
-                                    // TODO show on UI
-                                    self.event_tx
-                                        .send(
-                                            EspEvent::Error(format!("espflash error: {e}")).into(),
-                                        )
-                                        .map_err(|_| SerialError::FailedSend)?;
-                                    error!("Error during flashing: {e}");
-                                }
+                                error!("Error during flashing: {e}");
                             }
                         }
-
-                        self.event_tx
-                            .send(EspEvent::PortReturned.into())
-                            .map_err(|_| SerialError::FailedSend)?;
-                    } else {
-                        self.event_tx
-                            .send(
-                                EspEvent::Error(
-                                    "Not flashing! ESP variant doesn't match expected!".to_owned(),
-                                )
-                                .into(),
-                            )
-                            .map_err(|_| SerialError::FailedSend)?;
                     }
-
-                    flasher.into_serial()
-                };
-
-                self.return_native_port(returned_port)?;
-            }
-            EspCommand::EraseFlash => {
-                let mut status: PortStatus = self.shared_status.load().as_ref().clone();
-
-                let usb_port_info = {
-                    match &status.current_port {
-                        None => unreachable!(),
-                        Some(info) => match &info.port_type {
-                            SerialPortType::UsbPort(e) => e.clone(),
-                            _ => todo!(),
-                        },
-                    }
-                };
-
-                status.inner = InnerPortStatus::LentOut;
-
-                self.shared_status.store(Arc::new(status.clone()));
-
-                self.event_tx
-                    .send(EspEvent::Connecting.into())
-                    .map_err(|_| SerialError::FailedSend)?;
-
-                let lent_port = self
-                    .port
-                    .take_native()
-                    .expect("worker should have port ownership");
-
-                let returned_port = {
-                    let mut flasher = espflash::flasher::Flasher::connect(
-                        lent_port,
-                        usb_port_info,
-                        Some(115200),
-                        true,
-                        true,
-                        true,
-                        None,
-                        espflash::connection::reset::ResetAfterOperation::HardReset,
-                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
-                    )?;
-
-                    let esp_chip = flasher.chip();
 
                     self.event_tx
+                        .send(EspEvent::PortReturned.into())
+                        .map_err(|_| SerialError::FailedSend)?;
+                } else {
+                    self.event_tx
                         .send(
-                            EspEvent::EraseStart {
-                                chip: esp_chip.to_compact_string().to_uppercase(),
-                            }
+                            EspEvent::Error(
+                                "Not flashing! ESP variant doesn't match expected!".to_owned(),
+                            )
                             .into(),
                         )
                         .map_err(|_| SerialError::FailedSend)?;
+                }
 
-                    if let Ok(()) = flasher.erase_flash() {
-                        self.event_tx
-                            .send(
-                                EspEvent::EraseSuccess {
-                                    chip: esp_chip.to_compact_string().to_uppercase(),
-                                }
-                                .into(),
-                            )
-                            .map_err(|_| SerialError::FailedSend)?;
-                    }
-
-                    flasher.into_serial()
-                };
-
-                self.return_native_port(returned_port)?;
+                flasher.into_serial()
+            }
+            EspCommand::EraseFlash => {
+                let mut flasher = self.connect_esp_flasher(lent_port, usb_port_info, true, true)?;
+                let esp_chip = flasher.chip();
+                let chip = esp_chip.to_compact_string().to_uppercase();
 
                 self.event_tx
-                    .send(EspEvent::PortReturned.into())
+                    .send(EspEvent::EraseStart { chip: chip.clone() }.into())
                     .map_err(|_| SerialError::FailedSend)?;
+
+                if let Ok(()) = flasher.erase_flash() {
+                    self.event_tx
+                        .send(EspEvent::EraseSuccess { chip }.into())
+                        .map_err(|_| SerialError::FailedSend)?;
+                }
+
+                flasher.into_serial()
             }
-        }
+        };
+
+        self.return_native_port(returned_port)?;
+        self.event_tx
+            .send(EspEvent::PortReturned.into())
+            .map_err(|_| SerialError::FailedSend)?;
 
         Ok(())
     }
@@ -1162,6 +973,37 @@ impl SerialWorker {
             .map_err(|_| SerialError::FailedSend)?;
 
         Ok(())
+    }
+    #[cfg(feature = "espflash")]
+    fn connect_esp_flasher(
+        &self,
+        lent_port: NativePort,
+        usb_port_info: serialport::UsbPortInfo,
+        verify: bool,
+        skip: bool,
+    ) -> Result<espflash::flasher::Flasher, SerialError> {
+        use compact_str::ToCompactString;
+
+        let flasher = espflash::flasher::Flasher::connect(
+            lent_port,
+            usb_port_info,
+            Some(115200),
+            true,
+            verify,
+            skip,
+            None,
+            espflash::connection::reset::ResetAfterOperation::HardReset,
+            espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+        )?;
+
+        let esp_chip = flasher.chip();
+        let chip = esp_chip.to_compact_string().to_uppercase();
+
+        self.event_tx
+            .send(EspEvent::Connected { chip }.into())
+            .map_err(|_| SerialError::FailedSend)?;
+
+        Ok(flasher)
     }
 }
 
