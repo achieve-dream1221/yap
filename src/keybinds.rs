@@ -50,6 +50,7 @@ ctrl-d = "toggle-indices"
 ctrl-f = "reload-colors"
 F20 = "esp-hard-reset"
 F21 = "esp-bootloader"
+shift-F21 = "esp-bootloader-unchecked"
 ctrl-z = "esp-bootloader-unchecked"
 
 [macros]
@@ -65,8 +66,6 @@ F18 = "PIO Core v2"
 "#;
 
 use crate::macros::MacroNameTag;
-
-// TODO use ; to chain macros
 
 #[derive(Serialize, Deserialize)]
 pub struct Keybinds {

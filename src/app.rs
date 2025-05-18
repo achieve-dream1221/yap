@@ -1321,7 +1321,7 @@ impl App {
 
             Some(PopupMenu::Macros) => {
                 if self.popup_table_state.selected()
-                    >= Some(self.macros.visible_len().saturating_sub(1))
+                    >= self.macros.last_index_checked()
                 {
                     self.popup_table_state.select(None);
                     self.popup_single_line_state.active = true;

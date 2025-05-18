@@ -13,14 +13,32 @@ use crate::tui::buffer::LineEnding;
 
 /// Trait that provides simple methods to get the last valid index of a collection or slice.
 pub trait LastIndex {
+    /// Returns the index of the last element in the collection.
+    ///
+    /// Returns `None` if the collection is empty.
+    ///
+    /// Under most cirumstances, this should be the only trait function you need to define.
+    fn last_index_checked(&self) -> Option<usize>;
     /// Returns `true` if the given index matches the index of the last element in the collection.
     ///
     /// Returns `false` if the index doesn't match, or if the collection is empty.
-    fn last_index_eq(&self, index: usize) -> bool;
+    fn last_index_eq(&self, index: usize) -> bool {
+        if let Some(last_index) = self.last_index_checked() {
+            last_index == index
+        } else {
+            false
+        }
+    }
     /// Returns `true` if the given index matches or is greater than the index of the last element in the collection.
     ///
     /// Returns `false` if the index doesn't fit either condition, or if the collection is empty.
-    fn last_index_eq_or_greater(&self, index: usize) -> bool;
+    fn last_index_eq_or_under(&self, index: usize) -> bool {
+        if let Some(last_index) = self.last_index_checked() {
+            index >= last_index
+        } else {
+            false
+        }
+    }
     /// Returns the index of the last element in the collection.
     ///
     /// **Panics** if the collection is empty.
@@ -28,30 +46,8 @@ pub trait LastIndex {
         self.last_index_checked()
             .expect("empty collection; no final element exists")
     }
-    /// Returns the index of the last element in the collection.
-    ///
-    /// Returns `None` if the collection is empty.
-    fn last_index_checked(&self) -> Option<usize>;
 }
 impl<T> LastIndex for [T] {
-    fn last_index_eq(&self, index: usize) -> bool {
-        if self.is_empty() {
-            false
-        } else if index == self.len() - 1 {
-            true
-        } else {
-            false
-        }
-    }
-    fn last_index_eq_or_greater(&self, index: usize) -> bool {
-        if self.is_empty() {
-            false
-        } else if index >= self.len() - 1 {
-            true
-        } else {
-            false
-        }
-    }
     fn last_index_checked(&self) -> Option<usize> {
         if self.is_empty() {
             None

@@ -24,7 +24,9 @@ use tracing::{error, info};
 use tui_input::Input;
 
 use crate::{
-    keybinds::Keybinds, traits::HasEscapedBytes, tui::single_line_selector::SingleLineSelectorState,
+    keybinds::Keybinds,
+    traits::{HasEscapedBytes, LastIndex},
+    tui::single_line_selector::SingleLineSelectorState,
 };
 
 mod macro_nametag;
@@ -343,6 +345,18 @@ impl Macros {
         Ok(())
     }
 }
+
+impl LastIndex for Macros {
+    fn last_index_checked(&self) -> Option<usize> {
+        let visible = self.visible_len();
+        if visible == 0 {
+            None
+        } else {
+            Some(visible - 1)
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct MacroFile {
     #[serde(default)]

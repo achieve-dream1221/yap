@@ -496,24 +496,6 @@ impl LastIndex for EspFlashState {
             Some((self.elfs.len() + self.bins.len()) - 1)
         }
     }
-    fn last_index_eq(&self, index: usize) -> bool {
-        if self.is_empty() {
-            false
-        } else if index == (self.elfs.len() + self.bins.len()) - 1 {
-            true
-        } else {
-            false
-        }
-    }
-    fn last_index_eq_or_greater(&self, index: usize) -> bool {
-        if self.is_empty() {
-            false
-        } else if index >= (self.elfs.len() + self.bins.len()) - 1 {
-            true
-        } else {
-            false
-        }
-    }
 }
 
 pub const ESPFLASH_BUTTON_COUNT: usize = 4;

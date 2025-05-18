@@ -102,7 +102,7 @@ impl StatefulWidget for &SingleLineSelector<'_> {
     type State = SingleLineSelectorState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        if self.items.last_index_eq_or_greater(state.current_index) {
+        if self.items.last_index_eq_or_under(state.current_index) {
             state.current_index = self.items.last_index();
         }
 
