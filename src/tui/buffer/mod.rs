@@ -1,34 +1,37 @@
-use std::{borrow::Cow, cmp::Ordering, collections::BTreeSet, iter::Peekable};
+use std::{borrow::Cow, cmp::Ordering, collections::BTreeSet, iter::Peekable, time::Instant};
 
 use ansi_to_tui::{IntoText, LossyFlavor};
 use bstr::{ByteSlice, ByteVec};
 use buf_line::{BufLine, LineType};
 use chrono::{DateTime, Local};
 use compact_str::{CompactString, ToCompactString};
+use hex_spans::{ALPHA_LOWER, ALPHA_UPPER, ASCII_PRINTABLE, HEX_UPPER};
 use itertools::{Either, Itertools};
 use memchr::memmem::Finder;
 use ratatui::{
-    layout::Size,
+    layout::{Rect, Size},
     style::{Color, Style, Stylize, palette::material::PINK},
+    symbols,
     text::{Line, Span, Text, ToText},
     widgets::{
         Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
         StatefulWidget, Widget, Wrap,
     },
 };
-use ratatui_macros::{line, span};
+use ratatui_macros::{horizontal, line, span, vertical};
 use tracing::{debug, error, info, warn};
 
 use crate::{
     changed,
     errors::YapResult,
-    settings::Rendering,
-    traits::{ByteSuffixCheck, LineHelpers, LineMutator},
+    settings::{HexHighlightStyle, Rendering},
+    traits::{ByteSuffixCheck, LineHelpers, LineMutator, ToggleBool},
 };
 
 use super::color_rules::ColorRules;
 
 mod buf_line;
+mod hex_spans;
 // mod wrap;
 
 // use crate::app::{LINE_ENDINGS, LINE_ENDINGS_DEFAULT};
@@ -38,6 +41,8 @@ pub struct BufferState {
     vert_scroll: usize,
     scrollbar_state: ScrollbarState,
     stuck_to_bottom: bool,
+    hex_bytes_per_line: u8,
+    hex_section_width: u16,
 }
 
 impl UserEcho {
@@ -166,6 +171,9 @@ impl From<&[u8]> for LineEnding {
 // (i broke it once before with tests passing, so, bleh)
 
 #[derive(Debug)]
+pub struct HexState {}
+
+#[derive(Debug)]
 pub struct Buffer {
     raw_buffer: Vec<u8>,
     // Time-tagged indexes into `raw_buffer`, from each input from the port.
@@ -225,6 +233,8 @@ impl Buffer {
                 vert_scroll: 0,
                 scrollbar_state: ScrollbarState::default(),
                 stuck_to_bottom: false,
+                hex_bytes_per_line: 0,
+                hex_section_width: 0,
             },
             rendering,
             line_ending: line_ending.into(),
@@ -597,6 +607,10 @@ impl Buffer {
         let should_rewrap_lines =
             changed!(old, new, timestamps) || changed!(old, new, show_indices);
 
+        if changed!(old, new, bytes_per_line) {
+            self.determine_bytes_per_line(new.bytes_per_line.into());
+        }
+
         if should_reconsume {
             self.reconsume_raw_buffer();
         } else if should_rewrap_lines {
@@ -804,12 +818,21 @@ impl Buffer {
     /// Returns the total amount of lines that can be rendered,
     /// taking into account if text wrapping is enabled or not.
     pub fn combined_height(&self) -> usize {
-        if self.rendering.wrap_text {
-            self.buflines_iter()
-                .map(|l| l.get_line_height() as usize)
-                .sum()
+        if self.raw_buffer.is_empty() {
+            return 0;
+        }
+        if !self.rendering.hex_view {
+            if self.rendering.wrap_text {
+                self.buflines_iter()
+                    .map(|l| l.get_line_height() as usize)
+                    .sum()
+            } else {
+                self.buflines_iter().count()
+            }
         } else {
-            self.buflines_iter().count()
+            let header_margin = { if self.rendering.hex_view_header { 2 } else { 0 } };
+            (self.raw_buffer.len() as f64 / (self.state.hex_bytes_per_line as f64)).ceil() as usize
+                + header_margin
         }
     }
 
@@ -829,6 +852,7 @@ impl Buffer {
             terminal_size
         };
         self.update_wrapped_line_heights();
+        self.determine_bytes_per_line(self.rendering.bytes_per_line.into());
         self.scroll_by(0);
         Ok(())
     }
@@ -1148,15 +1172,681 @@ mod tests {
 
 // }
 
+struct AlternatingStyles(bool, Style, Style);
+
+#[inline]
+fn byte_color_ascii(byte: u8, colors: AlternatingStyles) -> Style {
+    match byte {
+        // newlines
+        b'\n' | b'\r' => Style::new().black().on_light_green(),
+        // control chars
+        0x1..=0x1F | 0x7F => Style::new().black().on_light_blue(),
+        // digit
+        0x30..=0x39 => Style::new().red(),
+        // brackets/braces/parenthenses
+        0x28 | 0x29 | 0x3C | 0x3E | 0x5B | 0x5D | 0x7B | 0x7D => Style::new().yellow(),
+        // punctuation
+        0x21..=0x2F | 0x3A..=0x40 | 0x5B..=0x60 | 0x7B..=0x7E => Style::new().light_yellow(),
+        // actual text
+        0x41..=0x5A | 0x61..=0x7A => {
+            if colors.0 {
+                colors.1
+            } else {
+                colors.2
+            }
+        }
+        b' ' => Style::new().green(),
+
+        _ => Style::new().dark_gray(),
+    }
+}
+
+fn style_select(byte: u8, colors: AlternatingStyles, config_style: HexHighlightStyle) -> Style {
+    match config_style {
+        HexHighlightStyle::None => Style::new(),
+        HexHighlightStyle::DarkenNulls => match byte {
+            0x00 => Style::new().dark_gray(),
+            _ => Style::new(),
+        },
+        HexHighlightStyle::HighlightAsciiSymbols => byte_color_ascii(byte, colors),
+        HexHighlightStyle::StyleA => match byte {
+            0x00 => Style::new().dark_gray(),
+            0x01..=0x1F => Style::new().blue(),
+            0x20..=0x3F => Style::new().red(),
+            0x40..=0x5F => Style::new().green(),
+            0x60..=0x7F => Style::new().cyan(),
+            0x80..=0x9F => Style::new().yellow(),
+            0xA0..=0xBF => Style::new().light_blue(),
+            0xC0..=0xDF => Style::new().light_red(),
+            0xE0..=0xFF => Style::new().light_green(),
+        },
+    }
+}
+
+impl Buffer {
+    fn buffer_hex_digits(&self) -> u16 {
+        hex_digits(self.raw_buffer.len()).max(8) as u16
+    }
+    fn determine_bytes_per_line(&mut self, max_bytes: Option<u8>) {
+        let buffer_hex_digits = self.buffer_hex_digits();
+
+        let optional_spacing = 2;
+        let line_width = 1;
+
+        let (bytes_per_line, hex_area_width) = {
+            let mut hex_area_width = 0;
+
+            let mut remaining_width = self.last_terminal_size.width
+                .saturating_sub(optional_spacing)
+                .saturating_sub(buffer_hex_digits)
+                .saturating_sub(line_width)
+                .saturating_sub(optional_spacing)
+                .saturating_sub(line_width) // line after hex
+                .saturating_sub(1) // scrollbar
+            ;
+            if remaining_width == 0 {
+                return;
+            }
+
+            let mut bytes_per_line = 0;
+            for free_cell in 0..remaining_width {
+                bytes_per_line += 1;
+                hex_area_width += 2; // byte as str
+                remaining_width = remaining_width
+                    .saturating_sub(1) // ASCII cell
+                    .saturating_sub(2) // byte as str
+                ;
+                if let Some(max_per_line) = max_bytes {
+                    if bytes_per_line == max_per_line {
+                        break;
+                    }
+                }
+                // if true && bytes_per_line == 16 {
+                //     break;
+                // }
+                if remaining_width <= 3 {
+                    break;
+                }
+                hex_area_width += 1; // space between bytes
+                remaining_width = remaining_width
+                    .saturating_sub(1) // space between bytes
+                ;
+
+                if bytes_per_line != 0 && bytes_per_line % 8 == 0 {
+                    if remaining_width < 4 {
+                        break;
+                    }
+                    hex_area_width += 1; // extra space
+                    remaining_width = remaining_width
+                        .saturating_sub(1) // extra space
+                    ;
+                }
+
+                if remaining_width < 3 {
+                    break;
+                }
+            }
+            (bytes_per_line, hex_area_width)
+        };
+
+        self.state.hex_bytes_per_line = bytes_per_line;
+        self.state.hex_section_width = hex_area_width;
+    }
+
+    pub fn render_hex(&mut self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
+        let start = Instant::now();
+        // Debug: print the height of the area
+        let [labels, sep_line_area, hex_area] = if self.rendering.hex_view_header {
+            vertical![==1, ==1, *=1].areas(area)
+        } else {
+            [Rect::default(), Rect::default(), area]
+        };
+
+        let [_, aaaaaa, _, dunno] = horizontal![==13, *=3, *=1, *=1].areas(sep_line_area);
+
+        let buffer_hex_digits = self.buffer_hex_digits();
+        let optional_spacing = 2;
+        let line_width = 1;
+        let bytes_per_line = self.state.hex_bytes_per_line;
+        let hex_area_width = self.state.hex_section_width;
+
+        // let bytes_per_line = 8 * 3;
+
+        let [
+            addresses_area,
+            line_1_area,
+            opt_spacing_1,
+            hex_area,
+            opt_spacing_2,
+            line_2_area,
+            ascii_area,
+            mut scrollbar_area
+        ] = horizontal![==buffer_hex_digits,==line_width, ==optional_spacing,==hex_area_width, ==optional_spacing,==line_width, ==bytes_per_line as u16, ==1]
+            .areas(hex_area);
+
+        let [offset_text,
+            _,
+            _,
+            hex_text,
+            _,
+            _,
+            ascii_text,
+            _,
+        ] =
+            horizontal![==buffer_hex_digits,==line_width, ==optional_spacing, ==hex_area_width, ==optional_spacing,==line_width, ==bytes_per_line as u16, ==1]
+                .areas(labels);
+
+        if self.rendering.hex_view_header {
+            Line::raw("Offset").centered().render(offset_text, buf);
+            byte_markers(bytes_per_line, hex_text, buf);
+            // Line::raw("Incoming Data:").render(hex_text, buf);
+            Line::raw("ASCII").centered().render(ascii_text, buf);
+            Block::new()
+                .borders(Borders::TOP)
+                .border_style(Style::new().dark_gray())
+                .render(sep_line_area, buf);
+        }
+        scrollbar_area.height = area.height;
+        scrollbar_area.y = 0;
+
+        let height = hex_area.height as usize;
+
+        let scroll = self.state.vert_scroll;
+
+        let vert_block = Block::new()
+            .borders(Borders::LEFT)
+            .border_style(Style::new().dark_gray());
+
+        let vert_line = &vert_block;
+
+        let vert_area = Rect {
+            height: area.height,
+            width: 1,
+            x: 0,
+            y: 0,
+        };
+
+        vert_line.render(
+            Rect {
+                x: line_1_area.x,
+                ..vert_area
+            },
+            buf,
+        );
+
+        vert_line.render(
+            Rect {
+                x: line_2_area.x,
+                ..vert_area
+            },
+            buf,
+        );
+
+        if self.combined_height() > hex_area.height as usize {
+            let vert_block = Block::new()
+                .borders(Borders::LEFT)
+                .border_style(Style::new().reset());
+
+            vert_block.render(
+                Rect {
+                    x: scrollbar_area.x,
+                    ..vert_area
+                },
+                buf,
+            );
+        } else {
+            vert_line.render(
+                Rect {
+                    x: scrollbar_area.x,
+                    ..vert_area
+                },
+                buf,
+            );
+        }
+
+        // Block::new()
+        //     .borders(Borders::TOP)
+        //     .border_set(symbols::border::Set {
+        //         top_left: symbols::line::CROSS,
+        //         top_right: symbols::line::CROSS,
+        //         ..symbols::border::PLAIN
+        //     })
+        //     .border_style(Style::new().dark_gray())
+        //     .render(aaaaaa, buf);
+        debug!("1: {:?}", start.elapsed());
+        let start = Instant::now();
+        render_offsets(
+            &self.raw_buffer,
+            bytes_per_line,
+            self.state.vert_scroll,
+            addresses_area,
+            buf,
+        );
+
+        render_bytes(
+            &self.raw_buffer,
+            bytes_per_line,
+            self.state.vert_scroll,
+            self.rendering.hex_view_highlights,
+            hex_area,
+            buf,
+        );
+
+        render_ascii(
+            &self.raw_buffer,
+            bytes_per_line,
+            self.state.vert_scroll,
+            self.rendering.hex_view_highlights,
+            ascii_area,
+            buf,
+        );
+        debug!("2: {:?}", start.elapsed());
+
+        if !self.state.stuck_to_bottom {
+            let scroll_notice = Line::raw("More... Shift+PgDn to jump to newest").dark_gray();
+            let notice_area = {
+                let mut rect = area.clone();
+                rect.y = rect.bottom().saturating_sub(1);
+                rect.height = 1;
+                rect
+            };
+            Clear.render(notice_area, buf);
+            scroll_notice.render(notice_area, buf);
+        }
+
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        scrollbar.render(scrollbar_area, buf, &mut self.state.scrollbar_state);
+
+        // render_hex_bytes(&self.raw_buffer, 16, hex_area, buf);
+
+        // for (idx, i) in ((scroll * 16)..(scroll + height) * 16)
+        //     .step_by(16)
+        //     .enumerate()
+        // {
+        //     let area = Rect {
+        //         height: 1,
+        //         width: addresses_area.width,
+        //         y: (idx as u16) + 2,
+        //         ..Default::default()
+        //     };
+
+        //     let current_width = hex_width(i);
+
+        //     let address_line = {
+        //         let mut spans = Vec::new();
+        //         if current_width < 8 {
+        //             for meow in 0..(8 - current_width) {
+        //                 spans.push(Span::styled("0", Style::new().dark_gray()));
+        //             }
+        //         }
+
+        //         spans.push(Span::styled(format!("{i:X}"), Style::new()));
+        //         // spans.push(Span::styled(":", Style::new()));
+
+        //         Line::from(spans)
+        //     };
+
+        //     address_line.render(area, buf);
+        // }
+    }
+}
+
+fn render_ascii(
+    slice: &[u8],
+    bytes_per_line: u8,
+    scroll: usize,
+    hex_highlight_style: HexHighlightStyle,
+    area: Rect,
+    buf: &mut ratatui::prelude::Buffer,
+) {
+    // This function renders the ASCII representation of the byte lines in the hex viewer.
+    //
+    // Each line only shows printable ASCII characters (0x20..=0x7E), other bytes are shown as '.'.
+    // - slice: the bytes to render
+    // - bytes_per_line: number of bytes per row
+    // - scroll: starting row index (for scrolling/paging)
+    // - area: ratatui area to render in
+    // - buf: output buffer
+
+    let total_lines = area.height.min(
+        ((slice
+            .len()
+            .saturating_sub(scroll * (bytes_per_line as usize))) as f64
+            / (bytes_per_line as f64))
+            .ceil() as u16,
+    );
+
+    let mut style_bool = false;
+    let styles = (Style::new().white(), Style::new().gray());
+
+    for line in 0..total_lines {
+        style_bool.flip();
+        let offset = (scroll + line as usize) * (bytes_per_line as usize);
+        let line_bytes = &slice[offset..slice.len().min(offset + bytes_per_line as usize)];
+
+        let mut ascii_spans = Vec::with_capacity(bytes_per_line as usize);
+        for &byte in line_bytes {
+            // let ch = if (0x20..=0x7e).contains(&byte) {
+            //     byte as char
+            // } else {
+            //     '.'
+            // };
+            // ascii_spans.push(Span::styled(
+            //     ch.to_string(),
+            //     if style_bool { styles.0 } else { styles.1 },
+            // ));
+            let span_style = style_select(
+                byte,
+                AlternatingStyles(style_bool, Style::new().white(), Style::new().gray()),
+                hex_highlight_style,
+            );
+            let ch = match byte {
+                0x20 => Span::styled("_", span_style),
+                0x21..=0x7E => Span::styled(ASCII_PRINTABLE[(byte - 0x20) as usize], span_style),
+                _ => Span::styled(".", span_style),
+            };
+            // let ch = if (0x20..=0x7e).contains(&byte) {
+            //     Span::styled(
+            //         (byte as char).to_string(),
+            //         if style_bool { styles.0 } else { styles.1 },
+            //     )
+            // } else {
+            //     Span::styled(".", Style::new().dark_gray())
+            // };
+            ascii_spans.push(ch);
+        }
+        // Pad to full width if line is short
+        for _ in line_bytes.len()..(bytes_per_line as usize) {
+            ascii_spans.push(Span::raw(" "));
+        }
+
+        let row_rect = Rect {
+            x: area.x,
+            y: area.y + line,
+            width: area.width,
+            height: 1,
+        };
+        Line::from(ascii_spans).render(row_rect, buf);
+    }
+}
+
+fn byte_markers(bytes_per_line: u8, area: Rect, buf: &mut ratatui::prelude::Buffer) {
+    // This function renders a row of hex offset values as byte markers for the columns in the hex view.
+    //
+    // Example for bytes_per_line = 16:
+    //   00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F
+    //
+    // 'area' should be a single line tall & wide enough for the column.
+
+    let mut spans = Vec::with_capacity(bytes_per_line as usize * 2 - 1);
+    for i in 0..bytes_per_line {
+        if i != 0 && i % 8 == 0 {
+            // Extra space between 8th and 9th column for readability
+            spans.push(ratatui::text::Span::raw("  "));
+        } else if i != 0 {
+            spans.push(ratatui::text::Span::raw(" "));
+        }
+
+        spans.push(ratatui::text::Span::styled(
+            format!("{:02X}", i),
+            Style::default().dark_gray(),
+        ));
+    }
+    let marker_line = Line::from(spans);
+
+    debug_assert!(
+        marker_line.width() <= area.width as usize,
+        "byte_markers line width ({}) exceeds area width ({})",
+        marker_line.width(),
+        area.width
+    );
+
+    // Render into the given area (y = area.y)
+    marker_line.render(area, buf);
+}
+
+fn render_offsets(
+    slice: &[u8],
+    bytes_per_line: u8,
+    scroll: usize,
+    area: Rect,
+    buf: &mut ratatui::prelude::Buffer,
+) {
+    // Render the offset (address) column for the hex view.
+    //
+    // Each line in the hex display starts with its offset rendered as 8-digit hexadecimal,
+    // e.g. 00000000, 00000010, etc.
+    //
+    // - slice: The bytes to render.
+    // - bytes_per_line: Number of bytes per row (usually 16).
+    // - scroll: Starting row index (for paging/scrolling).
+    // - area: The Rect area for the offset column (should be wide enough for 8 digits & padding).
+    // - buf: The ratatui Buffer in which to render.
+    //
+    // Note: Y coordinate of `area` should be the top-most row to render.
+    //       This draws vertically downward, one offset per line.
+
+    let mut style_bool = false;
+
+    let styles = (Style::new().light_yellow(), Style::new().yellow());
+
+    let total_rows = area.height.min(
+        ((slice
+            .len()
+            .saturating_sub(scroll * (bytes_per_line as usize))) as f64
+            / (bytes_per_line as f64))
+            .ceil() as u16,
+    );
+    for i in 0..total_rows {
+        style_bool.flip();
+        let line_index = scroll + (i as usize);
+        let offset = line_index * (bytes_per_line as usize);
+        let rect = Rect {
+            x: area.x,
+            y: area.y + i,
+            width: area.width,
+            height: 1,
+        };
+
+        let dark_zeroes = "0".repeat(rect.width as usize);
+        Line::styled(dark_zeroes, Style::new().dark_gray()).render(rect, buf);
+        let offset_str = format!("{offset:X}");
+        Line::from(vec![Span::styled(
+            offset_str,
+            if style_bool { styles.0 } else { styles.1 },
+        )])
+        .right_aligned()
+        .render(rect, buf);
+        // let offset_line = ;
+        // offset_line.render(rect, buf);
+    }
+}
+
+fn render_bytes(
+    slice: &[u8],
+    bytes_per_line: u8,
+    scroll: usize,
+    hex_highlight_style: HexHighlightStyle,
+    area: Rect,
+    buf: &mut ratatui::prelude::Buffer,
+) {
+    // Render the bytes as hexadecimal only, with a space between each byte,
+    // and an extra space every 8 bytes for readability.
+    //
+    // Example (bytes_per_line = 16):
+    //   00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F
+    //
+    // - slice: bytes to render
+    // - bytes_per_line: number of bytes per row (e.g., 16)
+    // - scroll: starting row index
+    // - area: destination area in ratatui buffer
+    // - buf: the output ratatui buffer
+
+    let total_lines = area.height.min(
+        ((slice
+            .len()
+            .saturating_sub(scroll * (bytes_per_line as usize))) as f64
+            / (bytes_per_line as f64))
+            .ceil() as u16,
+    );
+
+    let mut style_bool = false;
+
+    let styles = (Style::new().white(), Style::new().gray());
+
+    for line in 0..total_lines {
+        style_bool.flip();
+        let offset = (scroll + line as usize) * (bytes_per_line as usize);
+        let line_bytes = &slice[offset..slice.len().min(offset + bytes_per_line as usize)];
+
+        let mut spans = Vec::with_capacity(line_bytes.len() * 3); // allow for spaces
+        for (i, byte) in line_bytes.iter().enumerate() {
+            if i != 0 {
+                // Single space between bytes, and extra space after every 8 bytes (except at start)
+                if i % 8 == 0 {
+                    spans.push(Span::raw("  "));
+                } else {
+                    spans.push(Span::raw(" "));
+                }
+            }
+            let span_style = style_select(
+                *byte,
+                AlternatingStyles(style_bool, Style::new().white(), Style::new().gray()),
+                hex_highlight_style,
+            );
+            spans.push(Span::styled(
+                HEX_UPPER[(*byte) as usize],
+                // format!("{:02X}", byte),
+                span_style,
+            ));
+        }
+        // // Pad to fill the width up to bytes_per_line
+        // for i in line_bytes.len()..(bytes_per_line as usize) {
+        //     if i != 0 {
+        //         if i % 8 == 0 {
+        //             spans.push(Span::raw("  "));
+        //         } else {
+        //             spans.push(Span::raw(" "));
+        //         }
+        //     }
+        //     spans.push(Span::raw("  "));
+        // }
+
+        let row_rect = Rect {
+            x: area.x,
+            y: area.y + line,
+            width: area.width,
+            height: 1,
+        };
+        Line::from(spans).render(row_rect, buf);
+    }
+}
+
+// fn render_hex_bytes(
+//     slice: &[u8],
+//     bytes_per_line: u8,
+//     area: Rect,
+//     buf: &mut ratatui::prelude::Buffer,
+// ) {
+//     // Render the bytes as a standard hex/ascii view within the given `area`.
+//     // Each line shows: address | hex bytes | ascii representation.
+
+//     // Calculate relevant derived values
+//     let total_lines = area
+//         .height
+//         .min(((slice.len() as f64) / (bytes_per_line as f64)).ceil() as u16);
+//     let hex_chars_per_byte = 2; // "AB"
+//     let spacing = 1u16; // spaces between groups
+//     let hex_section_width = (bytes_per_line as u16) * (hex_chars_per_byte + spacing);
+
+//     for line in 0..total_lines {
+//         let offset = (line as usize) * (bytes_per_line as usize);
+//         let line_bytes = &slice[offset..slice.len().min(offset + bytes_per_line as usize)];
+
+//         // Offset column area
+//         let offset_area = Rect {
+//             x: area.x,
+//             y: area.y + line,
+//             width: 8,
+//             height: 1,
+//         };
+
+//         // Hex area
+//         let hex_area_start = offset_area.x + offset_area.width + 1;
+//         let hex_area = Rect {
+//             x: hex_area_start,
+//             y: offset_area.y,
+//             width: hex_section_width,
+//             height: 1,
+//         };
+
+//         // ASCII area
+//         let ascii_area = Rect {
+//             x: hex_area.x + hex_area.width + 2,
+//             y: hex_area.y,
+//             width: bytes_per_line as u16,
+//             height: 1,
+//         };
+
+//         // Render offset
+//         let offset_str = format!("{:08X}", offset);
+//         let offset_line = Line::from(vec![Span::styled(offset_str, Style::default().yellow())]);
+//         offset_line.render(offset_area, buf);
+
+//         // Render hex bytes
+//         let mut hex_spans = Vec::new();
+//         for (j, b) in line_bytes.iter().enumerate() {
+//             let s = format!("{:02X}", b);
+//             hex_spans.push(Span::raw(s));
+//             if j != (line_bytes.len() - 1) {
+//                 hex_spans.push(Span::raw(" "));
+//             }
+//         }
+//         // Pad incomplete lines
+//         for xx in line_bytes.len()..(bytes_per_line as usize) {
+//             hex_spans.push(Span::raw("  "));
+//             if xx != (bytes_per_line as usize - 1) {
+//                 hex_spans.push(Span::raw(" "));
+//             }
+//         }
+//         let hex_line = Line::from(hex_spans);
+//         hex_line.render(hex_area, buf);
+
+//         // Render ASCII
+//         let mut ascii_spans = Vec::new();
+//         for byte in line_bytes {
+//             let ch = if (0x20..=0x7e).contains(byte) {
+//                 *byte as char
+//             } else {
+//                 '.'
+//             };
+//             ascii_spans.push(Span::raw(format!("{ch}")));
+//         }
+//         // pad ascii, if short
+//         for _ in line_bytes.len()..(bytes_per_line as usize) {
+//             ascii_spans.push(Span::raw(" "));
+//         }
+//         let ascii_line = Line::from(ascii_spans);
+//         ascii_line.render(ascii_area, buf);
+//     }
+// }
+
+/// Calculates the number of hexadecimal digits needed to represent the given value `n`.
+///
+/// The formula essentially computes `floor(log2(n) / 4) + 1`, since each hex digit
+/// represents 4 bits. This ensures at least 1 digit is returned (e.g., for `n == 0`).
+fn hex_digits(n: usize) -> usize {
+    (1 + ((n as f64).log2() / 4.0).floor() as usize).max(1)
+}
+
 /// Maybe StatefulWidget would make more sense? Unsure.
 impl Widget for &mut Buffer {
-    fn render(self, area: ratatui::prelude::Rect, buf: &mut ratatui::prelude::Buffer)
+    fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer)
     where
         Self: Sized,
     {
-        // TODO allow this to work
-        // self.last_terminal_size = area.as_size();
-
         let para = self.terminal_paragraph();
         para.render(area, buf);
 

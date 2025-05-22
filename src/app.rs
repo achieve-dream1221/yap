@@ -930,11 +930,10 @@ impl App {
         };
         match m {
             _ if m == TOGGLE_TEXTWRAP => {
-                self.settings.rendering.wrap_text.flip();
+                let state = pretty_bool(self.settings.rendering.wrap_text.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
                 self.settings.save().unwrap();
-                let state = pretty_bool(self.settings.rendering.wrap_text);
                 self.notifs
                     .notify_str(format!("Toggled Text Wrapping {state}"), Color::Gray);
             }
@@ -959,24 +958,38 @@ impl App {
             // self.serial.esp_restart(None);
             // }
             _ if m == TOGGLE_TIMESTAMPS => {
-                self.settings.rendering.timestamps.flip();
+                let state = pretty_bool(self.settings.rendering.timestamps.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
                 self.settings.save().unwrap();
-                let state = pretty_bool(self.settings.rendering.timestamps);
                 self.notifs
                     .notify_str(format!("Toggled Timestamps {state}"), Color::Gray);
             }
 
             _ if m == TOGGLE_INDICES => {
-                self.settings.rendering.show_indices.flip();
+                let state = pretty_bool(self.settings.rendering.show_indices.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
-                let state = pretty_bool(self.settings.rendering.show_indices);
                 self.notifs.notify_str(
                     format!("Toggled Line Indices + Length {state}"),
                     Color::Gray,
                 );
+            }
+
+            _ if m == TOGGLE_HEX => {
+                let state = pretty_bool(self.settings.rendering.hex_view.flip());
+                self.buffer
+                    .update_render_settings(self.settings.rendering.clone());
+                self.notifs
+                    .notify_str(format!("Toggled Hex View {state}"), Color::Gray);
+            }
+
+            _ if m == TOGGLE_HEX_HEADER => {
+                let state = pretty_bool(self.settings.rendering.hex_view_header.flip());
+                self.buffer
+                    .update_render_settings(self.settings.rendering.clone());
+                self.notifs
+                    .notify_str(format!("Toggled Hex View Header {state}"), Color::Gray);
             }
 
             _ if m == SHOW_MACROS => {
@@ -1320,9 +1333,7 @@ impl App {
             }
 
             Some(PopupMenu::Macros) => {
-                if self.popup_table_state.selected()
-                    >= self.macros.last_index_checked()
-                {
+                if self.popup_table_state.selected() >= self.macros.last_index_checked() {
                     self.popup_table_state.select(None);
                     self.popup_single_line_state.active = true;
                 } else {
@@ -1798,7 +1809,9 @@ impl App {
         self.table_state.scroll_down_by(1);
     }
     pub fn draw(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
+        let start = Instant::now();
         terminal.draw(|frame| self.render_app(frame))?;
+        debug!("A4: {:?}", start.elapsed());
         Ok(())
     }
     fn render_app(&mut self, frame: &mut Frame) {
@@ -1811,6 +1824,7 @@ impl App {
         ])
         .split(frame.area());
 
+        let start = Instant::now();
         match self.menu {
             Menu::PortSelection(_) => {
                 let big_text = BigText::builder()
@@ -1825,14 +1839,15 @@ impl App {
             }
             Menu::Terminal(prompt) => self.terminal_menu(frame, frame.area(), prompt),
         }
+        debug!("a1: {:?}", start.elapsed());
 
-        // let start = Instant::now();
+        let start = Instant::now();
         self.render_popups(frame, frame.area());
-        // debug!("2: {:?}", start.elapsed());
+        debug!("a2: {:?}", start.elapsed());
 
-        // let start = Instant::now();
+        let start = Instant::now();
         self.render_notifs(frame, frame.area());
-        // debug!("3: {:?}", start.elapsed());
+        debug!("a3: {:?}", start.elapsed());
 
         #[cfg(feature = "espflash")]
         self.espflash.render_espflash(frame, frame.area());
@@ -2385,7 +2400,11 @@ impl App {
         // let para = para.scroll((vert_scroll, 0));
         // frame.render_widget(para, terminal_area);
         let start = Instant::now();
-        frame.render_widget(&mut self.buffer, terminal_area);
+        if self.settings.rendering.hex_view {
+            self.buffer.render_hex(terminal_area, frame.buffer_mut());
+        } else {
+            frame.render_widget(&mut self.buffer, terminal_area);
+        }
         // debug!("1: {:?}", start.elapsed());
         let start = Instant::now();
 

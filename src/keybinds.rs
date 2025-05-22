@@ -15,6 +15,8 @@ pub mod methods {
     pub const TOGGLE_RTS: &str = "toggle-rts";
     pub const TOGGLE_TIMESTAMPS: &str = "toggle-timestamps";
     pub const TOGGLE_INDICES: &str = "toggle-indices";
+    pub const TOGGLE_HEX: &str = "toggle-hex";
+    pub const TOGGLE_HEX_HEADER: &str = "toggle-hex-header";
     pub const SHOW_MACROS: &str = "show-macros";
     pub const SHOW_PORTSETTINGS: &str = "show-portsettings";
     pub const SHOW_BEHAVIOR: &str = "show-behavior";
@@ -52,14 +54,16 @@ F20 = "esp-hard-reset"
 F21 = "esp-bootloader"
 shift-F21 = "esp-bootloader-unchecked"
 ctrl-z = "esp-bootloader-unchecked"
+ctrl-r = "show-rendering"
+ctrl-h = "toggle-hex"
 
 [macros]
 F19 = "Restart"
-ctrl-r = ["Restart","Restart"]
+# ctrl-r = ["Restart","Restart"]
 ctrl-f = "Cum|Factory Reset"
 ctrl-s = "CaiX Vib (ID 12345, 0.5s)"
 ctrl-g = "OpenShock Setup|Echo Off"
-ctrl-h = "OpenShock Setup|Factory Reset~OpenShock Setup|Setup Authtoken~OpenShock Setup|Setup Networks"
+ctrl-j = "OpenShock Setup|Factory Reset~OpenShock Setup|Setup Authtoken~OpenShock Setup|Setup Networks"
 
 [espflash_profiles]
 F18 = "PIO Core v2"

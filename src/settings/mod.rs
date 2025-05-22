@@ -68,7 +68,18 @@ pub struct Misc {
 // TODO add Reset to Defaults somewhere in the UI
 
 // TODO have flattened buffer behavior struct that gets sent to it on each change.
-
+macro_rules! inclusive_increment {
+    ($len:expr) => {{
+        const LEN: usize = $len + 1;
+        let mut arr = [0; LEN];
+        let mut i = 0;
+        while i < LEN {
+            arr[i] = i;
+            i += 1;
+        }
+        arr
+    }};
+}
 #[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
 #[derivative(Default)]
@@ -94,6 +105,108 @@ pub struct Rendering {
     #[serde(default)]
     /// Show invalid byte sequences in \xFF notation.
     pub escape_invalid_bytes: bool,
+
+    #[serde(default)]
+    /// Show recieved bytes in a Hex+ASCII view.
+    pub hex_view: bool,
+
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// Show Address+Offset Markers+ASCII label above hex view.
+    pub hex_view_header: bool,
+
+    #[serde(default)]
+    #[table(values = inclusive_increment!(48))]
+    #[table(allow_unknown_values)]
+    /// Set an optional maximum bytes per line.
+    pub bytes_per_line: MaxBytesPerLine,
+
+    #[serde_inline_default(HexHighlightStyle::HighlightAsciiSymbols)]
+    #[derivative(Default(value = "HexHighlightStyle::HighlightAsciiSymbols"))]
+    #[table(values = [HexHighlightStyle::None, HexHighlightStyle::DarkenNulls, HexHighlightStyle::HighlightAsciiSymbols, HexHighlightStyle::StyleA])]
+    /// Show user input in buffer after sending.
+    pub hex_view_highlights: HexHighlightStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, strum::Display)]
+#[strum(serialize_all = "title_case")]
+pub enum HexHighlightStyle {
+    None,
+    DarkenNulls,
+    #[strum(serialize = "Highlight ASCII Symbols")]
+    HighlightAsciiSymbols,
+    // HighlightUnicode TODO
+    StyleA,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[repr(transparent)]
+pub struct MaxBytesPerLine(u8);
+impl PartialEq<u8> for MaxBytesPerLine {
+    fn eq(&self, other: &u8) -> bool {
+        &self.0 == other
+    }
+}
+
+impl PartialEq<MaxBytesPerLine> for u8 {
+    fn eq(&self, other: &MaxBytesPerLine) -> bool {
+        self == &other.0
+    }
+}
+
+impl PartialEq<usize> for MaxBytesPerLine {
+    fn eq(&self, other: &usize) -> bool {
+        usize::from(self.0) == *other
+    }
+}
+
+impl PartialEq<MaxBytesPerLine> for usize {
+    fn eq(&self, other: &MaxBytesPerLine) -> bool {
+        *self == usize::from(other.0)
+    }
+}
+
+impl From<u8> for MaxBytesPerLine {
+    fn from(value: u8) -> Self {
+        MaxBytesPerLine(value)
+    }
+}
+
+impl From<usize> for MaxBytesPerLine {
+    fn from(value: usize) -> Self {
+        MaxBytesPerLine(value as u8)
+    }
+}
+
+impl From<MaxBytesPerLine> for u8 {
+    fn from(value: MaxBytesPerLine) -> Self {
+        value.0
+    }
+}
+
+impl From<MaxBytesPerLine> for usize {
+    fn from(value: MaxBytesPerLine) -> Self {
+        value.0 as usize
+    }
+}
+
+impl From<MaxBytesPerLine> for Option<u8> {
+    fn from(value: MaxBytesPerLine) -> Self {
+        match value.0 {
+            0 => None,
+            x => Some(x),
+        }
+    }
+}
+
+impl std::fmt::Display for MaxBytesPerLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 0 {
+            write!(f, "Fit Screen")
+        } else {
+            write!(f, "{}", self.0)
+        }
+    }
 }
 
 #[serde_inline_default]
