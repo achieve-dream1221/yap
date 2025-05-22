@@ -1,17 +1,11 @@
 use std::borrow::Cow;
 
-use ansi_to_tui::IntoText;
 use chrono::{DateTime, Local};
 use compact_str::{CompactString, ToCompactString, format_compact};
-use memchr::memmem::Finder;
 use ratatui::{
-    layout::Size,
     style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-        StatefulWidget, Widget, Wrap,
-    },
+    widgets::{Paragraph, Wrap},
 };
 use ratatui_macros::{line, span};
 use tracing::debug;

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_inline_default::serde_inline_default;
 use serialport::{DataBits, FlowControl, Parity, StopBits};
 use struct_table::StructTable;
+use strum::VariantArray;
 use tracing::{info, level_filters::LevelFilter};
 
 // Copied a lot from my other project, redefaulter
@@ -86,7 +87,7 @@ macro_rules! inclusive_increment {
 pub struct Rendering {
     #[serde_inline_default(UserEcho::All)]
     #[derivative(Default(value = "UserEcho::All"))]
-    #[table(values = [UserEcho::None, UserEcho::All, UserEcho::NoBytes, UserEcho::NoMacros, UserEcho::NoMacrosOrBytes])]
+    #[table(values = UserEcho::VARIANTS)]
     /// Show user input in buffer after sending.
     pub echo_user_input: UserEcho,
 
@@ -123,12 +124,14 @@ pub struct Rendering {
 
     #[serde_inline_default(HexHighlightStyle::HighlightAsciiSymbols)]
     #[derivative(Default(value = "HexHighlightStyle::HighlightAsciiSymbols"))]
-    #[table(values = [HexHighlightStyle::None, HexHighlightStyle::DarkenNulls, HexHighlightStyle::HighlightAsciiSymbols, HexHighlightStyle::StyleA])]
+    #[table(values = HexHighlightStyle::VARIANTS)]
     /// Show user input in buffer after sending.
     pub hex_view_highlights: HexHighlightStyle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, strum::Display)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Serialize, Deserialize, strum::Display, strum::VariantArray,
+)]
 #[strum(serialize_all = "title_case")]
 pub enum HexHighlightStyle {
     None,
@@ -137,6 +140,7 @@ pub enum HexHighlightStyle {
     HighlightAsciiSymbols,
     // HighlightUnicode TODO
     StyleA,
+    StyleB,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -288,7 +292,7 @@ pub struct PortSettings {
     #[serde_inline_default(true)]
     pub dtr_on_connect: bool,
     /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB device/COM port.
-    #[table(values = [Reconnections::Disabled, Reconnections::StrictChecks, Reconnections::LooseChecks])]
+    #[table(values = Reconnections::VARIANTS)]
     #[serde_inline_default(Reconnections::LooseChecks)]
     pub reconnections: Reconnections,
 

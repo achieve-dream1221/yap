@@ -32,6 +32,8 @@ use super::color_rules::ColorRules;
 
 mod buf_line;
 mod hex_spans;
+#[cfg(test)]
+mod tests;
 // mod wrap;
 
 // use crate::app::{LINE_ENDINGS, LINE_ENDINGS_DEFAULT};
@@ -198,7 +200,15 @@ pub struct Buffer {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::Display,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::VariantArray,
 )]
 #[strum(serialize_all = "title_case")]
 pub enum UserEcho {
@@ -946,226 +956,6 @@ pub fn line_ending_iter<'a>(
     slices_iter
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use memchr::memmem::Finder;
-
-    #[test]
-    fn test_single_line() {
-        let s = b"hello";
-        let le = LineEnding::Byte(b'\n');
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0].0, b"hello");
-        assert_eq!(res[0].1, b"hello");
-        assert_eq!(res[0].2, (0, 5));
-    }
-
-    #[test]
-    fn test_simple_lines() {
-        let s = b"foo\nbar\nbaz";
-        let le = LineEnding::Byte(b'\n');
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 3);
-        assert_eq!(res[0].0, b"foo");
-        assert_eq!(res[0].1, b"foo\n");
-        assert_eq!(res[0].2, (0, 4));
-        assert_eq!(res[1].0, b"bar");
-        assert_eq!(res[1].1, b"bar\n");
-        assert_eq!(res[1].2, (4, 8));
-        assert_eq!(res[2].0, b"baz");
-        assert_eq!(res[2].1, b"baz");
-        assert_eq!(res[2].2, (8, 11));
-    }
-
-    #[test]
-    fn test_few_bytes() {
-        let s = b"a";
-        let le = LineEnding::Byte(b'\n');
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0].0, b"a");
-        assert_eq!(res[0].1, b"a");
-
-        let s = b"";
-        let le = LineEnding::Byte(b'\n');
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0].0, b"");
-        assert_eq!(res[0].1, b"");
-    }
-
-    #[test]
-    fn test_trailing_newline() {
-        let s = b"a\nb\nc\n";
-        let le = LineEnding::Byte(b'\n');
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 3);
-        assert_eq!(res[0].0, b"a");
-        assert_eq!(res[0].1, b"a\n");
-        assert_eq!(res[1].0, b"b");
-        assert_eq!(res[1].1, b"b\n");
-        assert_eq!(res[2].0, b"c");
-        assert_eq!(res[2].1, b"c\n");
-    }
-
-    #[test]
-    fn test_starting_newline() {
-        let s = b"\rb\nc\n";
-        let le = LineEnding::Byte(b'\r');
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 2);
-        assert_eq!(res[0].0, b"");
-        assert_eq!(res[0].1, b"\r");
-        assert_eq!(res[1].0, b"b\nc\n");
-        assert_eq!(res[1].1, b"b\nc\n");
-    }
-
-    #[test]
-    fn test_crlf() {
-        let s = b"one\r\ntwo\r\nthree";
-        let le = LineEnding::MultiByte(Finder::new(b"\r\n"));
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 3);
-        assert_eq!(res[0].0, b"one");
-        assert_eq!(res[0].1, b"one\r\n");
-        assert_eq!(res[1].0, b"two");
-        assert_eq!(res[1].1, b"two\r\n");
-        assert_eq!(res[2].0, b"three");
-        assert_eq!(res[2].1, b"three");
-    }
-
-    #[test]
-    #[should_panic(expected = "empty finder")]
-    fn test_line_ending_empty() {
-        let s = b"test";
-        let le = LineEnding::MultiByte(Finder::new(&[]));
-        let _ = line_ending_iter(s, &le);
-    }
-
-    #[test]
-    fn test_multi_byte_line_ending() {
-        let s = b"abcXYZdefXYZghi";
-        let finder = Finder::new(b"XYZ");
-        let le = LineEnding::MultiByte(finder);
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 3);
-        assert_eq!(res[0].0, b"abc");
-        assert_eq!(res[0].1, b"abcXYZ");
-        assert_eq!(res[1].0, b"def");
-        assert_eq!(res[1].1, b"defXYZ");
-        assert_eq!(res[2].0, b"ghi");
-        assert_eq!(res[2].1, b"ghi");
-    }
-
-    #[test]
-    fn test_multiple_consecutive_line_endings() {
-        let s = b"foo\n\nbar\n";
-        let le = LineEnding::Byte(b'\n');
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 3);
-        assert_eq!(res[0].0, b"foo");
-        assert_eq!(res[0].1, b"foo\n");
-        assert_eq!(res[1].0, b"");
-        assert_eq!(res[1].1, b"\n");
-        assert_eq!(res[2].0, b"bar");
-        assert_eq!(res[2].1, b"bar\n");
-    }
-
-    #[test]
-    #[should_panic(expected = "not allowing slower Finder search with one-byte ending")]
-    fn test_find_one_byte_with_finder() {
-        let s = b"apple,banana,grape";
-        let finder = Finder::new(b",");
-        let le = LineEnding::MultiByte(finder);
-        let it = line_ending_iter(s, &le);
-        let _res: Vec<_> = it.collect();
-        // assert_eq!(res.len(), 3);
-        // assert_eq!(res[0].0, b"apple");
-        // assert_eq!(res[0].1, b"apple,");
-        // assert_eq!(res[1].0, b"banana");
-        // assert_eq!(res[1].1, b"banana,");
-        // assert_eq!(res[2].0, b"grape");
-        // assert_eq!(res[2].1, b"grape");
-    }
-
-    #[test]
-    fn test_find_multi_byte_with_finder() {
-        let s = b"abc123def123ghi";
-        let finder = Finder::new(b"123");
-        let le = LineEnding::MultiByte(finder);
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 3);
-        assert_eq!(res[0].0, b"abc");
-        assert_eq!(res[0].1, b"abc123");
-        assert_eq!(res[1].0, b"def");
-        assert_eq!(res[1].1, b"def123");
-        assert_eq!(res[2].0, b"ghi");
-        assert_eq!(res[2].1, b"ghi");
-    }
-
-    #[test]
-    fn test_finder_trailing_sep() {
-        let s = b"abc123";
-        let finder = Finder::new(b"123");
-        let le = LineEnding::MultiByte(finder);
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0].0, b"abc");
-        assert_eq!(res[0].1, b"abc123");
-    }
-
-    #[test]
-    fn test_finder_no_match() {
-        let s = b"abcdefgh";
-        let finder = Finder::new(b"xyz");
-        let le = LineEnding::MultiByte(finder);
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0].0, b"abcdefgh");
-        assert_eq!(res[0].1, b"abcdefgh");
-    }
-
-    #[test]
-    fn test_finder_empty_input() {
-        let s = b"";
-        let finder = Finder::new(b"xyz");
-        let le = LineEnding::MultiByte(finder);
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0].0, b"");
-        assert_eq!(res[0].1, b"");
-    }
-
-    #[test]
-    fn test_finder_multiple_consecutive() {
-        let s = b"xaaxaaxyzaaxyz";
-        let finder = Finder::new(b"xyz");
-        let le = LineEnding::MultiByte(finder);
-        let it = line_ending_iter(s, &le);
-        let res: Vec<_> = it.collect();
-        assert_eq!(res.len(), 2);
-        assert_eq!(res[0].0, b"xaaxaa");
-        assert_eq!(res[0].1, b"xaaxaaxyz");
-        assert_eq!(res[1].0, b"aa");
-        assert_eq!(res[1].1, b"aaxyz");
-    }
-}
-
 // pub fn colored_line<'a, L: Into<Line<'a>>>(text: L) -> Line<'a> {
 //     if text.
 //     let line = Line::from(text);
@@ -1173,6 +963,15 @@ mod tests {
 // }
 
 struct AlternatingStyles(bool, Style, Style);
+
+impl From<AlternatingStyles> for Style {
+    fn from(value: AlternatingStyles) -> Self {
+        match value.0 {
+            true => value.1,
+            false => value.2,
+        }
+    }
+}
 
 #[inline]
 fn byte_color_ascii(byte: u8, colors: AlternatingStyles) -> Style {
@@ -1201,14 +1000,20 @@ fn byte_color_ascii(byte: u8, colors: AlternatingStyles) -> Style {
     }
 }
 
-fn style_select(byte: u8, colors: AlternatingStyles, config_style: HexHighlightStyle) -> Style {
-    match config_style {
-        HexHighlightStyle::None => Style::new(),
+fn style_select(
+    byte: u8,
+    fallback_alternating_styles: AlternatingStyles,
+    highlight_config: HexHighlightStyle,
+) -> Style {
+    match highlight_config {
+        HexHighlightStyle::None => fallback_alternating_styles.into(),
         HexHighlightStyle::DarkenNulls => match byte {
             0x00 => Style::new().dark_gray(),
-            _ => Style::new(),
+            _ => fallback_alternating_styles.into(),
         },
-        HexHighlightStyle::HighlightAsciiSymbols => byte_color_ascii(byte, colors),
+        HexHighlightStyle::HighlightAsciiSymbols => {
+            byte_color_ascii(byte, fallback_alternating_styles)
+        }
         HexHighlightStyle::StyleA => match byte {
             0x00 => Style::new().dark_gray(),
             0x01..=0x1F => Style::new().blue(),
@@ -1219,6 +1024,13 @@ fn style_select(byte: u8, colors: AlternatingStyles, config_style: HexHighlightS
             0xA0..=0xBF => Style::new().light_blue(),
             0xC0..=0xDF => Style::new().light_red(),
             0xE0..=0xFF => Style::new().light_green(),
+        },
+        HexHighlightStyle::StyleB => match byte {
+            0x00 => Style::new().dark_gray(),
+            0x01..=0x4F => Style::new().green(),
+            0x50..=0x7F => Style::new().light_blue(),
+            0x80..=0xCF => Style::new().magenta(),
+            _ => Style::new().yellow(),
         },
     }
 }
@@ -1261,9 +1073,6 @@ impl Buffer {
                         break;
                     }
                 }
-                // if true && bytes_per_line == 16 {
-                //     break;
-                // }
                 if remaining_width <= 3 {
                     break;
                 }
@@ -1294,23 +1103,19 @@ impl Buffer {
     }
 
     pub fn render_hex(&mut self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
-        let start = Instant::now();
-        // Debug: print the height of the area
         let [labels, sep_line_area, hex_area] = if self.rendering.hex_view_header {
             vertical![==1, ==1, *=1].areas(area)
         } else {
             [Rect::default(), Rect::default(), area]
         };
 
-        let [_, aaaaaa, _, dunno] = horizontal![==13, *=3, *=1, *=1].areas(sep_line_area);
+        // let [_, _hex_sep, _, _dunno] = horizontal![==13, *=3, *=1, *=1].areas(sep_line_area);
 
         let buffer_hex_digits = self.buffer_hex_digits();
         let optional_spacing = 2;
         let line_width = 1;
         let bytes_per_line = self.state.hex_bytes_per_line;
         let hex_area_width = self.state.hex_section_width;
-
-        // let bytes_per_line = 8 * 3;
 
         let [
             addresses_area,
@@ -1348,10 +1153,6 @@ impl Buffer {
         }
         scrollbar_area.height = area.height;
         scrollbar_area.y = 0;
-
-        let height = hex_area.height as usize;
-
-        let scroll = self.state.vert_scroll;
 
         let vert_block = Block::new()
             .borders(Borders::LEFT)
@@ -1402,19 +1203,34 @@ impl Buffer {
                 },
                 buf,
             );
+            if scrollbar_area.x > 0 && sep_line_area.y > 0 {
+                buf.set_string(
+                    scrollbar_area.x,
+                    sep_line_area.y,
+                    symbols::line::CROSS,
+                    Style::new().dark_gray(),
+                );
+            }
         }
 
-        // Block::new()
-        //     .borders(Borders::TOP)
-        //     .border_set(symbols::border::Set {
-        //         top_left: symbols::line::CROSS,
-        //         top_right: symbols::line::CROSS,
-        //         ..symbols::border::PLAIN
-        //     })
-        //     .border_style(Style::new().dark_gray())
-        //     .render(aaaaaa, buf);
-        debug!("1: {:?}", start.elapsed());
-        let start = Instant::now();
+        if line_1_area.x > 0 && sep_line_area.y > 0 {
+            buf.set_string(
+                line_1_area.x,
+                sep_line_area.y,
+                symbols::line::CROSS,
+                Style::new().dark_gray(),
+            );
+        }
+
+        if line_2_area.x > 0 && sep_line_area.y > 0 {
+            buf.set_string(
+                line_2_area.x,
+                sep_line_area.y,
+                symbols::line::CROSS,
+                Style::new().dark_gray(),
+            );
+        }
+
         render_offsets(
             &self.raw_buffer,
             bytes_per_line,
@@ -1440,7 +1256,6 @@ impl Buffer {
             ascii_area,
             buf,
         );
-        debug!("2: {:?}", start.elapsed());
 
         if !self.state.stuck_to_bottom {
             let scroll_notice = Line::raw("More... Shift+PgDn to jump to newest").dark_gray();
@@ -1458,38 +1273,6 @@ impl Buffer {
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"));
         scrollbar.render(scrollbar_area, buf, &mut self.state.scrollbar_state);
-
-        // render_hex_bytes(&self.raw_buffer, 16, hex_area, buf);
-
-        // for (idx, i) in ((scroll * 16)..(scroll + height) * 16)
-        //     .step_by(16)
-        //     .enumerate()
-        // {
-        //     let area = Rect {
-        //         height: 1,
-        //         width: addresses_area.width,
-        //         y: (idx as u16) + 2,
-        //         ..Default::default()
-        //     };
-
-        //     let current_width = hex_width(i);
-
-        //     let address_line = {
-        //         let mut spans = Vec::new();
-        //         if current_width < 8 {
-        //             for meow in 0..(8 - current_width) {
-        //                 spans.push(Span::styled("0", Style::new().dark_gray()));
-        //             }
-        //         }
-
-        //         spans.push(Span::styled(format!("{i:X}"), Style::new()));
-        //         // spans.push(Span::styled(":", Style::new()));
-
-        //         Line::from(spans)
-        //     };
-
-        //     address_line.render(area, buf);
-        // }
     }
 }
 
@@ -1518,8 +1301,7 @@ fn render_ascii(
             .ceil() as u16,
     );
 
-    let mut style_bool = false;
-    let styles = (Style::new().white(), Style::new().gray());
+    let mut style_bool = scroll % 2 != 0;
 
     for line in 0..total_lines {
         style_bool.flip();
@@ -1528,33 +1310,19 @@ fn render_ascii(
 
         let mut ascii_spans = Vec::with_capacity(bytes_per_line as usize);
         for &byte in line_bytes {
-            // let ch = if (0x20..=0x7e).contains(&byte) {
-            //     byte as char
-            // } else {
-            //     '.'
-            // };
-            // ascii_spans.push(Span::styled(
-            //     ch.to_string(),
-            //     if style_bool { styles.0 } else { styles.1 },
-            // ));
             let span_style = style_select(
                 byte,
                 AlternatingStyles(style_bool, Style::new().white(), Style::new().gray()),
                 hex_highlight_style,
             );
-            let ch = match byte {
-                0x20 => Span::styled("_", span_style),
-                0x21..=0x7E => Span::styled(ASCII_PRINTABLE[(byte - 0x20) as usize], span_style),
-                _ => Span::styled(".", span_style),
+            let ch = match (byte, hex_highlight_style) {
+                (0x20, HexHighlightStyle::HighlightAsciiSymbols) => Span::styled("_", span_style),
+                (0x20..=0x7E, _) => {
+                    Span::styled(ASCII_PRINTABLE[(byte - 0x20) as usize], span_style)
+                }
+                _ => Span::styled(".", Style::new().dark_gray()),
             };
-            // let ch = if (0x20..=0x7e).contains(&byte) {
-            //     Span::styled(
-            //         (byte as char).to_string(),
-            //         if style_bool { styles.0 } else { styles.1 },
-            //     )
-            // } else {
-            //     Span::styled(".", Style::new().dark_gray())
-            // };
+
             ascii_spans.push(ch);
         }
         // Pad to full width if line is short
@@ -1628,7 +1396,7 @@ fn render_offsets(
     // Note: Y coordinate of `area` should be the top-most row to render.
     //       This draws vertically downward, one offset per line.
 
-    let mut style_bool = false;
+    let mut style_bool = scroll % 2 != 0;
 
     let styles = (Style::new().light_yellow(), Style::new().yellow());
 
@@ -1659,8 +1427,6 @@ fn render_offsets(
         )])
         .right_aligned()
         .render(rect, buf);
-        // let offset_line = ;
-        // offset_line.render(rect, buf);
     }
 }
 
@@ -1692,9 +1458,7 @@ fn render_bytes(
             .ceil() as u16,
     );
 
-    let mut style_bool = false;
-
-    let styles = (Style::new().white(), Style::new().gray());
+    let mut style_bool = scroll % 2 != 0;
 
     for line in 0..total_lines {
         style_bool.flip();
@@ -1722,18 +1486,6 @@ fn render_bytes(
                 span_style,
             ));
         }
-        // // Pad to fill the width up to bytes_per_line
-        // for i in line_bytes.len()..(bytes_per_line as usize) {
-        //     if i != 0 {
-        //         if i % 8 == 0 {
-        //             spans.push(Span::raw("  "));
-        //         } else {
-        //             spans.push(Span::raw(" "));
-        //         }
-        //     }
-        //     spans.push(Span::raw("  "));
-        // }
-
         let row_rect = Rect {
             x: area.x,
             y: area.y + line,
@@ -1743,95 +1495,6 @@ fn render_bytes(
         Line::from(spans).render(row_rect, buf);
     }
 }
-
-// fn render_hex_bytes(
-//     slice: &[u8],
-//     bytes_per_line: u8,
-//     area: Rect,
-//     buf: &mut ratatui::prelude::Buffer,
-// ) {
-//     // Render the bytes as a standard hex/ascii view within the given `area`.
-//     // Each line shows: address | hex bytes | ascii representation.
-
-//     // Calculate relevant derived values
-//     let total_lines = area
-//         .height
-//         .min(((slice.len() as f64) / (bytes_per_line as f64)).ceil() as u16);
-//     let hex_chars_per_byte = 2; // "AB"
-//     let spacing = 1u16; // spaces between groups
-//     let hex_section_width = (bytes_per_line as u16) * (hex_chars_per_byte + spacing);
-
-//     for line in 0..total_lines {
-//         let offset = (line as usize) * (bytes_per_line as usize);
-//         let line_bytes = &slice[offset..slice.len().min(offset + bytes_per_line as usize)];
-
-//         // Offset column area
-//         let offset_area = Rect {
-//             x: area.x,
-//             y: area.y + line,
-//             width: 8,
-//             height: 1,
-//         };
-
-//         // Hex area
-//         let hex_area_start = offset_area.x + offset_area.width + 1;
-//         let hex_area = Rect {
-//             x: hex_area_start,
-//             y: offset_area.y,
-//             width: hex_section_width,
-//             height: 1,
-//         };
-
-//         // ASCII area
-//         let ascii_area = Rect {
-//             x: hex_area.x + hex_area.width + 2,
-//             y: hex_area.y,
-//             width: bytes_per_line as u16,
-//             height: 1,
-//         };
-
-//         // Render offset
-//         let offset_str = format!("{:08X}", offset);
-//         let offset_line = Line::from(vec![Span::styled(offset_str, Style::default().yellow())]);
-//         offset_line.render(offset_area, buf);
-
-//         // Render hex bytes
-//         let mut hex_spans = Vec::new();
-//         for (j, b) in line_bytes.iter().enumerate() {
-//             let s = format!("{:02X}", b);
-//             hex_spans.push(Span::raw(s));
-//             if j != (line_bytes.len() - 1) {
-//                 hex_spans.push(Span::raw(" "));
-//             }
-//         }
-//         // Pad incomplete lines
-//         for xx in line_bytes.len()..(bytes_per_line as usize) {
-//             hex_spans.push(Span::raw("  "));
-//             if xx != (bytes_per_line as usize - 1) {
-//                 hex_spans.push(Span::raw(" "));
-//             }
-//         }
-//         let hex_line = Line::from(hex_spans);
-//         hex_line.render(hex_area, buf);
-
-//         // Render ASCII
-//         let mut ascii_spans = Vec::new();
-//         for byte in line_bytes {
-//             let ch = if (0x20..=0x7e).contains(byte) {
-//                 *byte as char
-//             } else {
-//                 '.'
-//             };
-//             ascii_spans.push(Span::raw(format!("{ch}")));
-//         }
-//         // pad ascii, if short
-//         for _ in line_bytes.len()..(bytes_per_line as usize) {
-//             ascii_spans.push(Span::raw(" "));
-//         }
-//         let ascii_line = Line::from(ascii_spans);
-//         ascii_line.render(ascii_area, buf);
-//     }
-// }
 
 /// Calculates the number of hexadecimal digits needed to represent the given value `n`.
 ///

@@ -38,22 +38,21 @@ impl From<SerialEvent> for Event {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::VariantArray,
+)]
+#[strum(serialize_all = "title_case")]
 pub enum Reconnections {
     Disabled,
     StrictChecks,
     LooseChecks,
-}
-
-impl std::fmt::Display for Reconnections {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let reconnection_str = match self {
-            Reconnections::Disabled => "Disabled",
-            Reconnections::StrictChecks => "Strict Checks",
-            Reconnections::LooseChecks => "Loose Checks",
-        };
-        write!(f, "{}", reconnection_str)
-    }
 }
 
 pub trait PrintablePortInfo {
