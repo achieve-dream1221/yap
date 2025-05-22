@@ -139,6 +139,8 @@ pub enum HexHighlightStyle {
     #[strum(serialize = "Highlight ASCII Symbols")]
     HighlightAsciiSymbols,
     // HighlightUnicode TODO
+    // UseColorRules TODO
+    // might need to do something wild like have a buffer with tagged-with-index spans
     StyleA,
     StyleB,
 }
@@ -205,10 +207,9 @@ impl From<MaxBytesPerLine> for Option<u8> {
 
 impl std::fmt::Display for MaxBytesPerLine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0 == 0 {
-            write!(f, "Fit Screen")
-        } else {
-            write!(f, "{}", self.0)
+        match self.0 {
+            0 => write!(f, "Fit Screen"),
+            x => write!(f, "{x}"),
         }
     }
 }

@@ -1,4 +1,7 @@
-use std::{borrow::Cow, cmp::Ordering, collections::BTreeSet, iter::Peekable, time::Instant};
+use std::{
+    borrow::Cow, cmp::Ordering, collections::BTreeSet, f64::consts::PI, iter::Peekable,
+    time::Instant,
+};
 
 use ansi_to_tui::{IntoText, LossyFlavor};
 use bstr::{ByteSlice, ByteVec};
@@ -619,6 +622,9 @@ impl Buffer {
 
         if changed!(old, new, bytes_per_line) {
             self.determine_bytes_per_line(new.bytes_per_line.into());
+            self.correct_hex_view_scroll();
+        } else if changed!(old, new, hex_view) {
+            self.correct_hex_view_scroll();
         }
 
         if should_reconsume {
@@ -647,11 +653,14 @@ impl Buffer {
         }
     }
     pub fn lines_iter(&self) -> (impl Iterator<Item = Line>, u16) {
+        let (buflines, wrapped_scroll) = self.visible_buflines_iter();
+        (buflines.map(|l| l.as_line(&self.rendering)), wrapped_scroll)
+    }
+
+    fn visible_buflines_iter(&self) -> (impl Iterator<Item = &BufLine>, u16) {
         let last_size = &self.last_terminal_size;
         let total_lines = self.combined_height();
         let more_lines_than_height = total_lines > last_size.height as usize;
-
-        // let lines_iter = ;
 
         let entries_to_skip: usize;
         let entries_to_take: usize;
@@ -738,8 +747,7 @@ impl Buffer {
         (
             self.buflines_iter()
                 .skip(entries_to_skip)
-                .take(entries_to_take)
-                .map(|l| l.as_line(&self.rendering)),
+                .take(entries_to_take),
             wrapped_scroll,
         )
     }
@@ -875,6 +883,50 @@ impl Buffer {
         self.color_rules = ColorRules::load_from_file("../../color_rules.toml");
         self.reconsume_raw_buffer();
         Ok(())
+    }
+
+    pub fn correct_hex_view_scroll(&mut self) {
+        self.state.stuck_to_bottom = false;
+        if self.raw_buffer.is_empty() {
+            return;
+        }
+        let transitioning_from = !self.rendering.hex_view;
+        match transitioning_from {
+            true => {
+                // get the raw buffer index we're topping at
+                let closest_index = self.state.vert_scroll * self.state.hex_bytes_per_line as usize;
+                let closest_line = self.port_lines.windows(2).find_position(|w| {
+                    let [l, r] = w else { unreachable!() };
+                    l.raw_buffer_index <= closest_index && closest_index <= r.raw_buffer_index
+                });
+                if let Some((index, line)) = closest_line {
+                    let lines_up_to: usize = self
+                        .port_lines
+                        .iter()
+                        .map(|l| l.get_line_height() as usize)
+                        .take(index)
+                        .sum();
+                    let scroll =
+                        lines_up_to
+                            // .saturating_sub(self.last_terminal_size.height as usize)
+                        ;
+                    self.state.vert_scroll = scroll;
+                } else {
+                    self.scroll_by(i32::MIN);
+                }
+            }
+            false => {
+                let Some(top_visible) = self.visible_buflines_iter().0.next() else {
+                    return;
+                };
+
+                self.state.vert_scroll = (top_visible.raw_buffer_index as f64
+                    / self.state.hex_bytes_per_line as f64)
+                    .floor() as usize
+                    // .saturating_sub(self.last_terminal_size.height as usize)
+                ;
+            }
+        }
     }
 }
 

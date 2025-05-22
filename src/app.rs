@@ -980,6 +980,7 @@ impl App {
                 let state = pretty_bool(self.settings.rendering.hex_view.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
+                self.buffer.scroll_by(0);
                 self.notifs
                     .notify_str(format!("Toggled Hex View {state}"), Color::Gray);
             }
@@ -1809,9 +1810,9 @@ impl App {
         self.table_state.scroll_down_by(1);
     }
     pub fn draw(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
-        let start = Instant::now();
+        // let start = Instant::now();
         terminal.draw(|frame| self.render_app(frame))?;
-        debug!("A4: {:?}", start.elapsed());
+        // debug!("A4: {:?}", start.elapsed());
         Ok(())
     }
     fn render_app(&mut self, frame: &mut Frame) {
@@ -1824,7 +1825,7 @@ impl App {
         ])
         .split(frame.area());
 
-        let start = Instant::now();
+        // let start = Instant::now();
         match self.menu {
             Menu::PortSelection(_) => {
                 let big_text = BigText::builder()
@@ -1839,15 +1840,15 @@ impl App {
             }
             Menu::Terminal(prompt) => self.terminal_menu(frame, frame.area(), prompt),
         }
-        debug!("a1: {:?}", start.elapsed());
+        // debug!("a1: {:?}", start.elapsed());
 
-        let start = Instant::now();
+        // let start = Instant::now();
         self.render_popups(frame, frame.area());
-        debug!("a2: {:?}", start.elapsed());
+        // debug!("a2: {:?}", start.elapsed());
 
-        let start = Instant::now();
+        // let start = Instant::now();
         self.render_notifs(frame, frame.area());
-        debug!("a3: {:?}", start.elapsed());
+        // debug!("a3: {:?}", start.elapsed());
 
         #[cfg(feature = "espflash")]
         self.espflash.render_espflash(frame, frame.area());
