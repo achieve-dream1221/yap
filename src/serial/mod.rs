@@ -14,7 +14,7 @@ pub mod esp;
 #[cfg(feature = "espflash")]
 use esp::EspEvent;
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub enum ReconnectType {
     PerfectMatch,
     UsbStrict,

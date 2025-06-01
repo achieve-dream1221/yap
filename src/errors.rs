@@ -6,4 +6,6 @@ pub enum YapError {
     NoSerialWorker,
     #[error("No Carousel Worker")]
     NoCarouselWorker,
+    #[error("No Logging Worker")]
+    NoLoggingWorker,
 }

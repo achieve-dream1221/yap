@@ -3,8 +3,9 @@ use ratatui::layout::{Rect, Size};
 #[cfg(feature = "espflash")]
 pub mod esp;
 
-pub mod buffer;
+// pub mod buffer;
 pub mod color_rules;
+// pub mod logging;
 pub mod port_settings;
 pub mod prompts;
 pub mod single_line_selector;

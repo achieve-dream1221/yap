@@ -27,8 +27,8 @@ use tracing::{info, level_filters::LevelFilter};
 
 use crate::{
     app::DEFAULT_BAUD,
+    buffer::UserEcho,
     serial::{IgnoreableUsb, Reconnections},
-    tui::buffer::UserEcho,
 };
 
 pub mod ser;
@@ -51,6 +51,8 @@ pub struct Settings {
     pub misc: Misc,
     #[serde(default)]
     pub last_port_settings: PortSettings,
+    #[serde(default)]
+    pub logging: Logging,
     #[serde(default)]
     pub ignored: Ignored,
 }
@@ -212,6 +214,56 @@ impl std::fmt::Display for MaxBytesPerLine {
             x => write!(f, "{x}"),
         }
     }
+}
+
+#[derive(
+    Debug, Default, Clone, PartialEq, Serialize, Deserialize, strum::VariantArray, strum::Display,
+)]
+pub enum LoggingType {
+    #[default]
+    Text,
+    Raw,
+    #[strum(serialize = "Text+Raw")]
+    Both,
+}
+
+#[serde_inline_default]
+#[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
+#[derivative(Default)]
+pub struct Logging {
+    #[table(values = LoggingType::VARIANTS)]
+    /// Whether to log to a text file, raw binary, or both.
+    pub log_type: LoggingType,
+
+    // pub path: PathBuf,
+    /// Automatically begin logging on successful port connection.
+    pub always_begin_on_connect: bool,
+
+    #[serde_inline_default(String::from("%Y-%m-%d %H:%M:%S%.9f: "))]
+    #[derivative(Default(value = "String::from(\"%Y-%m-%d %H:%M:%S%.9f: \")"))]
+    #[table(skip)]
+    /// Show timestamps next to each line in text outputs.
+    pub timestamp: String,
+
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// Escape invalid UTF-8 byte sequences in \xFF notation in text outputs.
+    pub escape_unprintable_bytes: bool,
+
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// Record user input in text outputs.
+    pub log_user_input: bool,
+
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// When enabled, create a new log file when intentionally disconnecting.
+    pub close_file_on_disconnect: bool,
+
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// Log any disconnect and reconnect events in text outputs.
+    pub log_connection_events: bool,
 }
 
 #[serde_inline_default]

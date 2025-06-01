@@ -9,7 +9,9 @@ use ratatui::{
 };
 use tracing::debug;
 
-use crate::tui::buffer::LineEnding;
+use crate::buffer::LineEnding;
+
+// use crate::tui::buffer::LineEnding;
 
 /// Trait that provides simple methods to get the last valid index of a collection or slice.
 pub trait LastIndex {
@@ -395,4 +397,52 @@ fn split_span_content<'a>(
     let mid = &content[offset_start..offset_end];
     let post = &content[offset_end..];
     (pre, mid, post)
+}
+
+// Not traits, but helpful functions used in a few spots
+
+#[inline]
+pub fn interleave<A, B, I>(left: A, right: B) -> impl Iterator<Item = I>
+where
+    A: Iterator<Item = I>,
+    B: Iterator<Item = I>,
+    I: Ord,
+{
+    let mut left = left.peekable();
+    let mut right = right.peekable();
+    std::iter::from_fn(move || match (left.peek(), right.peek()) {
+        (Some(li), Some(ri)) => {
+            if li <= ri {
+                left.next()
+            } else {
+                right.next()
+            }
+        }
+        (Some(_), None) => left.next(),
+        (None, Some(_)) => right.next(),
+        (None, None) => None,
+    })
+}
+
+#[inline]
+pub fn interleave_by<A, B, I, F>(left: A, right: B, mut decider: F) -> impl Iterator<Item = I>
+where
+    A: Iterator<Item = I>,
+    B: Iterator<Item = I>,
+    F: FnMut(&I, &I) -> bool,
+{
+    let mut left = left.peekable();
+    let mut right = right.peekable();
+    std::iter::from_fn(move || match (left.peek(), right.peek()) {
+        (Some(li), Some(ri)) => {
+            if decider(li, ri) {
+                left.next()
+            } else {
+                right.next()
+            }
+        }
+        (Some(_), None) => left.next(),
+        (None, Some(_)) => right.next(),
+        (None, None) => None,
+    })
 }

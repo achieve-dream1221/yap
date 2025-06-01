@@ -15,21 +15,21 @@ use crate::{
     traits::{ByteSuffixCheck, FirstChars, LineHelpers},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BufLine {
-    pub timestamp: DateTime<Local>,
+    pub(super) timestamp: DateTime<Local>,
     timestamp_str: CompactString,
 
     index_info: CompactString,
 
-    value: Line<'static>,
+    pub(super) value: Line<'static>,
 
     /// How many vertical lines are needed in the terminal to fully show this line.
     // Truncated from usize, since even the ratatui sizes are capped there.
     rendered_line_height: u16,
 
-    pub(super) raw_buffer_index: usize,
-    pub(super) line_type: LineType,
+    pub raw_buffer_index: usize,
+    pub line_type: LineType,
 }
 
 // impl PartialEq for BufLine {
@@ -100,7 +100,7 @@ impl BufLine {
         //     determine_color(&mut line, &[]);
         // }
 
-        let index_info = index_info(raw_value, raw_buffer_index, line_type);
+        let index_info = make_index_info(raw_value, raw_buffer_index, line_type);
 
         let mut bufline = Self {
             timestamp_str: now.format(time_format).to_compact_string(),
@@ -121,40 +121,12 @@ impl BufLine {
         area_width: u16,
         rendering: &Rendering,
     ) {
-        self.index_info = index_info(full_line_slice, self.raw_buffer_index, self.line_type);
+        self.index_info = make_index_info(full_line_slice, self.raw_buffer_index, self.line_type);
 
         self.value = line;
         self.value.remove_unsavory_chars();
         self.update_line_height(area_width, rendering);
     }
-
-    // pub fn new(
-    //     raw_value: &[u8],
-    //     raw_buffer_index: usize,
-    //     area_width: u16,
-    //     with_timestamp: bool,
-    // ) -> Self {
-    //     let time_format = "[%H:%M:%S%.3f] ";
-
-    //     let value = determine_color(raw_value);
-
-    //     let mut line = Self {
-    //         value,
-    //         // raw_value: raw_value.to_owned(),
-    //         // raw_buffer_index,
-    //         // style: None,
-    //         rendered_line_height: 0,
-    //         timestamp: Local::now().format(time_format).to_string(),
-    //     };
-    //     line.update_line_height(area_width, with_timestamp);
-    //     line
-    // }
-
-    // pub fn new_user_line(raw)
-
-    // fn completed(&self, line_ending: &str) -> bool {
-    //     self.value.ends_with(line_ending)
-    // }
 
     pub fn update_line_height(&mut self, area_width: u16, rendering: &Rendering) -> usize {
         let para = Paragraph::new(self.as_line(rendering)).wrap(Wrap { trim: false });
@@ -196,43 +168,13 @@ impl BufLine {
     pub fn index_in_buffer(&self) -> usize {
         self.raw_buffer_index
     }
-
-    // pub fn timestamp(&self) -> (DateTime<Local>, &str) {
-    //     (self.timestamp, &self.timestamp_str)
-    // }
-
-    // pub fn is_bytes(&self) -> bool {}
-
-    // pub fn is_macro(&self) -> bool {}
-
-    // pub fn bytes(&self) -> &[u8] {
-    //     self.raw_value.as_slice()
-    // }
 }
 
-// fn determine_color(line: &mut Line, rules: &[u8]) {
-//     assert_eq!(line.spans.len(), 1);
-//     if let Some(slice) = line.spans[0].content.first_chars(5) {
-//         let mut style = Style::new();
-//         style = match slice {
-//             // "USER>" => style.dark_gray(),
-//             "Got m" => style.blue(),
-//             "ID:0x" => style.green(),
-//             "Chan." => style.dark_gray(),
-//             "Mode:" => style.yellow(),
-//             "Power" => style.red(),
-//             // "keepa" => style.red(),
-//             _ => style,
-//         };
-
-//         if style != Style::new() {
-//             line.style = style;
-//             line.style_all_spans(style);
-//         }
-//     }
-// }
-
-fn index_info(full_line_slice: &[u8], start_index: usize, line_type: LineType) -> CompactString {
+fn make_index_info(
+    full_line_slice: &[u8],
+    start_index: usize,
+    line_type: LineType,
+) -> CompactString {
     if let LineType::User { .. } = line_type {
         format_compact!(
             "({start:06}->{end:06}, {len:3}) ",
@@ -249,41 +191,3 @@ fn index_info(full_line_slice: &[u8], start_index: usize, line_type: LineType) -
         )
     }
 }
-
-// fn determine_color(bytes: &[u8]) -> Line<'static> {
-//     // let ratatui::text::Text {
-//     //     alignment: _alignment,
-//     //     style,
-//     //     mut lines,
-//     // } = bytes.into_line(Style::new(), None).unwrap();
-//     // debug!("{:?}", style);
-//     // assert_eq!(lines.len(), 1);
-
-//     // lines.pop().unwrap()
-
-//     bytes.into_line(None, Style::new()).unwrap()
-
-//     // // Not sure if this is actually worth keeping, we'll see once I add proper custom rules.
-//     // if self.style.is_some() {
-//     //     return;
-//     // }
-//     // What do I pass into here?
-//     // The rules? Should it instead be an outside decider that supplies the color?
-
-//     // if let Some(slice) = self.value.first_chars(5) {
-//     //     let mut style = Style::new();
-//     //     style = match slice {
-//     //         "USER>" => style.dark_gray(),
-//     //         "Got m" => style.blue(),
-//     //         "ID:0x" => style.green(),
-//     //         "Chan." => style.dark_gray(),
-//     //         "Mode:" => style.yellow(),
-//     //         "Power" => style.red(),
-//     //         _ => style,
-//     //     };
-
-//     //     if style != Style::new() {
-//     //         self.style = Some(style);
-//     //     }
-//     // }
-// }

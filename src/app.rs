@@ -38,6 +38,7 @@ use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
+    buffer::Buffer,
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     keybinds::{Keybinds, methods::*},
@@ -53,7 +54,6 @@ use crate::{
     settings::{Behavior, PortSettings, Rendering, Settings},
     traits::{LastIndex, LineHelpers, ToggleBool},
     tui::{
-        buffer::Buffer,
         centered_rect_size,
         prompts::{DisconnectPrompt, PromptTable, centered_rect},
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
@@ -316,8 +316,12 @@ impl App {
         // );
 
         let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
-        let buffer = Buffer::new(line_ending, settings.rendering.clone());
-        debug!("{buffer:#?}");
+        let buffer = Buffer::new(
+            line_ending,
+            settings.rendering.clone(),
+            settings.logging.clone(),
+        );
+        // debug!("{buffer:#?}");
         Self {
             state: RunningState::Running,
             menu: Menu::PortSelection(PortSelectionElement::Ports),
@@ -437,19 +441,34 @@ impl App {
             }
 
             Event::Serial(SerialEvent::Connected(reconnect)) => {
-                info!("Connected!");
-                self.buffer.scroll_by(0);
-                let text = match reconnect {
-                    Some(ReconnectType::PerfectMatch) => "Reconnected to same device!",
-                    Some(ReconnectType::UsbStrict) => "Reconnected to same device?",
-                    Some(ReconnectType::UsbLoose) => "Connected to similar USB device.",
-                    Some(ReconnectType::LastDitch) => "Connected to COM port by name.",
-                    None => "",
-                    // None => "Connected to port!",
-                };
-                if !text.is_empty() {
+                if let Some(reconnect_type) = &reconnect {
+                    info!("Reconnected!");
+                    let text = match reconnect_type {
+                        ReconnectType::PerfectMatch => "Reconnected to same device!",
+                        ReconnectType::UsbStrict => "Reconnected to same device?",
+                        ReconnectType::UsbLoose => "Connected to similar USB device.",
+                        ReconnectType::LastDitch => "Connected to COM port by name.",
+                    };
+
                     self.notifs.notify_str(text, Color::Green);
+                } else {
+                    // If starting session with device.
+                    info!("Connected!");
+
+                    // self.notifs.notify_str("Connected to port!", Color::Green);
                 }
+
+                if let Some(current_port) = &self.serial.port_status.load().current_port {
+                    self.buffer
+                        .log_handle
+                        .log_port_connected(current_port.to_owned(), reconnect.clone())
+                        .unwrap();
+                } else {
+                    error!("Was told about a port connection but no current port exists!");
+                    panic!("Was told about a port connection but no current port exists!");
+                }
+
+                self.buffer.scroll_by(0);
             }
             Event::Serial(SerialEvent::Disconnected(reason)) => {
                 #[cfg(feature = "espflash")]
@@ -458,6 +477,7 @@ impl App {
                 // if let Some(reason) = reason {
                 //     self.notify(format!("Disconnected from port! {reason}"), Color::Red);
                 // }
+                self.buffer.log_handle.log_port_disconnected(false).unwrap();
                 if reason.is_some() {
                     let reconnect_text = match &self.settings.last_port_settings.reconnections {
                         Reconnections::Disabled => "Not attempting to reconnect.",
@@ -1749,7 +1769,7 @@ impl App {
                         self.ports.clear();
                         self.serial.request_port_scan().unwrap();
 
-                        self.buffer.clear();
+                        self.buffer.intentional_disconnect();
                         // Clear the input box, but keep the user history!
                         self.user_input.clear();
 

@@ -20,6 +20,7 @@ use tracing::{Level, debug, error, info, level_filters::LevelFilter};
 use tracing_appender::non_blocking::WorkerGuard;
 
 mod app;
+mod buffer;
 mod errors;
 mod event_carousel;
 mod history;

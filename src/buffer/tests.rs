@@ -1,4 +1,4 @@
-use super::*;
+use crate::buffer::{LineEnding, line_ending_iter};
 use memchr::memmem::Finder;
 
 #[test]
