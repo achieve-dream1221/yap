@@ -30,6 +30,7 @@ use crate::{
 mod buf_line;
 mod hex_spans;
 mod logging;
+pub use logging::DEFAULT_TIMESTAMP_FORMAT;
 mod tui;
 
 #[cfg(test)]
@@ -328,9 +329,9 @@ impl Buffer {
             .echo_user_input
             .filter_user_line(&user_buf_line)
             || (self.raw.inner.is_empty() || self.raw.inner.has_line_ending(&self.line_ending));
-        if self.log_handle.is_ready() {
-            match self.log_settings.log_type {
-                LoggingType::Raw => (),
+        if self.log_handle.logging_active() {
+            match self.log_settings.log_file_type {
+                LoggingType::Binary => (),
                 LoggingType::Text | LoggingType::Both => self
                     .log_handle
                     .log_tx_bytes(now, bytes.to_owned(), line_ending.to_owned())
@@ -385,9 +386,9 @@ impl Buffer {
                 .echo_user_input
                 .filter_user_line(&user_buf_line)
                 || (self.raw.inner.is_empty() || self.raw.inner.has_line_ending(&self.line_ending));
-            if self.log_handle.is_ready() {
-                match self.log_settings.log_type {
-                    LoggingType::Raw => (),
+            if self.log_handle.logging_active() {
+                match self.log_settings.log_file_type {
+                    LoggingType::Binary => (),
                     LoggingType::Text | LoggingType::Both => self
                         .log_handle
                         .log_tx_bytes(now, text.as_bytes().to_owned(), line_ending.to_owned())

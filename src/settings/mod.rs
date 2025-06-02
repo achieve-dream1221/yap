@@ -210,7 +210,7 @@ impl From<MaxBytesPerLine> for Option<u8> {
 impl std::fmt::Display for MaxBytesPerLine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
-            0 => write!(f, "Fit Screen"),
+            0 => write!(f, "Fit to Screen"),
             x => write!(f, "{x}"),
         }
     }
@@ -219,28 +219,31 @@ impl std::fmt::Display for MaxBytesPerLine {
 #[derive(
     Debug, Default, Clone, PartialEq, Serialize, Deserialize, strum::VariantArray, strum::Display,
 )]
+#[strum(serialize_all = "title_case")]
 pub enum LoggingType {
     #[default]
     Text,
-    Raw,
-    #[strum(serialize = "Text+Raw")]
+    Binary,
+    #[strum(serialize = "Text + Binary")]
     Both,
 }
 
+#[cfg(feature = "logging")]
 #[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
 #[derivative(Default)]
 pub struct Logging {
+    #[serde(default)]
     #[table(values = LoggingType::VARIANTS)]
     /// Whether to log to a text file, raw binary, or both.
-    pub log_type: LoggingType,
+    pub log_file_type: LoggingType,
 
     // pub path: PathBuf,
     /// Automatically begin logging on successful port connection.
     pub always_begin_on_connect: bool,
 
-    #[serde_inline_default(String::from("%Y-%m-%d %H:%M:%S%.9f: "))]
-    #[derivative(Default(value = "String::from(\"%Y-%m-%d %H:%M:%S%.9f: \")"))]
+    #[serde_inline_default(String::from(crate::buffer::DEFAULT_TIMESTAMP_FORMAT))]
+    #[derivative(Default(value = "String::from(crate::buffer::DEFAULT_TIMESTAMP_FORMAT)"))]
     #[table(skip)]
     /// Show timestamps next to each line in text outputs.
     pub timestamp: String,

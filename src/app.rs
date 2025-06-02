@@ -51,14 +51,18 @@ use crate::{
         handle::SerialHandle,
         worker::{InnerPortStatus, MOCK_PORT_NAME},
     },
-    settings::{Behavior, PortSettings, Rendering, Settings},
+    settings::{Behavior, Logging, PortSettings, Rendering, Settings},
     traits::{LastIndex, LineHelpers, ToggleBool},
     tui::{
         centered_rect_size,
+        logging::toggle_logging_button,
         prompts::{DisconnectPrompt, PromptTable, centered_rect},
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
 };
+
+#[cfg(feature = "logging")]
+use crate::keybinds::logging_methods::*;
 
 #[cfg(feature = "espflash")]
 use crate::keybinds::esp_methods::*;
@@ -163,6 +167,8 @@ pub enum PopupMenu {
     PortSettings,
     RenderingSettings,
     BehaviorSettings,
+    #[cfg(feature = "logging")]
+    Logging,
     #[cfg(feature = "espflash")]
     #[strum(serialize = "ESP32 Flashing")]
     EspFlash,
@@ -236,6 +242,9 @@ pub struct App {
 
     #[cfg(feature = "espflash")]
     espflash: EspFlashState,
+
+    #[cfg(feature = "logging")]
+    logging_toggle_selected: bool,
     // TODO
     // error_message: Option<String>,
 }
@@ -362,6 +371,8 @@ impl App {
 
             #[cfg(feature = "espflash")]
             espflash: EspFlashState::new(),
+            #[cfg(feature = "logging")]
+            logging_toggle_selected: false,
         }
     }
     fn is_running(&self) -> bool {
@@ -1063,6 +1074,69 @@ impl App {
                     .unwrap();
             }
 
+            _ if m == RELOAD_MACROS => {
+                self.macros
+                    .load_from_folder("../../example_macros")
+                    .unwrap();
+                self.notifs
+                    .notify_str(format!("Reloaded Macros!"), Color::Green);
+            }
+
+            _ if m == RELOAD_COLORS => {
+                self.buffer.reload_color_rules().unwrap();
+                self.notifs
+                    .notify_str(format!("Reloaded Color Rules!"), Color::Green);
+            }
+
+            #[cfg(feature = "logging")]
+            _ if m == SHOW_LOGGING => {
+                self.popup = Some(PopupMenu::Logging);
+                self.refresh_scratch();
+                self.popup_desc_scroll = -2;
+                self.popup_table_state.select(Some(0));
+                self.popup_single_line_state.active = false;
+
+                self.tx
+                    .send(Tick::Scroll.into())
+                    .map_err(|e| e.to_string())
+                    .unwrap();
+            }
+
+            #[cfg(feature = "logging")]
+            _ if m == LOGGING_START => {
+                let port_status_guard = self.serial.port_status.load();
+                let Some(port_info) = &port_status_guard.current_port else {
+                    self.notifs
+                        .notify_str("Not connected to port, not starting log.", Color::Red);
+                    return Ok(());
+                };
+                self.buffer
+                    .log_handle
+                    .request_log_start(port_info.clone())
+                    .unwrap();
+                self.notifs
+                    .notify_str("Requested logging start!", Color::Green);
+            }
+
+            #[cfg(feature = "logging")]
+            _ if m == LOGGING_STOP => {
+                if self.buffer.log_handle.logging_active() {
+                    self.buffer.log_handle.request_log_stop().unwrap();
+                } else {
+                    self.notifs
+                        .notify_str("No logging session active to stop!", Color::Yellow);
+                }
+            }
+
+            #[cfg(feature = "logging")]
+            _ if m == LOGGING_TOGGLE => {
+                if self.buffer.log_handle.logging_active() {
+                    self.run_method_from_string(LOGGING_STOP)?;
+                } else {
+                    self.run_method_from_string(LOGGING_START)?;
+                }
+            }
+
             #[cfg(feature = "espflash")]
             _ if m == SHOW_ESPFLASH => {
                 self.popup = Some(PopupMenu::EspFlash);
@@ -1110,20 +1184,6 @@ impl App {
                 self.notifs
                     .notify_str("Reloaded espflash profiles!", Color::Green);
                 self.espflash.reload().unwrap();
-            }
-
-            _ if m == RELOAD_MACROS => {
-                self.macros
-                    .load_from_folder("../../example_macros")
-                    .unwrap();
-                self.notifs
-                    .notify_str(format!("Reloaded Macros!"), Color::Green);
-            }
-
-            _ if m == RELOAD_COLORS => {
-                self.buffer.reload_color_rules().unwrap();
-                self.notifs
-                    .notify_str(format!("Reloaded Color Rules!"), Color::Green);
             }
 
             unknown => {
@@ -1258,6 +1318,10 @@ impl App {
                     self.scroll_menu_up();
                 }
             }
+            #[cfg(feature = "logging")]
+            Some(PopupMenu::Logging) => {
+                ();
+            }
         }
         if self.popup.is_some() {
             return;
@@ -1385,6 +1449,10 @@ impl App {
                     self.scroll_menu_down();
                 }
             }
+            #[cfg(feature = "logging")]
+            Some(PopupMenu::Logging) => {
+                ();
+            }
         }
         if self.popup.is_some() {
             return;
@@ -1461,6 +1529,8 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             Some(PopupMenu::EspFlash) => (),
+            #[cfg(feature = "logging")]
+            Some(PopupMenu::Logging) => (),
         }
         if self.popup.is_some() {
             return;
@@ -1515,6 +1585,8 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             Some(PopupMenu::EspFlash) => (),
+            #[cfg(feature = "logging")]
+            Some(PopupMenu::Logging) => (),
         }
         if self.popup.is_some() {
             return;
@@ -1660,6 +1732,10 @@ impl App {
                         unknown => unreachable!("unknown espflash command index {unknown}"),
                     }
                 }
+            }
+            #[cfg(feature = "logging")]
+            Some(PopupMenu::Logging) => {
+                ();
             }
         }
         if self.popup.is_some() {
@@ -1896,6 +1972,8 @@ impl App {
             PopupMenu::PortSettings => Color::Cyan,
             #[cfg(feature = "espflash")]
             PopupMenu::EspFlash => Color::Magenta,
+            #[cfg(feature = "logging")]
+            PopupMenu::Logging => Color::Yellow,
         };
 
         let macros_visible_amt = self.macros.visible_len();
@@ -1947,7 +2025,7 @@ impl App {
         );
         let center_area = centered_rect_size(
             Size {
-                width: area.width.min(50),
+                width: area.width.min(60),
                 height: area.height.min(16),
             },
             area,
@@ -2046,7 +2124,10 @@ impl App {
             PopupMenu::BehaviorSettings => Behavior::VISIBLE_FIELDS,
             PopupMenu::RenderingSettings => Rendering::VISIBLE_FIELDS,
             #[cfg(feature = "espflash")]
+            // TODO proper scrollbar for espflash profiles
             PopupMenu::EspFlash => 4,
+            #[cfg(feature = "logging")]
+            PopupMenu::Logging => Logging::VISIBLE_FIELDS,
         };
 
         let height = match popup {
@@ -2286,6 +2367,106 @@ impl App {
                 // match prompt {
                 //     _ => (),
                 // };
+            }
+            #[cfg(feature = "logging")]
+            PopupMenu::Logging => {
+                let new_seperator = {
+                    let mut area = center_inner.clone();
+                    area.y = area.top().saturating_add(1);
+                    area.height = 1;
+                    area
+                };
+                let bins_area = {
+                    let mut area = center_inner.clone();
+                    area.y = area.top().saturating_add(2);
+                    area.height = area.height.saturating_sub(7);
+                    area
+                };
+                let line_block = Block::new()
+                    .borders(Borders::TOP)
+                    .border_style(Style::from(popup_color));
+                frame.render_widget(
+                    Line::raw(r"G:\git\yap\target\debug\logs")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(),
+                    line_area,
+                );
+
+                frame.render_widget(
+                    Line::raw("Esc: Close | Enter: Select")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(),
+                    hint_text_area,
+                );
+
+                let toggle_button = toggle_logging_button(
+                    &mut self.popup_table_state,
+                    self.buffer.log_handle.logging_active(),
+                );
+
+                if self.logging_toggle_selected {
+                    frame.render_stateful_widget(
+                        toggle_button,
+                        settings_area,
+                        &mut self.popup_table_state,
+                    );
+                    frame.render_widget(&line_block, new_seperator);
+                    frame.render_widget(
+                        self.settings.logging.as_table(&mut self.popup_table_state),
+                        bins_area,
+                    );
+                } else {
+                    frame.render_widget(toggle_button, settings_area);
+                    frame.render_widget(&line_block, new_seperator);
+                    frame.render_stateful_widget(
+                        self.settings.logging.as_table(&mut self.popup_table_state),
+                        bins_area,
+                        &mut self.popup_table_state,
+                    );
+                }
+                frame.render_widget(
+                    Line::raw("Settings:")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(),
+                    new_seperator,
+                );
+
+                // if let Some(profile) = self
+                //     .popup_table_state
+                //     .selected()
+                //     .and_then(|idx| self.espflash.profile_from_index(idx))
+                // {
+                //     let hint_text = match profile {
+                //         esp::EspProfile::Bins(_) => "Flash profile binaries to ESP Flash.",
+                //         esp::EspProfile::Elf(profile) if profile.ram => {
+                //             "Load profile ELF into RAM."
+                //         }
+                //         esp::EspProfile::Elf(_) => "Flash profile ELF to ESP Flash.",
+                //     };
+                //     render_scrolling_line(
+                //         hint_text,
+                //         frame,
+                //         scrolling_text_area,
+                //         &mut self.popup_desc_scroll,
+                //     );
+                // }
+
+                // let hints = [
+                //     "Attempt to remotely reset the chip.",
+                //     "Attempt to reboot into bootloader. Shift/Ctrl to skip check.",
+                //     "Query ESP for Flash Size, MAC Address, etc.",
+                //     "Erase all flash contents.",
+                // ];
+                // if let Some(idx) = self.popup_table_state.selected() {
+                //     if let Some(&hint_text) = hints.get(idx) {
+                //         render_scrolling_line(
+                //             hint_text,
+                //             frame,
+                //             scrolling_text_area,
+                //             &mut self.popup_desc_scroll,
+                //         );
+                //     }
+                // }
             }
             #[cfg(feature = "espflash")]
             PopupMenu::EspFlash => {

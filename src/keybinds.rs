@@ -25,6 +25,14 @@ pub mod methods {
     pub const RELOAD_COLORS: &str = "reload-colors";
 }
 
+#[cfg(feature = "logging")]
+pub mod logging_methods {
+    pub const SHOW_LOGGING: &str = "show-logging";
+    pub const LOGGING_START: &str = "logging-start";
+    pub const LOGGING_STOP: &str = "logging-stop";
+    pub const LOGGING_TOGGLE: &str = "logging-toggle";
+}
+
 #[cfg(feature = "espflash")]
 pub mod esp_methods {
     pub const SHOW_ESPFLASH: &str = "show-espflash";

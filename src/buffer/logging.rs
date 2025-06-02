@@ -34,7 +34,13 @@ pub struct LoggingHandle {
     session_open: Arc<AtomicBool>,
 }
 
-const FILE_LINE_TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.9f";
+pub const DEFAULT_TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.9f";
+
+// TODO events from logging thread
+// error
+// logging started
+// logging stopped?
+//
 
 pub enum LoggingCommand {
     PortConnected(DateTime<Local>, SerialPortInfo, Option<ReconnectType>),
@@ -42,8 +48,9 @@ pub enum LoggingCommand {
         timestamp: DateTime<Local>,
         intentional: bool,
     },
-    RequestStart(SerialPortInfo),
+    RequestStart(DateTime<Local>, SerialPortInfo),
     RequestStop,
+    // RequestToggle(DateTime<Local>, SerialPortInfo),
     RequestClearFiles,
     RxBytes(DateTime<Local>, Vec<u8>),
     TxBytes {
@@ -130,8 +137,26 @@ impl LoggingHandle {
             worker,
         )
     }
-    pub fn is_ready(&self) -> bool {
+    pub fn logging_active(&self) -> bool {
         self.session_open.load(Ordering::Acquire)
+    }
+    pub fn request_log_start(&self, port_info: SerialPortInfo) -> YapResult<()> {
+        self.command_tx
+            .send(LoggingCommand::RequestStart(Local::now(), port_info))
+            .map_err(|_| YapError::NoLoggingWorker)?;
+        Ok(())
+    }
+    // pub fn request_log_toggle(&self, port_info: SerialPortInfo) -> YapResult<()> {
+    //     self.command_tx
+    //         .send(LoggingCommand::RequestToggle(Local::now(), port_info))
+    //         .map_err(|_| YapError::NoLoggingWorker)?;
+    //     Ok(())
+    // }
+    pub fn request_log_stop(&self) -> YapResult<()> {
+        self.command_tx
+            .send(LoggingCommand::RequestStop)
+            .map_err(|_| YapError::NoLoggingWorker)?;
+        Ok(())
     }
     pub fn log_port_connected(
         &self,
@@ -243,12 +268,21 @@ impl LoggingWorker {
                 self.last_rx_completed = true;
             }
 
+            let header_timestamp_format = if self.settings.timestamp.trim().is_empty() {
+                DEFAULT_TIMESTAMP_FORMAT
+            } else {
+                &self.settings.timestamp
+            };
+
+            let time = timestamp.format(header_timestamp_format);
+
             let text = if let Some(port_info) = connected_to {
                 let port_name = &port_info.port_name;
-                format!("----- {timestamp} | Connected to {port_name}! -----")
+                format!("----- {time} | Connected to {port_name}! -----")
             } else {
-                format!("----- {timestamp} | Disconnected from port! -----")
+                format!("----- {time} | Disconnected from port! -----")
             };
+
             text_file.inner.write_all(text.as_bytes())?;
             write_line_ending(&mut text_file.inner)?;
         }
@@ -262,15 +296,26 @@ impl LoggingWorker {
                 // } else if self.settings.always_begin_on_connect {
                 // }
                 if reconnect_type.is_none() && self.settings.always_begin_on_connect {
-                    self.begin_logging_session(&port_info)?;
+                    self.begin_logging_session(timestamp, &port_info)?;
                 }
                 self.log_connection_event(timestamp, Some(port_info))?;
             }
-            LoggingCommand::RequestStart(port_info) => {
-                assert!(self.raw_file.is_none());
-                assert!(self.text_file.is_none());
-                self.begin_logging_session(&port_info)?;
+            LoggingCommand::RequestStart(timestamp, port_info) => {
+                if self.raw_file.is_some() || self.text_file.is_some() {
+                    warn!("Logging Start requested when a file is already owned, not acting.");
+                    return Ok(());
+                }
+                // assert!(self.raw_file.is_none());
+                // assert!(self.text_file.is_none());
+                self.begin_logging_session(timestamp, &port_info)?;
             }
+            // LoggingCommand::RequestToggle(timestamp, port_info) => {
+            //     if self.raw_file.is_some() || self.text_file.is_some() {
+            //         self.close_files(false)?;
+            //     } else {
+            //         self.begin_logging_session(timestamp, &port_info)?;
+            //     }
+            // }
             LoggingCommand::RxBytes(timestamp, buf) => {
                 // let Some(raw_file) = &mut self.raw_file else {
                 //     warn!("not logging byte buffer!");
@@ -373,9 +418,12 @@ impl LoggingWorker {
         Ok(())
     }
 
-    fn begin_logging_session(&mut self, port_info: &SerialPortInfo) -> Result<(), std::io::Error> {
+    fn begin_logging_session(
+        &mut self,
+        started_at: DateTime<Local>,
+        port_info: &SerialPortInfo,
+    ) -> Result<(), std::io::Error> {
         self.session_open.store(true, Ordering::Release);
-        let started_at = Local::now();
         self.create_log_files(started_at, port_info)?;
         self.started_at = Some(started_at);
         Ok(())
@@ -479,7 +527,7 @@ impl LoggingWorker {
             };
 
             let header_timestamp_format = if self.settings.timestamp.trim().is_empty() {
-                FILE_LINE_TIMESTAMP_FORMAT
+                DEFAULT_TIMESTAMP_FORMAT
             } else {
                 &self.settings.timestamp
             };
@@ -497,7 +545,7 @@ impl LoggingWorker {
                 .and_then(|mut f| write_line_ending(&mut f).map(|_| f))
         };
 
-        match self.settings.log_type {
+        match self.settings.log_file_type {
             LoggingType::Both => {
                 if self.raw_file.is_none() {
                     self.raw_file = Some(make_binary_log().map(Into::into)?);
@@ -506,7 +554,7 @@ impl LoggingWorker {
                     self.text_file = Some(make_text_log(port_info).map(Into::into)?);
                 }
             }
-            LoggingType::Raw => {
+            LoggingType::Binary => {
                 // Raw only, flush and drop text file if we had one.
                 if let Some(mut text_file) = self.text_file.take() {
                     text_file.inner.flush()?;
