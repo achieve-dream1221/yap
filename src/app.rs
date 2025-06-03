@@ -207,11 +207,11 @@ pub struct App {
     table_state: TableState,
     baud_selection_state: SingleLineSelectorState,
     popup: Option<PopupMenu>,
-    popup_desc_scroll: i32,
+    popup_menu_item: usize,
+    popup_hint_scroll: i32,
     popup_table_state: TableState,
-    popup_single_line_state: SingleLineSelectorState,
-    popup_scrollbar_state: ScrollbarState,
-
+    // popup_scrollbar_state: ScrollbarState,
+    // popup_single_line_state: SingleLineSelectorState,
     notifs: Notifications,
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
@@ -242,9 +242,6 @@ pub struct App {
 
     #[cfg(feature = "espflash")]
     espflash: EspFlashState,
-
-    #[cfg(feature = "logging")]
-    logging_toggle_selected: bool,
     // TODO
     // error_message: Option<String>,
 }
@@ -335,12 +332,13 @@ impl App {
             state: RunningState::Running,
             menu: Menu::PortSelection(PortSelectionElement::Ports),
             popup: None,
-            popup_desc_scroll: -2,
-            popup_scrollbar_state: ScrollbarState::default(),
+            popup_hint_scroll: -2,
             table_state: TableState::new().with_selected(Some(0)),
             baud_selection_state: SingleLineSelectorState::new().with_selected(selected_baud_index),
+            popup_menu_item: 0,
             popup_table_state: TableState::new(),
-            popup_single_line_state: SingleLineSelectorState::new(),
+            // popup_scrollbar_state: ScrollbarState::default(),
+            // popup_single_line_state: SingleLineSelectorState::new(),
             ports: Vec::new(),
 
             carousel: event_carousel,
@@ -371,8 +369,6 @@ impl App {
 
             #[cfg(feature = "espflash")]
             espflash: EspFlashState::new(),
-            #[cfg(feature = "logging")]
-            logging_toggle_selected: false,
         }
     }
     fn is_running(&self) -> bool {
@@ -550,7 +546,7 @@ impl App {
                 }
             },
             Event::Tick(Tick::Scroll) => {
-                self.popup_desc_scroll += 1;
+                self.popup_hint_scroll += 1;
 
                 if self.popup.is_some() {
                     let tx = self.tx.clone();
@@ -786,8 +782,7 @@ impl App {
                 self.user_input.all_text_selected = true;
             }
             key!(home) if self.popup.is_some() => {
-                self.popup_table_state.select(None);
-                self.popup_single_line_state.active = true;
+                self.popup_menu_item = 0;
             }
             // TODO ctrl+backspace remove a word
             key!(ctrl - pageup) | key!(shift - pageup) => self.buffer.scroll_by(i32::MAX),
@@ -1026,13 +1021,8 @@ impl App {
 
             _ if m == SHOW_MACROS => {
                 self.popup = Some(PopupMenu::Macros);
-                if self.macros.is_empty() {
-                    self.popup_table_state.select(None);
-                    self.popup_single_line_state.active = true;
-                } else {
-                    self.popup_table_state.select(Some(0));
-                    self.popup_single_line_state.active = false;
-                }
+                self.popup_hint_scroll = -2;
+                self.popup_menu_item = 0;
                 self.tx
                     .send(Tick::Scroll.into())
                     .map_err(|e| e.to_string())
@@ -1041,8 +1031,8 @@ impl App {
 
             _ if m == SHOW_BEHAVIOR => {
                 self.popup = Some(PopupMenu::BehaviorSettings);
-                self.popup_single_line_state.active = false;
-                self.popup_table_state.select(Some(0));
+                self.popup_hint_scroll = -2;
+                self.popup_menu_item = 0;
 
                 self.tx
                     .send(Tick::Scroll.into())
@@ -1052,8 +1042,8 @@ impl App {
 
             _ if m == SHOW_RENDERING => {
                 self.popup = Some(PopupMenu::RenderingSettings);
-                self.popup_single_line_state.active = false;
-                self.popup_table_state.select(Some(0));
+                self.popup_hint_scroll = -2;
+                self.popup_menu_item = 0;
 
                 self.tx
                     .send(Tick::Scroll.into())
@@ -1064,9 +1054,8 @@ impl App {
             _ if m == SHOW_PORTSETTINGS => {
                 self.popup = Some(PopupMenu::PortSettings);
                 self.refresh_scratch();
-                self.popup_desc_scroll = -2;
-                self.popup_table_state.select(Some(0));
-                self.popup_single_line_state.active = false;
+                self.popup_hint_scroll = -2;
+                self.popup_menu_item = 0;
 
                 self.tx
                     .send(Tick::Scroll.into())
@@ -1092,9 +1081,8 @@ impl App {
             _ if m == SHOW_LOGGING => {
                 self.popup = Some(PopupMenu::Logging);
                 self.refresh_scratch();
-                self.popup_desc_scroll = -2;
-                self.popup_table_state.select(Some(0));
-                self.popup_single_line_state.active = false;
+                self.popup_hint_scroll = -2;
+                self.popup_menu_item = 0;
 
                 self.tx
                     .send(Tick::Scroll.into())
@@ -1141,9 +1129,8 @@ impl App {
             _ if m == SHOW_ESPFLASH => {
                 self.popup = Some(PopupMenu::EspFlash);
                 self.refresh_scratch();
-                self.popup_desc_scroll = -2;
-                self.popup_table_state.select(Some(0));
-                self.popup_single_line_state.active = false;
+                self.popup_hint_scroll = -2;
+                self.popup_menu_item = 0;
 
                 self.tx
                     .send(Tick::Scroll.into())
@@ -1222,108 +1209,13 @@ impl App {
     }
     fn up_pressed(&mut self) {
         self.user_input.all_text_selected = false;
-        self.popup_desc_scroll = -2;
-        match &self.popup {
-            None => (),
-            Some(popup) if self.popup_single_line_state.active => {
-                match popup {
-                    PopupMenu::Macros if self.macros.none_visible() => return,
-                    #[cfg(feature = "espflash")]
-                    PopupMenu::EspFlash if self.espflash.is_empty() => {
-                        self.popup_table_state.select_last();
-                    }
-                    #[cfg(feature = "espflash")]
-                    PopupMenu::EspFlash => {
-                        self.popup_table_state.select_last();
-                        self.espflash.profiles_selected = true;
-                    }
-                    _ => (),
-                }
-                self.popup_single_line_state.active = false;
-                self.popup_table_state.select_last();
-            }
-            Some(PopupMenu::PortSettings) => {
-                match self
-                    .scratch
-                    .last_port_settings
-                    .handle_input(ArrowKey::Up, &mut self.popup_table_state)
-                    .unwrap()
-                {
-                    (_, true, _) | (_, _, true) => {
-                        self.popup_table_state.select(None);
-                        self.popup_single_line_state.active = true;
-                    }
-                    (_, _, _) => (),
-                }
-            }
-            Some(PopupMenu::RenderingSettings) => {
-                match self
-                    .scratch
-                    .rendering
-                    .handle_input(ArrowKey::Up, &mut self.popup_table_state)
-                    .unwrap()
-                {
-                    (_, true, _) | (_, _, true) => {
-                        self.popup_table_state.select(None);
-                        self.popup_single_line_state.active = true;
-                    }
-                    (_, _, _) => (),
-                }
-            }
-            Some(PopupMenu::BehaviorSettings) => {
-                match self
-                    .scratch
-                    .behavior
-                    .handle_input(ArrowKey::Up, &mut self.popup_table_state)
-                    .unwrap()
-                {
-                    (_, true, _) | (_, _, true) => {
-                        self.popup_table_state.select(None);
-                        self.popup_single_line_state.active = true;
-                    }
-                    (_, _, _) => (),
-                }
-            }
-            Some(PopupMenu::Macros) if self.macros.categories_selector.active => {
-                self.popup_single_line_state.active = true;
-                self.macros.categories_selector.active = false;
-            }
-            Some(PopupMenu::Macros) => {
-                if self.popup_table_state.selected() == Some(0) {
-                    self.popup_table_state.select(None);
-                    if self.macros.search_input.value().is_empty() {
-                        self.macros.categories_selector.active = true;
-                    } else {
-                        self.popup_single_line_state.active = true;
-                    }
-                } else {
-                    self.scroll_menu_up();
-                }
-            }
-            #[cfg(feature = "espflash")]
-            Some(PopupMenu::EspFlash) if self.espflash.profiles_selected => {
-                if self.popup_table_state.selected() == Some(0) {
-                    self.popup_table_state.select_last();
-                    self.espflash.profiles_selected = false;
-                } else {
-                    self.scroll_menu_up();
-                }
-            }
-            #[cfg(feature = "espflash")]
-            Some(PopupMenu::EspFlash) => {
-                if self.popup_table_state.selected() == Some(0) {
-                    self.popup_table_state.select(None);
-                    self.popup_single_line_state.active = true;
-                } else {
-                    self.scroll_menu_up();
-                }
-            }
-            #[cfg(feature = "logging")]
-            Some(PopupMenu::Logging) => {
-                ();
-            }
-        }
         if self.popup.is_some() {
+            self.popup_hint_scroll = -2;
+            match self.popup_menu_item {
+                0 => self.popup_menu_item = self.current_popup_item_count(),
+                _ => self.popup_menu_item = self.popup_menu_item - 1,
+            }
+
             return;
         }
 
@@ -1346,115 +1238,15 @@ impl App {
     }
     fn down_pressed(&mut self) {
         self.user_input.all_text_selected = false;
-        self.popup_desc_scroll = -2;
-        match &self.popup {
-            None => (),
-            // If categories selected, try to select first visible macro.
-            Some(popup) if self.macros.categories_selector.active => {
-                match popup {
-                    PopupMenu::Macros if self.macros.none_visible() => return,
-                    _ => (),
-                }
-                self.macros.categories_selector.active = false;
-                self.popup_table_state.select_first();
-            }
-            // If popup selector chosen on Macro screen, select the Macro Categories (if there's no search active)
-            // Has to be above the catch-all below
-            Some(PopupMenu::Macros) if self.popup_single_line_state.active => {
-                self.popup_single_line_state.active = false;
-
-                if self.macros.search_input.value().is_empty() {
-                    self.macros.categories_selector.active = true;
-                } else {
-                    self.popup_table_state.select_first();
-                }
-            }
-            // If on any other screen, just select the first element.
-            Some(popup) if self.popup_single_line_state.active => {
-                self.popup_single_line_state.active = false;
-                self.popup_table_state.select_first();
-            }
-            Some(PopupMenu::PortSettings) => {
-                match self
-                    .scratch
-                    .last_port_settings
-                    .handle_input(ArrowKey::Down, &mut self.popup_table_state)
-                    .unwrap()
-                {
-                    (_, true, _) | (_, _, true) => {
-                        self.popup_table_state.select(None);
-                        self.popup_single_line_state.active = true;
-                    }
-                    (_, _, _) => (),
-                }
-            }
-            Some(PopupMenu::BehaviorSettings) => {
-                match self
-                    .scratch
-                    .behavior
-                    .handle_input(ArrowKey::Down, &mut self.popup_table_state)
-                    .unwrap()
-                {
-                    (_, true, _) | (_, _, true) => {
-                        self.popup_table_state.select(None);
-                        self.popup_single_line_state.active = true;
-                    }
-                    (_, _, _) => (),
-                }
-            }
-            Some(PopupMenu::RenderingSettings) => {
-                match self
-                    .scratch
-                    .rendering
-                    .handle_input(ArrowKey::Down, &mut self.popup_table_state)
-                    .unwrap()
-                {
-                    (_, true, _) | (_, _, true) => {
-                        self.popup_table_state.select(None);
-                        self.popup_single_line_state.active = true;
-                    }
-                    (_, _, _) => (),
-                }
-            }
-
-            Some(PopupMenu::Macros) => {
-                if self.popup_table_state.selected() >= self.macros.last_index_checked() {
-                    self.popup_table_state.select(None);
-                    self.popup_single_line_state.active = true;
-                } else {
-                    self.scroll_menu_down();
-                }
-            }
-            #[cfg(feature = "espflash")]
-            Some(PopupMenu::EspFlash) if self.espflash.profiles_selected => {
-                if self.popup_table_state.selected() >= Some(self.espflash.last_index()) {
-                    self.popup_table_state.select(None);
-                    self.popup_single_line_state.active = true;
-                    self.espflash.profiles_selected = false;
-                } else {
-                    self.scroll_menu_down();
-                }
-            }
-            #[cfg(feature = "espflash")]
-            Some(PopupMenu::EspFlash) => {
-                if self.popup_table_state.selected() >= Some(esp::ESPFLASH_BUTTON_COUNT - 1) {
-                    if self.espflash.is_empty() {
-                        self.popup_table_state.select(None);
-                        self.popup_single_line_state.active = true;
-                    } else {
-                        self.popup_table_state.select_first();
-                        self.espflash.profiles_selected = true;
-                    }
-                } else {
-                    self.scroll_menu_down();
-                }
-            }
-            #[cfg(feature = "logging")]
-            Some(PopupMenu::Logging) => {
-                ();
-            }
-        }
         if self.popup.is_some() {
+            self.popup_hint_scroll = -2;
+            match self.popup_menu_item {
+                _ if self.popup_menu_item == self.current_popup_item_count() => {
+                    self.popup_menu_item = 0
+                }
+                _ => self.popup_menu_item = self.popup_menu_item + 1,
+            }
+
             return;
         }
 
@@ -1497,25 +1289,25 @@ impl App {
     fn left_pressed(&mut self) {
         match &mut self.popup {
             None => (),
-            Some(_popup) if self.popup_single_line_state.active => {
+            Some(_popup) if self.popup_menu_item == 0 => {
                 self.scroll_popup(false);
             }
             Some(PopupMenu::PortSettings) => {
                 self.scratch
                     .last_port_settings
-                    .handle_input(ArrowKey::Left, &mut self.popup_table_state)
+                    .handle_input(ArrowKey::Left, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
             Some(PopupMenu::BehaviorSettings) => {
                 self.scratch
                     .behavior
-                    .handle_input(ArrowKey::Left, &mut self.popup_table_state)
+                    .handle_input(ArrowKey::Left, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
             Some(PopupMenu::RenderingSettings) => {
                 self.scratch
                     .rendering
-                    .handle_input(ArrowKey::Left, &mut self.popup_table_state)
+                    .handle_input(ArrowKey::Left, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
             Some(PopupMenu::Macros) => {
@@ -1523,8 +1315,12 @@ impl App {
                     return;
                 }
                 self.macros.categories_selector.prev();
-                if self.popup_table_state.selected().is_some() && !self.macros.none_visible() {
-                    self.popup_table_state.select_first();
+                if self.popup_menu_item >= 2 {
+                    if self.macros.none_visible() {
+                        self.popup_menu_item = 1;
+                    } else {
+                        self.popup_menu_item = 2;
+                    }
                 }
             }
             #[cfg(feature = "espflash")]
@@ -1553,25 +1349,25 @@ impl App {
         // }
         match &mut self.popup {
             None => (),
-            Some(popup) if self.popup_single_line_state.active => {
+            Some(popup) if self.popup_menu_item == 0 => {
                 self.scroll_popup(true);
             }
             Some(PopupMenu::PortSettings) => {
                 self.scratch
                     .last_port_settings
-                    .handle_input(ArrowKey::Right, &mut self.popup_table_state)
+                    .handle_input(ArrowKey::Right, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
             Some(PopupMenu::BehaviorSettings) => {
                 self.scratch
                     .behavior
-                    .handle_input(ArrowKey::Right, &mut self.popup_table_state)
+                    .handle_input(ArrowKey::Right, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
             Some(PopupMenu::RenderingSettings) => {
                 self.scratch
                     .rendering
-                    .handle_input(ArrowKey::Right, &mut self.popup_table_state)
+                    .handle_input(ArrowKey::Right, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
             Some(PopupMenu::Macros) => {
@@ -1579,8 +1375,12 @@ impl App {
                     return;
                 }
                 self.macros.categories_selector.next();
-                if self.popup_table_state.selected().is_some() && !self.macros.none_visible() {
-                    self.popup_table_state.select_first();
+                if self.popup_menu_item >= 2 {
+                    if self.macros.none_visible() {
+                        self.popup_menu_item = 1;
+                    } else {
+                        self.popup_menu_item = 2;
+                    }
                 }
             }
             #[cfg(feature = "espflash")]
@@ -1649,12 +1449,10 @@ impl App {
                 return;
             }
             Some(PopupMenu::Macros) => {
-                if self.popup_single_line_state.active || self.macros.categories_selector.active {
+                if self.popup_menu_item < 2 {
                     return;
                 }
-                let Some(index) = self.popup_table_state.selected() else {
-                    unreachable!();
-                };
+                let index = self.get_corrected_popup_item().unwrap();
                 let (tag, string) = self.macros.filtered_macro_iter().nth(index).unwrap();
                 let tag = tag.to_owned();
                 // let macro_ref: MacroNameTag = macro_binding.into();
@@ -1695,14 +1493,16 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             Some(PopupMenu::EspFlash) => {
-                let Some(selected) = self.popup_table_state.selected() else {
+                if self.popup_menu_item == 0 {
                     return;
-                };
+                }
                 if !serial_healthy {
                     self.notifs.notify_str("Port isn't ready!", Color::Red);
                     return;
                 }
-                if self.espflash.profiles_selected {
+                let selected = self.get_corrected_popup_item().unwrap();
+                // If a profile is selected
+                if self.popup_menu_item > esp::ESPFLASH_BUTTON_COUNT {
                     assert!(
                         !self.espflash.is_empty(),
                         "shouldn't have selected a non-existant flash profile"
@@ -1771,7 +1571,7 @@ impl App {
                 self.refresh_scratch();
                 self.popup = Some(PopupMenu::PortSettings);
                 self.table_state.select(None);
-                self.popup_single_line_state.active = true;
+                self.popup_menu_item = 0;
 
                 self.tx
                     .send(Tick::Scroll.into())
@@ -1836,7 +1636,8 @@ impl App {
                         self.menu = Menu::Terminal(TerminalPrompt::None);
                         self.dismiss_popup();
                         self.popup = Some(PopupMenu::PortSettings);
-                        self.popup_table_state.select_first();
+                        // Select first menu item
+                        self.popup_menu_item = 1;
                         self.tx.send(Tick::Scroll.into()).unwrap();
                     }
                     DisconnectPrompt::Disconnect => {
@@ -1892,18 +1693,82 @@ impl App {
     // for the different menus and selections
     // not sure, things are gonna get interesting with the key presses
     fn scroll_menu_up(&mut self) {
-        if self.popup.is_some() {
-            self.popup_table_state.scroll_up_by(1);
-            return;
-        }
         self.table_state.scroll_up_by(1);
     }
     fn scroll_menu_down(&mut self) {
-        if self.popup.is_some() {
-            self.popup_table_state.scroll_down_by(1);
-            return;
-        }
         self.table_state.scroll_down_by(1);
+    }
+    /// Get max number of selectable elements for current popup.
+    ///
+    /// Panics if no popup is active.
+    fn current_popup_item_count(&self) -> usize {
+        let popup = self
+            .popup
+            .as_ref()
+            .expect("popup needed to get max scroll index");
+        match popup {
+            PopupMenu::Macros => {
+                1 + // Macros' category selector
+                self.macros.visible_len()
+            }
+            PopupMenu::PortSettings => PortSettings::VISIBLE_FIELDS,
+            PopupMenu::BehaviorSettings => Behavior::VISIBLE_FIELDS,
+            PopupMenu::RenderingSettings => Rendering::VISIBLE_FIELDS,
+            #[cfg(feature = "espflash")]
+            // TODO proper scrollbar for espflash profiles
+            PopupMenu::EspFlash => esp::ESPFLASH_BUTTON_COUNT + self.espflash.len(),
+            #[cfg(feature = "logging")]
+            PopupMenu::Logging => {
+                1 + // Start/Stop Logging button
+                Logging::VISIBLE_FIELDS
+            }
+        }
+    }
+    /// Gets corrected index of selected element.
+    ///
+    /// Returns None if either the Menu selector or the Macros category selector is active
+    ///
+    /// Used to select the current active element in tables.
+    ///
+    /// Panics if no popup is active.
+    fn get_corrected_popup_item(&self) -> Option<usize> {
+        let popup = self
+            .popup
+            .as_ref()
+            .expect("popup needed to get corrected scroll index");
+        let raw_scroll = self.popup_menu_item;
+        // debug_assert!(raw_scroll > 0);
+        match (popup, raw_scroll) {
+            // Menu selector active
+            (_, 0) => None,
+
+            // Normal settings menus
+            // Just correct for the category selector
+            (PopupMenu::PortSettings, _)
+            | (PopupMenu::RenderingSettings, _)
+            | (PopupMenu::BehaviorSettings, _) => Some(self.popup_menu_item - 1),
+
+            // Macro Categories selector active
+            (PopupMenu::Macros, 1) => None,
+            // Macros selection
+            (PopupMenu::Macros, _) => Some(raw_scroll - 2),
+
+            #[cfg(feature = "logging")]
+            // Logging Toggle button active
+            (PopupMenu::Logging, 1) => None,
+            #[cfg(feature = "logging")]
+            // Logging Settings active
+            (PopupMenu::Logging, _) => Some(raw_scroll - 2),
+
+            #[cfg(feature = "espflash")]
+            // espflash pre-set action buttons
+            (PopupMenu::EspFlash, _) if raw_scroll >= esp::ESPFLASH_BUTTON_COUNT + 1 => {
+                Some(raw_scroll - (esp::ESPFLASH_BUTTON_COUNT + 1))
+            }
+            #[cfg(feature = "espflash")]
+            // espflash user profiles
+            (PopupMenu::EspFlash, _) => Some(raw_scroll - 1),
+        }
     }
     pub fn draw(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
         // let start = Instant::now();
@@ -1978,48 +1843,40 @@ impl App {
 
         let macros_visible_amt = self.macros.visible_len();
 
-        match (
-            popup,
-            self.macros.categories_selector.active,
-            self.popup_single_line_state.active,
-            self.popup_table_state.selected().is_some(),
-        ) {
-            // Macros-specific logic
-            (PopupMenu::Macros, _, true, true) | (PopupMenu::Macros, true, _, true) => {
-                if macros_visible_amt == 0 {
-                    self.popup_single_line_state.active = false;
-                    self.macros.categories_selector.active = true;
+        let mut menu_selector_state = SingleLineSelectorState::new();
 
-                    self.popup_table_state.select(None);
-                } else {
-                    self.popup_single_line_state.active = false;
-                    self.macros.categories_selector.active = false;
-                }
-            }
-            (PopupMenu::Macros, false, false, false) if macros_visible_amt == 0 => {
-                self.popup_single_line_state.active = false;
-                self.macros.categories_selector.active = true;
-
-                self.popup_table_state.select(None);
-            }
-
-            // Generic logic
-            (_, _, true, true) => {
-                self.popup_single_line_state.active = true;
+        // Set active states based on item index
+        match (self.popup_menu_item, popup) {
+            (0, _) => {
+                menu_selector_state.active = true;
                 self.macros.categories_selector.active = false;
-
-                self.popup_table_state.select(None);
             }
-            _ => (),
+            (1, PopupMenu::Macros) => {
+                menu_selector_state.active = false;
+                self.macros.categories_selector.active = true;
+            }
+            (_, _) => {
+                menu_selector_state.active = false;
+                self.macros.categories_selector.active = false;
+            }
         }
         // Above match should ensure these pass without issue.
+        let selector_range = match popup {
+            PopupMenu::Macros => 0..=1,
+            _ => 0..=0,
+        };
         assert!(
-            (self.popup_single_line_state.active || self.macros.categories_selector.active)
-                != self.popup_table_state.selected().is_some(),
+            (menu_selector_state.active || self.macros.categories_selector.active)
+                == selector_range.contains(&self.popup_menu_item),
             "Either a table element needs to be selected, or the menu title widget, but never both or neither."
         );
+        // assert!(
+        //     (self.popup_single_line_state.active || self.macros.categories_selector.active)
+        //         != self.popup_table_state.selected().is_some(),
+        //     "Either a table element needs to be selected, or the menu title widget, but never both or neither."
+        // );
         assert_eq!(
-            self.popup_single_line_state.active && self.macros.categories_selector.active,
+            menu_selector_state.active && self.macros.categories_selector.active,
             false,
             "Both selectors can't be active."
         );
@@ -2056,17 +1913,13 @@ impl App {
         //     line.x -= 1;
         //     line
         // });
-        self.popup_single_line_state.select(
+        menu_selector_state.select(
             <PopupMenu as VariantArray>::VARIANTS
                 .iter()
                 .position(|v| v == popup)
                 .unwrap(),
         );
-        frame.render_stateful_widget(
-            &popup_menu_title_selector,
-            title,
-            &mut self.popup_single_line_state,
-        );
+        frame.render_stateful_widget(&popup_menu_title_selector, title, &mut menu_selector_state);
 
         let center_inner = block.inner(center_area);
 
@@ -2117,46 +1970,50 @@ impl App {
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"));
 
-        let content_length = match popup {
-            PopupMenu::Macros => self.macros.visible_len(),
-            // TODO find more clear way than checking this length
-            PopupMenu::PortSettings => PortSettings::VISIBLE_FIELDS,
-            PopupMenu::BehaviorSettings => Behavior::VISIBLE_FIELDS,
-            PopupMenu::RenderingSettings => Rendering::VISIBLE_FIELDS,
-            #[cfg(feature = "espflash")]
-            // TODO proper scrollbar for espflash profiles
-            PopupMenu::EspFlash => 4,
-            #[cfg(feature = "logging")]
-            PopupMenu::Logging => Logging::VISIBLE_FIELDS,
-        };
+        // let content_length = match popup {
+        //     PopupMenu::Macros => self.macros.visible_len(),
+        //     // TODO find more clear way than checking this length
+        //     PopupMenu::PortSettings => PortSettings::VISIBLE_FIELDS,
+        //     PopupMenu::BehaviorSettings => Behavior::VISIBLE_FIELDS,
+        //     PopupMenu::RenderingSettings => Rendering::VISIBLE_FIELDS,
+        //     #[cfg(feature = "espflash")]
+        //     // TODO proper scrollbar for espflash profiles
+        //     PopupMenu::EspFlash => 4,
+        //     #[cfg(feature = "logging")]
+        //     PopupMenu::Logging => Logging::VISIBLE_FIELDS,
+        // };
 
         let height = match popup {
             PopupMenu::Macros => macros_table_area.height,
             _ => settings_area.height,
         };
 
-        self.popup_scrollbar_state = self
-            .popup_scrollbar_state
-            .content_length(content_length.saturating_sub(height as usize));
+        // self.popup_scrollbar_state = self
+        //     .popup_scrollbar_state
+        //     .content_length(content_length.saturating_sub(height as usize));
+        // self.popup_scrollbar_state = self
+        //     .popup_scrollbar_state
+        //     .position(self.popup_table_state.offset());
 
-        self.popup_scrollbar_state = self
-            .popup_scrollbar_state
-            .position(self.popup_table_state.offset());
-        frame.render_stateful_widget(
-            scrollbar,
-            center_inner.offset(Offset { x: 1, y: 0 }).inner(Margin {
-                horizontal: 0,
-                vertical: 1,
-            }),
-            &mut self.popup_scrollbar_state,
-        );
+        // self.popup_scrollbar_state = self.popup_scrollbar_state.position();
+
+        // let shared_table_state: TableState = {
+        //     let mut table_state = TableState::new();
+
+        //     table_state
+        // };
 
         match popup {
             PopupMenu::PortSettings => {
+                let selected = self.get_corrected_popup_item();
+                self.popup_table_state.select(selected);
+                self.popup_table_state.select_first_column();
+                // let mut table_state = TableState::new()
+                //     .with_selected_column(0)
+                //     .with_selected(selected);
+
                 frame.render_stateful_widget(
-                    self.scratch
-                        .last_port_settings
-                        .as_table(&mut self.popup_table_state),
+                    self.scratch.last_port_settings.as_table(),
                     settings_area,
                     &mut self.popup_table_state,
                 );
@@ -2170,7 +2027,7 @@ impl App {
                     text,
                     frame,
                     scrolling_text_area,
-                    &mut self.popup_desc_scroll,
+                    &mut self.popup_hint_scroll,
                 );
                 frame.render_widget(
                     Line::raw("Esc: Cancel | Enter: Save")
@@ -2180,8 +2037,12 @@ impl App {
                 );
             }
             PopupMenu::BehaviorSettings => {
+                let selected = self.get_corrected_popup_item();
+                self.popup_table_state.select(selected);
+                self.popup_table_state.select_first_column();
+
                 frame.render_stateful_widget(
-                    self.scratch.behavior.as_table(&mut self.popup_table_state),
+                    self.scratch.behavior.as_table(),
                     settings_area,
                     &mut self.popup_table_state,
                 );
@@ -2194,7 +2055,7 @@ impl App {
                     text,
                     frame,
                     scrolling_text_area,
-                    &mut self.popup_desc_scroll,
+                    &mut self.popup_hint_scroll,
                 );
                 frame.render_widget(
                     Line::raw("Esc: Cancel | Enter: Save")
@@ -2204,8 +2065,12 @@ impl App {
                 );
             }
             PopupMenu::RenderingSettings => {
+                let selected = self.get_corrected_popup_item();
+                self.popup_table_state.select(selected);
+                self.popup_table_state.select_first_column();
+
                 frame.render_stateful_widget(
-                    self.scratch.rendering.as_table(&mut self.popup_table_state),
+                    self.scratch.rendering.as_table(),
                     settings_area,
                     &mut self.popup_table_state,
                 );
@@ -2218,7 +2083,7 @@ impl App {
                     text,
                     frame,
                     scrolling_text_area,
-                    &mut self.popup_desc_scroll,
+                    &mut self.popup_hint_scroll,
                 );
                 frame.render_widget(
                     Line::raw("Esc: Cancel | Enter: Save")
@@ -2305,6 +2170,9 @@ impl App {
                 //     table = table.dark_gray();
                 // };
 
+                let selected = self.get_corrected_popup_item();
+                self.popup_table_state.select(selected);
+                self.popup_table_state.select_first_column();
                 frame.render_stateful_widget(table, macros_table_area, &mut self.popup_table_state);
 
                 // frame.render_widget(
@@ -2349,7 +2217,7 @@ impl App {
                         line,
                         frame,
                         scrolling_text_area,
-                        &mut self.popup_desc_scroll,
+                        &mut self.popup_hint_scroll,
                     );
                 } else {
                     if self.macros.is_empty() {
@@ -2379,18 +2247,23 @@ impl App {
                 let bins_area = {
                     let mut area = center_inner.clone();
                     area.y = area.top().saturating_add(2);
-                    area.height = area.height.saturating_sub(7);
+                    area.height = area.height.saturating_sub(4);
                     area
                 };
                 let line_block = Block::new()
                     .borders(Borders::TOP)
                     .border_style(Style::from(popup_color));
-                frame.render_widget(
-                    Line::raw(r"G:\git\yap\target\debug\logs")
-                        .all_spans_styled(Color::DarkGray.into())
-                        .centered(),
-                    line_area,
-                );
+
+                let log_path_text = r"Saving to: G:\git\yap\target\debug\logs";
+                let log_path_line = Line::raw(log_path_text)
+                    .all_spans_styled(Color::DarkGray.into())
+                    .centered();
+
+                if log_path_line.width() <= line_area.width as usize {
+                    frame.render_widget(log_path_line, line_area);
+                } else {
+                    frame.render_widget(log_path_line.right_aligned(), line_area);
+                }
 
                 frame.render_widget(
                     Line::raw("Esc: Close | Enter: Select")
@@ -2399,27 +2272,28 @@ impl App {
                     hint_text_area,
                 );
 
-                let toggle_button = toggle_logging_button(
-                    &mut self.popup_table_state,
-                    self.buffer.log_handle.logging_active(),
-                );
+                let toggle_button = toggle_logging_button(self.buffer.log_handle.logging_active());
+                let logging_toggle_selected = self.popup_menu_item == 1;
+                if logging_toggle_selected {
+                    self.popup_table_state.select(Some(0));
+                    self.popup_table_state.select_first_column();
 
-                if self.logging_toggle_selected {
                     frame.render_stateful_widget(
                         toggle_button,
                         settings_area,
                         &mut self.popup_table_state,
                     );
                     frame.render_widget(&line_block, new_seperator);
-                    frame.render_widget(
-                        self.settings.logging.as_table(&mut self.popup_table_state),
-                        bins_area,
-                    );
+                    frame.render_widget(self.settings.logging.as_table(), bins_area);
                 } else {
+                    let selected = self.get_corrected_popup_item();
+                    self.popup_table_state.select(selected);
+                    self.popup_table_state.select_first_column();
+
                     frame.render_widget(toggle_button, settings_area);
                     frame.render_widget(&line_block, new_seperator);
                     frame.render_stateful_widget(
-                        self.settings.logging.as_table(&mut self.popup_table_state),
+                        self.settings.logging.as_table(),
                         bins_area,
                         &mut self.popup_table_state,
                     );
@@ -2499,23 +2373,22 @@ impl App {
                     hint_text_area,
                 );
 
-                if self.espflash.profiles_selected {
-                    frame.render_widget(
-                        esp::espflash_buttons(&mut self.popup_table_state),
-                        settings_area,
-                    );
+                let profiles_selected = self.popup_menu_item >= esp::ESPFLASH_BUTTON_COUNT + 1;
+
+                // if self.popup_menu_item ==
+                if profiles_selected {
+                    let corrected_index = self.get_corrected_popup_item().unwrap();
+
+                    frame.render_widget(esp::espflash_buttons(), settings_area);
                     frame.render_widget(&line_block, new_seperator);
                     frame.render_stateful_widget(
-                        self.espflash.profiles_table(&mut self.popup_table_state),
+                        self.espflash.profiles_table(),
                         bins_area,
-                        &mut self.popup_table_state,
+                        &mut TableState::new()
+                            .with_selected_column(0)
+                            .with_selected(Some(corrected_index)),
                     );
-
-                    if let Some(profile) = self
-                        .popup_table_state
-                        .selected()
-                        .and_then(|idx| self.espflash.profile_from_index(idx))
-                    {
+                    if let Some(profile) = self.espflash.profile_from_index(corrected_index) {
                         let hint_text = match profile {
                             esp::EspProfile::Bins(_) => "Flash profile binaries to ESP Flash.",
                             esp::EspProfile::Elf(profile) if profile.ram => {
@@ -2527,20 +2400,21 @@ impl App {
                             hint_text,
                             frame,
                             scrolling_text_area,
-                            &mut self.popup_desc_scroll,
+                            &mut self.popup_hint_scroll,
                         );
                     }
                 } else {
+                    let corrected_index = self.get_corrected_popup_item();
+
                     frame.render_stateful_widget(
-                        esp::espflash_buttons(&mut self.popup_table_state),
+                        esp::espflash_buttons(),
                         settings_area,
-                        &mut self.popup_table_state,
+                        &mut TableState::new()
+                            .with_selected_column(0)
+                            .with_selected(corrected_index),
                     );
                     frame.render_widget(&line_block, new_seperator);
-                    frame.render_widget(
-                        self.espflash.profiles_table(&mut self.popup_table_state),
-                        bins_area,
-                    );
+                    frame.render_widget(self.espflash.profiles_table(), bins_area);
 
                     let hints = [
                         "Attempt to remotely reset the chip.",
@@ -2548,13 +2422,13 @@ impl App {
                         "Query ESP for Flash Size, MAC Address, etc.",
                         "Erase all flash contents.",
                     ];
-                    if let Some(idx) = self.popup_table_state.selected() {
+                    if let Some(idx) = corrected_index {
                         if let Some(&hint_text) = hints.get(idx) {
                             render_scrolling_line(
                                 hint_text,
                                 frame,
                                 scrolling_text_area,
-                                &mut self.popup_desc_scroll,
+                                &mut self.popup_hint_scroll,
                             );
                         }
                     }
@@ -2567,6 +2441,21 @@ impl App {
                 );
             }
         }
+        // TODO
+        // shrink scrollbar and change content length based on if its for a submenu or not
+        let content_length = self.current_popup_item_count();
+        let mut scrollbar_state =
+            ScrollbarState::new(content_length.saturating_sub(height as usize))
+                .position(self.popup_table_state.offset());
+
+        frame.render_stateful_widget(
+            scrollbar,
+            center_inner.offset(Offset { x: 1, y: 0 }).inner(Margin {
+                horizontal: 0,
+                vertical: 1,
+            }),
+            &mut scrollbar_state,
+        );
     }
 
     // #[instrument(skip(self))]
@@ -2986,10 +2875,8 @@ impl App {
     fn dismiss_popup(&mut self) {
         self.refresh_scratch();
         self.popup.take();
-        self.macros.categories_selector.active = false;
-        // self.macros.ui_state = MacrosPrompt::None;
-        self.popup_single_line_state.active = false;
-        self.popup_table_state.select(None);
+        self.popup_menu_item = 0;
+        self.popup_hint_scroll = -2;
     }
     fn scroll_popup(&mut self, next: bool) {
         let Some(popup) = &mut self.popup else {
@@ -2997,23 +2884,12 @@ impl App {
         };
 
         let mut new_popup = if next { popup.next() } else { popup.prev() };
-        match &popup {
-            PopupMenu::Macros => self.macros.categories_selector.active = false,
-            _ => (),
-        };
-        // match &new_popup {
-
-        // };
 
         std::mem::swap(popup, &mut new_popup);
 
         self.refresh_scratch();
-        self.popup_desc_scroll = -2;
+        self.popup_hint_scroll = -2;
         self.macros.search_input.reset();
-        #[cfg(feature = "espflash")]
-        {
-            self.espflash.profiles_selected = false;
-        }
     }
 }
 

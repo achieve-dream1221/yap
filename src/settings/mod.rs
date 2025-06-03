@@ -219,10 +219,12 @@ impl std::fmt::Display for MaxBytesPerLine {
 #[derive(
     Debug, Default, Clone, PartialEq, Serialize, Deserialize, strum::VariantArray, strum::Display,
 )]
-#[strum(serialize_all = "title_case")]
+// #[strum(serialize_all = "title_case")]
 pub enum LoggingType {
     #[default]
+    #[strum(serialize = "Text Only")]
     Text,
+    #[strum(serialize = "Binary Only")]
     Binary,
     #[strum(serialize = "Text + Binary")]
     Both,

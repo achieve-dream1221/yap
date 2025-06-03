@@ -21,6 +21,8 @@ use serde::Deserialize;
 
 use super::centered_rect_size;
 
+// TODO move file stuff out of TUI module
+
 #[derive(Debug)]
 pub enum EspProfile {
     Bins(EspBins),
@@ -196,7 +198,6 @@ pub struct EspFlashState {
     popup: Option<EspPopup>,
     bins: Vec<EspBins>,
     elfs: Vec<EspElf>,
-    pub profiles_selected: bool,
 }
 
 impl EspFlashState {
@@ -208,7 +209,6 @@ impl EspFlashState {
             popup: None,
             bins: bin,
             elfs: elf,
-            profiles_selected: false,
         }
     }
     pub fn reload(&mut self) -> color_eyre::Result<()> {
@@ -309,7 +309,6 @@ impl EspFlashState {
     }
     pub fn reset(&mut self) {
         _ = self.popup.take();
-        self.profiles_selected = false;
     }
     pub fn render_espflash(&self, frame: &mut Frame, screen: Rect) {
         let center_area = centered_rect_size(
@@ -425,8 +424,7 @@ impl EspFlashState {
             _ => (),
         }
     }
-    pub fn profiles_table(&self, table_state: &mut TableState) -> Table {
-        table_state.select_first_column();
+    pub fn profiles_table(&self) -> Table {
         let selected_row_style = Style::new().reversed();
         let first_column_style = Style::new().reset();
 
@@ -486,6 +484,9 @@ impl EspFlashState {
     pub fn is_empty(&self) -> bool {
         self.elfs.is_empty() && self.bins.is_empty()
     }
+    pub fn len(&self) -> usize {
+        self.elfs.len() + self.bins.len()
+    }
 }
 
 impl LastIndex for EspFlashState {
@@ -500,8 +501,7 @@ impl LastIndex for EspFlashState {
 
 pub const ESPFLASH_BUTTON_COUNT: usize = 4;
 
-pub fn espflash_buttons(table_state: &mut TableState) -> Table<'static> {
-    table_state.select_first_column();
+pub fn espflash_buttons() -> Table<'static> {
     let selected_row_style = Style::new().reversed();
     let first_column_style = Style::new().reset();
 

@@ -238,68 +238,15 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
 
     let (impl_generics, type_generics, where_cause) = ast.generics.split_for_impl();
 
-    let outer_wrap_logic = if !struct_attrs.no_wrap {
-        quote! {
-            match input {
-                ::struct_table::ArrowKey::Up if field_index == 0 => {
-                    table_state.select(Some(final_field_index));
-                    return Ok((self_changed, true, false));
-                },
-                ::struct_table::ArrowKey::Up => {
-                    table_state.scroll_up_by(1);
-                    return Ok((self_changed, false, false));
-                },
-                ::struct_table::ArrowKey::Down if field_index >= final_field_index => {
-                    table_state.select(Some(0));
-                    return Ok((self_changed, false, true));
-                },
-                ::struct_table::ArrowKey::Down => {
-                    table_state.scroll_down_by(1);
-                    return Ok((self_changed, false, false));
-                },
-                _ => (),
-            }
-        }
-    } else {
-        // Wrapless behavior
-        quote! {
-            match input {
-                ::struct_table::ArrowKey::Up => {
-                    let would_wrap_up = table_state.selected().map(|s| s == 0).unwrap_or(true);
-                    table_state.scroll_up_by(1);
-                    return Ok((self_changed, would_wrap_up, false));
-                },
-                ::struct_table::ArrowKey::Down => {
-                    let would_wrap_down = table_state.selected().map(|s| s == final_field_index).unwrap_or(true);
-                    table_state.scroll_down_by(1);
-                    if let Some(index) = table_state.selected() {
-                        if index >= final_field_index {
-                            table_state.select(Some(final_field_index));
-                        }
-                    }
-                    return Ok((self_changed, false, would_wrap_down));
-                },
-                _ => (),
-            }
-        }
-    };
-
     Ok(quote! {
+        #[automatically_derived]
         impl #impl_generics ::struct_table::StructTable for #ident #type_generics #where_cause {
-            fn handle_input(&mut self, input: ::struct_table::ArrowKey, table_state: &mut ::ratatui::widgets::TableState) -> ::core::result::Result<(bool, bool, bool), ()> {
+            #[automatically_derived]
+            fn handle_input(&mut self, input: ::struct_table::ArrowKey, field_index: usize) -> ::core::result::Result<bool, ()> {
                 let mut self_changed = false;
-                let field_index = match table_state.selected() {
-                    None => {
-                        table_state.select(Some(0));
-                        return Ok((self_changed, false, false));
-                    }
-                    Some(index) => index,
-                };
                 let final_field_index: usize = #final_field_index;
                 // Assuming left/right only here
                 let next: bool;
-
-                #outer_wrap_logic
 
                 match input {
                     ::struct_table::ArrowKey::Right => next = true,
@@ -315,17 +262,18 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                     _ => return Err(()),
                 }
 
-                Ok((self_changed, false, false))
+                Ok(self_changed)
             }
 
-            fn as_table(&self, table_state: &mut ::ratatui::widgets::TableState) -> ::ratatui::widgets::Table<'_> {
+            #[automatically_derived]
+            fn as_table(&self) -> ::ratatui::widgets::Table<'_> {
                 use ::ratatui::{
                     layout::Constraint,
                     style::{Style, Stylize},
                     text::Text,
                     widgets::{Row, Table},
                 };
-                table_state.select_first_column();
+                // table_state.select_first_column();
                 let selected_row_style = Style::new().reversed();
                 let first_column_style = Style::new().reset();
 
@@ -348,8 +296,10 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                 option_table
             }
 
+            #[automatically_derived]
             const DOCSTRINGS: &'static [&'static str] = &[ #(#docstrings),* ];
 
+            #[automatically_derived]
             const VISIBLE_FIELDS: usize = #docstrings_len;
         }
     })

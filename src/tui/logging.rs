@@ -43,8 +43,7 @@ use super::centered_rect_size;
 
 // pub const ESPFLASH_BUTTON_COUNT: usize = 4;
 
-pub fn toggle_logging_button(table_state: &mut TableState, logging_active: bool) -> Table<'static> {
-    table_state.select_first_column();
+pub fn toggle_logging_button(logging_active: bool) -> Table<'static> {
     let selected_row_style = Style::new().reversed();
     let first_column_style = Style::new().reset();
 
