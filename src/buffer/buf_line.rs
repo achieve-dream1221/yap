@@ -58,10 +58,14 @@ pub struct BufLine {
 //     pub(super) is_macro: bool,
 // }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LineType {
     Port,
-    User { is_bytes: bool, is_macro: bool },
+    User {
+        is_bytes: bool,
+        is_macro: bool,
+        raw: Vec<u8>,
+    },
 }
 
 impl LineType {
@@ -100,7 +104,7 @@ impl BufLine {
         //     determine_color(&mut line, &[]);
         // }
 
-        let index_info = make_index_info(raw_value, raw_buffer_index, line_type);
+        let index_info = make_index_info(raw_value, raw_buffer_index, &line_type);
 
         let mut bufline = Self {
             timestamp_str: now.format(time_format).to_compact_string(),
@@ -116,12 +120,12 @@ impl BufLine {
     }
     pub fn update_line(
         &mut self,
-        mut line: Line<'static>,
+        line: Line<'static>,
         full_line_slice: &[u8],
         area_width: u16,
         rendering: &Rendering,
     ) {
-        self.index_info = make_index_info(full_line_slice, self.raw_buffer_index, self.line_type);
+        self.index_info = make_index_info(full_line_slice, self.raw_buffer_index, &self.line_type);
 
         self.value = line;
         self.value.remove_unsavory_chars();
@@ -173,7 +177,7 @@ impl BufLine {
 fn make_index_info(
     full_line_slice: &[u8],
     start_index: usize,
-    line_type: LineType,
+    line_type: &LineType,
 ) -> CompactString {
     if let LineType::User { .. } = line_type {
         format_compact!(

@@ -262,8 +262,8 @@ pub struct Logging {
 
     #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]
-    /// When enabled, create a new log file when intentionally disconnecting.
-    pub close_file_on_disconnect: bool,
+    /// When enabled, logging session files persist across devices.
+    pub keep_log_across_devices: bool,
 
     #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]

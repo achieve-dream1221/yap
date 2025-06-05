@@ -38,7 +38,7 @@ use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    buffer::Buffer,
+    buffer::{Buffer, LoggingEvent},
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     keybinds::{Keybinds, methods::*},
@@ -91,6 +91,8 @@ impl From<CrosstermEvent> for Event {
 pub enum Event {
     Crossterm(CrosstermEvent),
     Serial(SerialEvent),
+    #[cfg(feature = "logging")]
+    Logging(LoggingEvent),
     Tick(Tick),
     Quit,
 }
@@ -242,6 +244,8 @@ pub struct App {
 
     #[cfg(feature = "espflash")]
     espflash: EspFlashState,
+    // #[cfg(feature = "logging")]
+    // logging_toggle_selected: bool,
     // TODO
     // error_message: Option<String>,
 }
@@ -326,6 +330,7 @@ impl App {
             line_ending,
             settings.rendering.clone(),
             settings.logging.clone(),
+            tx.clone(),
         );
         // debug!("{buffer:#?}");
         Self {
@@ -369,6 +374,8 @@ impl App {
 
             #[cfg(feature = "espflash")]
             espflash: EspFlashState::new(),
+            // #[cfg(feature = "logging")]
+            // logging_toggle_selected: false,
         }
     }
     fn is_running(&self) -> bool {
@@ -525,6 +532,22 @@ impl App {
                 EspEvent::Error(e) => self.notifs.notify_str(&e, Color::Red),
                 _ => self.espflash.consume_event(esp_event),
             },
+            #[cfg(feature = "logging")]
+            Event::Logging(LoggingEvent::Started) => self
+                .notifs
+                .notify_str("Starting logging incoming data to disk!", Color::Green),
+            #[cfg(feature = "logging")]
+            Event::Logging(LoggingEvent::Stopped { error: None }) => self
+                .notifs
+                .notify_str("Logging stopped, files closed!", Color::Yellow),
+            #[cfg(feature = "logging")]
+            Event::Logging(LoggingEvent::Stopped { error: Some(error) }) => self
+                .notifs
+                .notify_str("Logging stopped with error!", Color::Red),
+            #[cfg(feature = "logging")]
+            Event::Logging(LoggingEvent::Error(error)) => {
+                self.notifs.notify_str("Logging error!", Color::Red)
+            }
             Event::Tick(Tick::PerSecond) => match self.menu {
                 Menu::Terminal(TerminalPrompt::None) => {
                     let port_status = &self.serial.port_status.load().inner;
@@ -1019,6 +1042,7 @@ impl App {
                     .notify_str(format!("Toggled Hex View Header {state}"), Color::Gray);
             }
 
+            // TODO consolidate popping up a popup menu into a func
             _ if m == SHOW_MACROS => {
                 self.popup = Some(PopupMenu::Macros);
                 self.popup_hint_scroll = -2;
@@ -1326,7 +1350,17 @@ impl App {
             #[cfg(feature = "espflash")]
             Some(PopupMenu::EspFlash) => (),
             #[cfg(feature = "logging")]
-            Some(PopupMenu::Logging) => (),
+            Some(PopupMenu::Logging) => {
+                if self.popup_menu_item == 1 {
+                    return;
+                }
+
+                let result = self
+                    .scratch
+                    .logging
+                    .handle_input(ArrowKey::Left, self.get_corrected_popup_item().unwrap())
+                    .unwrap();
+            }
         }
         if self.popup.is_some() {
             return;
@@ -1386,7 +1420,17 @@ impl App {
             #[cfg(feature = "espflash")]
             Some(PopupMenu::EspFlash) => (),
             #[cfg(feature = "logging")]
-            Some(PopupMenu::Logging) => (),
+            Some(PopupMenu::Logging) => {
+                if self.popup_menu_item == 1 {
+                    return;
+                }
+
+                let result = self
+                    .scratch
+                    .logging
+                    .handle_input(ArrowKey::Right, self.get_corrected_popup_item().unwrap())
+                    .unwrap();
+            }
         }
         if self.popup.is_some() {
             return;
@@ -1399,7 +1443,7 @@ impl App {
     }
     fn enter_pressed(&mut self, ctrl_pressed: bool, shift_pressed: bool) {
         let serial_healthy = self.serial.port_status.load().inner.is_healthy();
-
+        let popup_was_some = self.popup.is_some();
         // debug!("{:?}", self.menu);
         use PortSelectionElement as Pse;
         match self.popup {
@@ -1426,7 +1470,6 @@ impl App {
                     self.notifs.notify_str("Port settings saved!", Color::Green);
                 }
                 self.dismiss_popup();
-                return;
             }
             Some(PopupMenu::BehaviorSettings) => {
                 self.settings.behavior = self.scratch.behavior.clone();
@@ -1435,7 +1478,6 @@ impl App {
                 self.dismiss_popup();
                 self.notifs
                     .notify_str("Behavior settings saved!", Color::Green);
-                return;
             }
             Some(PopupMenu::RenderingSettings) => {
                 self.settings.rendering = self.scratch.rendering.clone();
@@ -1446,7 +1488,6 @@ impl App {
                 self.dismiss_popup();
                 self.notifs
                     .notify_str("Rendering settings saved!", Color::Green);
-                return;
             }
             Some(PopupMenu::Macros) => {
                 if self.popup_menu_item < 2 {
@@ -1472,7 +1513,6 @@ impl App {
                             self.user_input.clear();
                             self.user_input.input_box = text.as_str().into();
                             self.dismiss_popup();
-                            return;
                         }
                     }
                 } else {
@@ -1535,10 +1575,43 @@ impl App {
             }
             #[cfg(feature = "logging")]
             Some(PopupMenu::Logging) => {
-                ();
+                if self.popup_menu_item == 0 {
+                    return;
+                } else if self.popup_menu_item == 1 {
+                    let logging_active = self.buffer.log_handle.logging_active();
+                    if logging_active {
+                        self.buffer.log_handle.request_log_stop().unwrap();
+                    } else {
+                        let port_status_guard = self.serial.port_status.load();
+                        if let Some(port_info) = &port_status_guard.current_port {
+                            self.buffer
+                                .log_handle
+                                .request_log_start(port_info.clone())
+                                .unwrap();
+                        } else {
+                            self.notifs
+                                .notify_str("No port active, not starting logging.", Color::Red);
+                        }
+                    }
+                    return;
+                }
+                // Otherwise, save settings.
+
+                self.settings.logging = self.scratch.logging.clone();
+                let current_port = {
+                    let port_status_guard = self.serial.port_status.load();
+                    port_status_guard.current_port.clone()
+                };
+                self.buffer
+                    .update_logging_settings(self.settings.logging.clone(), current_port);
+
+                self.settings.save().unwrap();
+                self.dismiss_popup();
+                self.notifs
+                    .notify_str("Logging settings saved!", Color::Green);
             }
         }
-        if self.popup.is_some() {
+        if self.popup.is_some() || popup_was_some {
             return;
         }
         match self.menu {
@@ -1646,7 +1719,7 @@ impl App {
                         self.ports.clear();
                         self.serial.request_port_scan().unwrap();
 
-                        self.buffer.intentional_disconnect();
+                        self.buffer.intentional_disconnect_clear();
                         // Clear the input box, but keep the user history!
                         self.user_input.clear();
 
@@ -2254,7 +2327,8 @@ impl App {
                     .borders(Borders::TOP)
                     .border_style(Style::from(popup_color));
 
-                let log_path_text = r"Saving to: G:\git\yap\target\debug\logs";
+                // TODO make dynamic
+                let log_path_text = r"Saving to: $app_dir/logs/";
                 let log_path_line = Line::raw(log_path_text)
                     .all_spans_styled(Color::DarkGray.into())
                     .centered();
@@ -2266,13 +2340,14 @@ impl App {
                 }
 
                 frame.render_widget(
-                    Line::raw("Esc: Close | Enter: Select")
+                    Line::raw("Esc: Close | Enter: Select/Save")
                         .all_spans_styled(Color::DarkGray.into())
                         .centered(),
                     hint_text_area,
                 );
 
-                let toggle_button = toggle_logging_button(self.buffer.log_handle.logging_active());
+                let logging_active = self.buffer.log_handle.logging_active();
+                let toggle_button = toggle_logging_button(logging_active);
                 let logging_toggle_selected = self.popup_menu_item == 1;
                 if logging_toggle_selected {
                     self.popup_table_state.select(Some(0));
@@ -2284,7 +2359,19 @@ impl App {
                         &mut self.popup_table_state,
                     );
                     frame.render_widget(&line_block, new_seperator);
-                    frame.render_widget(self.settings.logging.as_table(), bins_area);
+                    frame.render_widget(self.scratch.logging.as_table(), bins_area);
+
+                    let text = if logging_active {
+                        "Stop logging and close the current log files."
+                    } else {
+                        "Create new log files and begin logging."
+                    };
+                    render_scrolling_line(
+                        text,
+                        frame,
+                        scrolling_text_area,
+                        &mut self.popup_hint_scroll,
+                    );
                 } else {
                     let selected = self.get_corrected_popup_item();
                     self.popup_table_state.select(selected);
@@ -2293,9 +2380,21 @@ impl App {
                     frame.render_widget(toggle_button, settings_area);
                     frame.render_widget(&line_block, new_seperator);
                     frame.render_stateful_widget(
-                        self.settings.logging.as_table(),
+                        self.scratch.logging.as_table(),
                         bins_area,
                         &mut self.popup_table_state,
+                    );
+
+                    let text: &str = self
+                        .popup_table_state
+                        .selected()
+                        .map(|i| Logging::DOCSTRINGS[i])
+                        .unwrap_or(&"");
+                    render_scrolling_line(
+                        text,
+                        frame,
+                        scrolling_text_area,
+                        &mut self.popup_hint_scroll,
                     );
                 }
                 frame.render_widget(

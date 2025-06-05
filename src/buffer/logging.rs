@@ -5,7 +5,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, SendError, Sender},
     },
     thread::JoinHandle,
     time::Duration,
@@ -20,7 +20,9 @@ use serialport::SerialPortInfo;
 use tracing::{error, warn};
 
 use crate::{
+    app::Event,
     buffer::LineType,
+    changed,
     errors::{YapError, YapResult},
     serial::ReconnectType,
     settings::{self, Logging, LoggingType},
@@ -61,9 +63,7 @@ pub enum LoggingCommand {
     // RxLine(Line<'static>),
     // Tx(Vec<u8>, Line<'static>),
     // RxTxLine(BufLine),
-
-    // TODO oh god handle sending the raw buffer again if we need to redo the lines?
-    LineEndingChange(Vec<u8>, LineEnding),
+    LineEndingChange(LineEnding),
     Settings(Logging),
     Shutdown(Sender<()>),
 }
@@ -92,35 +92,71 @@ impl From<fs::File> for FileAndResetIndex {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum LoggingError {
+    #[error("File error: {0}")]
+    File(#[from] std::io::Error),
+    #[error("Fatal TX Error")]
+    Tx,
+}
+
+impl<T> From<SendError<T>> for LoggingError {
+    fn from(_value: SendError<T>) -> Self {
+        Self::Tx
+    }
+}
+
+#[derive(Debug)]
+pub enum LoggingEvent {
+    Started,
+    Stopped { error: Option<String> },
+    Error(String),
+}
+
+impl From<LoggingEvent> for Event {
+    fn from(value: LoggingEvent) -> Self {
+        Self::Logging(value)
+    }
+}
+
 struct LoggingWorker {
+    event_tx: Sender<Event>,
     command_rx: Receiver<LoggingCommand>,
     // path: PathBuf,
     text_file: Option<FileAndResetIndex>,
     raw_file: Option<FileAndResetIndex>,
-    started_at: Option<DateTime<Local>>,
+    started_logging_at: Option<DateTime<Local>>,
     settings: Logging,
     session_open: Arc<AtomicBool>,
     line_ending: LineEnding,
     last_rx_completed: bool,
+
+    //????
+    last_known_port: Option<SerialPortInfo>,
 }
 
 impl LoggingHandle {
-    pub(super) fn new(line_ending: LineEnding, settings: Logging) -> (Self, JoinHandle<()>) {
+    pub(super) fn new(
+        line_ending: LineEnding,
+        settings: Logging,
+        event_tx: Sender<Event>,
+    ) -> (Self, JoinHandle<()>) {
         let (command_tx, command_rx) = mpsc::channel();
 
         let session_open = Arc::new(AtomicBool::new(false));
 
         let mut worker = LoggingWorker {
-            // event_tx,
+            event_tx,
             command_rx,
             settings,
             line_ending,
             // path: "meow.log".into(),
             text_file: None,
             raw_file: None,
-            started_at: None,
+            started_logging_at: None,
             session_open: session_open.clone(),
             last_rx_completed: true,
+            last_known_port: None,
         };
 
         let worker = std::thread::spawn(move || {
@@ -205,6 +241,18 @@ impl LoggingHandle {
             .map_err(|_| YapError::NoLoggingWorker)?;
         Ok(())
     }
+    pub(super) fn update_line_ending(&self, line_ending: LineEnding) -> YapResult<()> {
+        self.command_tx
+            .send(LoggingCommand::LineEndingChange(line_ending))
+            .map_err(|_| YapError::NoLoggingWorker)?;
+        Ok(())
+    }
+    pub(super) fn update_settings(&self, logging: Logging) -> YapResult<()> {
+        self.command_tx
+            .send(LoggingCommand::Settings(logging))
+            .map_err(|_| YapError::NoLoggingWorker)?;
+        Ok(())
+    }
     pub fn log_port_disconnected(&self, intentional: bool) -> YapResult<()> {
         self.command_tx
             .send(LoggingCommand::PortDisconnect {
@@ -235,7 +283,7 @@ impl LoggingHandle {
 }
 
 impl LoggingWorker {
-    fn work_loop(&mut self) -> Result<(), std::io::Error> {
+    fn work_loop(&mut self) -> Result<(), LoggingError> {
         loop {
             match self.command_rx.recv() {
                 Ok(LoggingCommand::Shutdown(sender)) => {
@@ -257,7 +305,7 @@ impl LoggingWorker {
     fn log_connection_event(
         &mut self,
         timestamp: DateTime<Local>,
-        connected_to: Option<SerialPortInfo>,
+        connected_to: Option<&SerialPortInfo>,
     ) -> Result<(), std::io::Error> {
         if !self.settings.log_connection_events {
             return Ok(());
@@ -268,13 +316,13 @@ impl LoggingWorker {
                 self.last_rx_completed = true;
             }
 
-            let header_timestamp_format = if self.settings.timestamp.trim().is_empty() {
+            let timestamp_format = if self.settings.timestamp.trim().is_empty() {
                 DEFAULT_TIMESTAMP_FORMAT
             } else {
                 &self.settings.timestamp
             };
 
-            let time = timestamp.format(header_timestamp_format);
+            let time = timestamp.format(timestamp_format);
 
             let text = if let Some(port_info) = connected_to {
                 let port_name = &port_info.port_name;
@@ -289,7 +337,7 @@ impl LoggingWorker {
 
         Ok(())
     }
-    fn handle_command(&mut self, cmd: LoggingCommand) -> Result<(), std::io::Error> {
+    fn handle_command(&mut self, cmd: LoggingCommand) -> Result<(), LoggingError> {
         match cmd {
             LoggingCommand::PortConnected(timestamp, port_info, reconnect_type) => {
                 // if let Some(reconnect) = reconnect_type {
@@ -298,7 +346,8 @@ impl LoggingWorker {
                 if reconnect_type.is_none() && self.settings.always_begin_on_connect {
                     self.begin_logging_session(timestamp, &port_info)?;
                 }
-                self.log_connection_event(timestamp, Some(port_info))?;
+                self.log_connection_event(timestamp, Some(&port_info))?;
+                self.last_known_port = Some(port_info);
             }
             LoggingCommand::RequestStart(timestamp, port_info) => {
                 if self.raw_file.is_some() || self.text_file.is_some() {
@@ -308,6 +357,7 @@ impl LoggingWorker {
                 // assert!(self.raw_file.is_none());
                 // assert!(self.text_file.is_none());
                 self.begin_logging_session(timestamp, &port_info)?;
+                self.last_known_port = Some(port_info);
             }
             // LoggingCommand::RequestToggle(timestamp, port_info) => {
             //     if self.raw_file.is_some() || self.text_file.is_some() {
@@ -362,7 +412,8 @@ impl LoggingWorker {
                     LoggingLineType::TxLine { line_ending },
                 )?;
             }
-            LoggingCommand::LineEndingChange(whole_raw_buffer, new_ending) => todo!(),
+            // LoggingCommand::LineEndingChange(whole_raw_buffer, new_ending) => todo!(),
+            LoggingCommand::LineEndingChange(new_ending) => self.line_ending = new_ending,
             // LoggingCommand::RxTxLine(line) => {
             //     let Some(text_file) = &mut self.text_file else {
             //         warn!("not logging line!");
@@ -381,6 +432,16 @@ impl LoggingWorker {
                     text_file
                         .inner
                         .seek(SeekFrom::Start(text_file.reset_index))?;
+
+                    if text_file.reset_index == 0 {
+                        write_header_to_text_file(
+                            &mut text_file.inner,
+                            self.started_logging_at.unwrap(),
+                            &self.settings.timestamp,
+                            self.last_known_port.as_ref().unwrap(),
+                        )?;
+                        write_line_ending(&mut text_file.inner)?;
+                    }
                 }
                 self.flush_files(false)?;
             }
@@ -391,25 +452,70 @@ impl LoggingWorker {
 
             //     write_bufline_to_file(text_file.inner, &line, self.settings.timestamps)?;
             // }
-            LoggingCommand::Settings(new) => todo!(),
+            LoggingCommand::Settings(new) => {
+                let old = std::mem::replace(&mut self.settings, new);
+                let new = &self.settings;
+
+                if changed!(old, new, log_file_type) {
+                    let mut need_binary = false;
+                    let mut need_text = false;
+                    match new.log_file_type {
+                        LoggingType::Binary => need_binary = true,
+                        LoggingType::Text => need_text = true,
+                        LoggingType::Both => {
+                            need_binary = true;
+                            need_text = true;
+                        }
+                    }
+
+                    self.flush_files(false)?;
+
+                    if !need_text && self.text_file.is_some() {
+                        _ = self.text_file.take();
+                    }
+                    if !need_binary && self.raw_file.is_some() {
+                        _ = self.raw_file.take();
+                    }
+
+                    if let Some(port_info) = &self.last_known_port {
+                        if self.session_open.load(Ordering::Relaxed) {
+                            self.create_log_files(
+                                self.started_logging_at.unwrap(),
+                                &port_info.clone(),
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+            }
             LoggingCommand::RequestStop => {
                 self.close_files(false)?;
+                self.event_tx
+                    .send(LoggingEvent::Stopped { error: None }.into())?;
             }
             LoggingCommand::PortDisconnect {
                 timestamp,
                 intentional: true,
             } => {
-                if self.settings.close_file_on_disconnect {
-                    self.close_files(false)?;
-                } else {
+                if self.raw_file.is_none() && self.text_file.is_none() {
+                    return Ok(());
+                }
+                if self.settings.keep_log_across_devices {
                     self.flush_files(false)?;
                     self.update_reset_indices()?;
+                } else {
+                    self.close_files(false)?;
+                    self.event_tx
+                        .send(LoggingEvent::Stopped { error: None }.into())?;
                 }
             }
             LoggingCommand::PortDisconnect {
                 timestamp,
                 intentional: false,
             } => {
+                if self.raw_file.is_none() && self.text_file.is_none() {
+                    return Ok(());
+                }
                 self.log_connection_event(timestamp, None)?;
                 self.flush_files(false)?;
             }
@@ -422,10 +528,11 @@ impl LoggingWorker {
         &mut self,
         started_at: DateTime<Local>,
         port_info: &SerialPortInfo,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<(), LoggingError> {
         self.session_open.store(true, Ordering::Release);
         self.create_log_files(started_at, port_info)?;
-        self.started_at = Some(started_at);
+        self.started_logging_at = Some(started_at);
+        self.event_tx.send(LoggingEvent::Started.into())?;
         Ok(())
     }
 
@@ -471,14 +578,16 @@ impl LoggingWorker {
         Ok(())
     }
 
-    fn close_files(&mut self, ignore_errors: bool) -> Result<(), std::io::Error> {
-        _ = self.started_at.take();
+    fn close_files(&mut self, ignore_errors: bool) -> Result<(), LoggingError> {
+        _ = self.started_logging_at.take();
         self.session_open.store(false, Ordering::Release);
 
         self.flush_files(ignore_errors)?;
 
         _ = self.raw_file.take();
         _ = self.text_file.take();
+
+        _ = self.last_known_port.take();
 
         Ok(())
     }
@@ -487,7 +596,7 @@ impl LoggingWorker {
         &mut self,
         started_at: DateTime<Local>,
         port_info: &SerialPortInfo,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<(), LoggingError> {
         let logs_dir = PathBuf::from("logs/");
         match logs_dir.try_exists() {
             Ok(true) if logs_dir.is_dir() => (),
@@ -495,7 +604,7 @@ impl LoggingWorker {
             Ok(false) => fs::create_dir_all("logs/")?,
             Err(e) => {
                 error!("Error checking for logs dir!");
-                return Err(e);
+                Err(e)?;
             }
         }
 
@@ -508,42 +617,24 @@ impl LoggingWorker {
         let make_text_log = |port_info: &SerialPortInfo| -> Result<fs::File, std::io::Error> {
             let timestamp = started_at.format("logs/yap-%Y-%m-%d_%H-%M-%S.txt");
 
-            let port_text = match &port_info.port_type {
-                serialport::SerialPortType::BluetoothPort => Cow::from("BT"),
-                serialport::SerialPortType::PciPort => Cow::from("PCI"),
-                serialport::SerialPortType::Unknown => Cow::from("Unknown"),
-                serialport::SerialPortType::UsbPort(serialport::UsbPortInfo {
-                    pid,
-                    vid,
-                    serial_number: Some(serial),
-                    ..
-                }) => Cow::from(format!("USB ({pid:04X}:{vid:04X}:{serial})")),
-                serialport::SerialPortType::UsbPort(serialport::UsbPortInfo {
-                    pid,
-                    vid,
-                    serial_number: None,
-                    ..
-                }) => Cow::from(format!("USB ({pid:04X}:{vid:04X})")),
-            };
-
-            let header_timestamp_format = if self.settings.timestamp.trim().is_empty() {
-                DEFAULT_TIMESTAMP_FORMAT
-            } else {
-                &self.settings.timestamp
-            };
-
-            let header_timestamp = started_at.format(header_timestamp_format);
-
-            let file_header = format!(
-                "----- {time} | Port: {name} | {port_text} -----",
-                name = port_info.port_name,
-                time = header_timestamp,
-            );
-
             fs::File::create(timestamp.to_string())
-                .and_then(|mut f| f.write_all(file_header.as_bytes()).map(|_| f))
+                .and_then(|mut f| {
+                    write_header_to_text_file(
+                        &mut f,
+                        started_at,
+                        &self.settings.timestamp,
+                        port_info,
+                    )
+                    .map(|_| f)
+                })
                 .and_then(|mut f| write_line_ending(&mut f).map(|_| f))
+
+            // .and_then(|mut f| f.write_all(file_header.as_bytes()).map(|_| f))
         };
+
+        if self.text_file.is_none() {
+            self.last_rx_completed = true;
+        }
 
         match self.settings.log_file_type {
             LoggingType::Both => {
@@ -555,7 +646,7 @@ impl LoggingWorker {
                 }
             }
             LoggingType::Binary => {
-                // Raw only, flush and drop text file if we had one.
+                // Raw only, flush and drop text file in case we had one.
                 if let Some(mut text_file) = self.text_file.take() {
                     text_file.inner.flush()?;
                     text_file.inner.sync_all()?;
@@ -565,7 +656,7 @@ impl LoggingWorker {
                 }
             }
             LoggingType::Text => {
-                // Text only, flush and drop raw binary file if we had one.
+                // Text only, flush and drop raw binary file in case we had one.
                 if let Some(mut raw_file) = self.raw_file.take() {
                     raw_file.inner.flush()?;
                     raw_file.inner.sync_all()?;
@@ -578,6 +669,49 @@ impl LoggingWorker {
 
         Ok(())
     }
+}
+
+fn write_header_to_text_file(
+    file: &mut fs::File,
+    started_at: DateTime<Local>,
+    timestamp_fmt: &str,
+    port_info: &SerialPortInfo,
+) -> Result<(), std::io::Error> {
+    let port_text = match &port_info.port_type {
+        serialport::SerialPortType::BluetoothPort => Cow::from("BT"),
+        serialport::SerialPortType::PciPort => Cow::from("PCI"),
+        serialport::SerialPortType::Unknown => Cow::from("Unknown"),
+        serialport::SerialPortType::UsbPort(serialport::UsbPortInfo {
+            pid,
+            vid,
+            serial_number: Some(serial),
+            ..
+        }) => Cow::from(format!("USB ({pid:04X}:{vid:04X}:{serial})")),
+        serialport::SerialPortType::UsbPort(serialport::UsbPortInfo {
+            pid,
+            vid,
+            serial_number: None,
+            ..
+        }) => Cow::from(format!("USB ({pid:04X}:{vid:04X})")),
+    };
+
+    let header_timestamp_format = if timestamp_fmt.trim().is_empty() {
+        DEFAULT_TIMESTAMP_FORMAT
+    } else {
+        timestamp_fmt
+    };
+
+    let header_timestamp = started_at.format(header_timestamp_format);
+
+    let file_header = format!(
+        "----- {time} | Port: {name} | {port_text} -----",
+        name = port_info.port_name,
+        time = header_timestamp,
+    );
+
+    file.write_all(file_header.as_bytes())?;
+
+    Ok(())
 }
 
 fn write_line_ending(file: &mut fs::File) -> Result<(), std::io::Error> {
@@ -608,6 +742,7 @@ fn write_buffer_to_text_file(
                 let mut output = String::with_capacity(line_capacity);
                 if let Some(timestamp_str) = &timestamp_string {
                     output.push_str(&timestamp_str);
+                    output.push_str(": ");
                 }
                 if is_tx_line {
                     output.push_str("[USER] ")

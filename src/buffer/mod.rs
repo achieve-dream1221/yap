@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, thread::JoinHandle};
+use std::{cmp::Ordering, sync::mpsc::Sender, thread::JoinHandle};
 
 use ansi_to_tui::{IntoText, LossyFlavor};
 use bstr::{ByteSlice, ByteVec};
@@ -16,10 +16,12 @@ use ratatui::{
     widgets::ScrollbarState,
 };
 use ratatui_macros::span;
+use serialport::SerialPortInfo;
 use takeable::Takeable;
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    app::Event,
     changed,
     errors::YapResult,
     settings::{Logging, LoggingType, Rendering},
@@ -30,7 +32,7 @@ use crate::{
 mod buf_line;
 mod hex_spans;
 mod logging;
-pub use logging::DEFAULT_TIMESTAMP_FORMAT;
+pub use logging::{DEFAULT_TIMESTAMP_FORMAT, LoggingEvent};
 mod tui;
 
 #[cfg(test)]
@@ -77,6 +79,16 @@ pub enum LineEnding {
     None,
     Byte(u8),
     MultiByte(Finder<'static>),
+}
+
+impl LineEnding {
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            LineEnding::None => &[],
+            LineEnding::Byte(byte) => std::slice::from_ref(byte),
+            LineEnding::MultiByte(finder) => finder.needle(),
+        }
+    }
 }
 
 impl PartialEq<str> for LineEnding {
@@ -261,9 +273,15 @@ pub enum UserEcho {
 impl Buffer {
     // TODO lower sources of truth for all this.
     // Rc<Something> with the settings that's shared around?
-    pub fn new(line_ending: &[u8], rendering: Rendering, logging: Logging) -> Self {
+    pub fn new(
+        line_ending: &[u8],
+        rendering: Rendering,
+        logging: Logging,
+        event_tx: Sender<Event>,
+    ) -> Self {
         let line_ending: LineEnding = line_ending.into();
-        let (log_handle, log_thread) = LoggingHandle::new(line_ending.clone(), logging.clone());
+        let (log_handle, log_thread) =
+            LoggingHandle::new(line_ending.clone(), logging.clone(), event_tx);
 
         Self {
             raw: RawBuffer {
@@ -309,6 +327,8 @@ impl Buffer {
 
         let line = Line::from(vec![user_span, text]);
 
+        let combined = bytes.iter().chain(line_ending.iter()).map(|b| *b).collect();
+
         // line.spans.insert(0, user_span.clone());
         // line.style_all_spans(Color::DarkGray.into());
         let user_buf_line = BufLine::new_with_line(
@@ -321,6 +341,7 @@ impl Buffer {
             LineType::User {
                 is_bytes: true,
                 is_macro,
+                raw: combined,
             },
         );
 
@@ -378,6 +399,7 @@ impl Buffer {
                 LineType::User {
                     is_bytes: false,
                     is_macro,
+                    raw: orig.to_owned(),
                 },
             );
             // Used to be out of the for loop.
@@ -541,8 +563,6 @@ impl Buffer {
         // let _ = std::mem::take(&mut self.lines);
         self.styled_lines.rx.clear();
 
-        self.log_handle.clear_current_logs().unwrap();
-
         // Taking these variables out of `self` temporarily to allow running &mut self methods while holding
         // references to these.
         let timestamps = std::mem::take(&mut self.raw.buffer_timestamps);
@@ -658,6 +678,10 @@ impl Buffer {
         if self.line_ending != line_ending {
             self.line_ending = line_ending.into();
             self.reconsume_raw_buffer();
+            self.log_handle
+                .update_line_ending(self.line_ending.clone())
+                .unwrap();
+            self.clear_and_relog_buffers(self.log_settings.log_user_input);
         }
     }
     pub fn update_render_settings(&mut self, rendering: Rendering) {
@@ -684,12 +708,107 @@ impl Buffer {
 
         self.scroll_by(0);
     }
-    pub fn intentional_disconnect(&mut self) {
+    fn clear_and_relog_buffers(&mut self, with_user_input: bool) {
+        self.log_handle.clear_current_logs().unwrap();
+        let interleaved_points = interleave_by(
+            self.raw
+                .buffer_timestamps
+                .iter()
+                .map(|(index, timestamp)| (*index, *timestamp, None))
+                // Add a "finale" element to capture any remaining buffer, always placed at the end.
+                .chain(std::iter::once((self.raw.inner.len(), Local::now(), None))),
+            self.styled_lines
+                .tx
+                .iter()
+                // If a user line isn't visible, ignore it when taking external new-lines into account.
+                .filter(|_| with_user_input)
+                .map(|b| {
+                    let LineType::User { raw, .. } = &b.line_type else {
+                        unreachable!();
+                    };
+                    (b.raw_buffer_index, b.timestamp, Some(raw))
+                }),
+            // Interleaving by sorting in order of raw_buffer_index, if they're equal, then whichever has a sooner timestamp.
+            |port, user| match port.0.cmp(&user.0) {
+                Ordering::Equal => port.1 <= user.1,
+                Ordering::Less => true,
+                Ordering::Greater => false,
+            },
+        );
+
+        let buffer_slices = interleaved_points
+            .tuple_windows()
+            // Filtering out some empty slices, unless they indicate a user event.
+            .filter(|((start_index, _, user_line_buffer), (end_index, _, _))| {
+                start_index != end_index || user_line_buffer.is_some()
+            })
+            // Building the parent slices (pre-newline splitting)
+            .map(
+                |((start_index, timestamp, user_line_buffer), (end_index, _, _))| {
+                    (
+                        &self.raw.inner[start_index..end_index],
+                        timestamp,
+                        user_line_buffer,
+                        (start_index, end_index),
+                    )
+                },
+            );
+
+        for (slice, timestamp, user_line_buffer, (slice_start, slice_end)) in buffer_slices {
+            if let Some(raw) = user_line_buffer {
+                self.log_handle
+                    .log_tx_bytes(
+                        timestamp,
+                        raw.to_owned(),
+                        self.line_ending.as_bytes().to_owned(),
+                    )
+                    .unwrap();
+            } else {
+                self.log_handle
+                    .log_rx_bytes(timestamp, slice.to_owned())
+                    .unwrap();
+            }
+        }
+    }
+    pub fn update_logging_settings(
+        &mut self,
+        logging: Logging,
+        current_port: Option<SerialPortInfo>,
+    ) {
+        let local_copy = logging.clone();
+        let old = std::mem::replace(&mut self.log_settings, local_copy);
+        let new = &self.log_settings;
+
+        let resend_needed = changed!(old, new, log_user_input)
+            || changed!(old, new, log_file_type)
+            || changed!(old, new, timestamp);
+
+        // Meh. Arbitrary decision but I don't want to resend everything if this changes.
+        // Especially since I don't currently log connection events to place them back in retroactively.
+        // changed!(old, new, log_connection_events)
+
+        self.log_handle.update_settings(logging).unwrap();
+
+        if resend_needed && !self.raw.inner.is_empty() {
+            let log_user_input = new.log_user_input;
+            self.clear_and_relog_buffers(log_user_input);
+        }
+    }
+    pub fn intentional_disconnect_clear(&mut self) {
         self.log_handle.log_port_disconnected(true).unwrap();
+
         self.styled_lines.rx.clear();
+        self.styled_lines.rx.shrink_to(1024);
+
         self.raw.buffer_timestamps.clear();
+        self.raw.buffer_timestamps.shrink_to(1024);
+
         self.styled_lines.tx.clear();
+        self.styled_lines.tx.shrink_to(1024);
+
         self.raw.inner.clear();
+        self.raw.inner.shrink_to(1024);
+
         self.styled_lines.last_rx_completed = true;
     }
 }

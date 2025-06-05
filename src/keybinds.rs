@@ -64,6 +64,7 @@ shift-F21 = "esp-bootloader-unchecked"
 ctrl-z = "esp-bootloader-unchecked"
 ctrl-r = "show-rendering"
 ctrl-h = "toggle-hex"
+ctrl-l = "show-logging"
 
 [macros]
 F19 = "Restart"
