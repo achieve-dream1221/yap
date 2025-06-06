@@ -51,6 +51,7 @@ pub struct Settings {
     pub misc: Misc,
     #[serde(default)]
     pub last_port_settings: PortSettings,
+    #[cfg(feature = "logging")]
     #[serde(default)]
     pub logging: Logging,
     #[serde(default)]
@@ -262,7 +263,7 @@ pub struct Logging {
 
     #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]
-    /// When enabled, logging session files persist across devices.
+    /// When enabled, active log files persist across devices.
     pub keep_log_across_devices: bool,
 
     #[serde_inline_default(true)]

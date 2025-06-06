@@ -6,7 +6,6 @@ use buf_line::{BufLine, LineType};
 use chrono::{DateTime, Local};
 use compact_str::{CompactString, ToCompactString};
 use itertools::{Either, Itertools};
-use logging::LoggingHandle;
 use memchr::memmem::Finder;
 use ratatui::{
     layout::{Rect, Size},
@@ -24,16 +23,24 @@ use crate::{
     app::Event,
     changed,
     errors::YapResult,
-    settings::{Logging, LoggingType, Rendering},
+    settings::{LoggingType, Rendering},
     traits::{ByteSuffixCheck, LineHelpers, interleave_by},
     tui::color_rules::ColorRules,
 };
 
+#[cfg(feature = "logging")]
+use crate::settings::Logging;
+
 mod buf_line;
 mod hex_spans;
-mod logging;
-pub use logging::{DEFAULT_TIMESTAMP_FORMAT, LoggingEvent};
 mod tui;
+
+#[cfg(feature = "logging")]
+mod logging;
+#[cfg(feature = "logging")]
+use logging::LoggingHandle;
+#[cfg(feature = "logging")]
+pub use logging::{DEFAULT_TIMESTAMP_FORMAT, LoggingEvent};
 
 #[cfg(test)]
 mod tests;
@@ -222,11 +229,15 @@ pub struct Buffer {
 
     color_rules: ColorRules,
 
+    #[cfg(feature = "logging")]
     pub log_handle: LoggingHandle,
+    #[cfg(feature = "logging")]
     log_thread: Takeable<JoinHandle<()>>,
+    #[cfg(feature = "logging")]
     log_settings: Logging,
 }
 
+#[cfg(feature = "logging")]
 impl Drop for Buffer {
     fn drop(&mut self) {
         debug!("Shutting down Logging worker");
@@ -276,10 +287,11 @@ impl Buffer {
     pub fn new(
         line_ending: &[u8],
         rendering: Rendering,
-        logging: Logging,
+        #[cfg(feature = "logging")] logging: Logging,
         event_tx: Sender<Event>,
     ) -> Self {
         let line_ending: LineEnding = line_ending.into();
+        #[cfg(feature = "logging")]
         let (log_handle, log_thread) =
             LoggingHandle::new(line_ending.clone(), logging.clone(), event_tx);
 
@@ -305,8 +317,11 @@ impl Buffer {
             rendering,
             line_ending,
             color_rules: ColorRules::load_from_file("../../color_rules.toml"),
+            #[cfg(feature = "logging")]
             log_handle,
+            #[cfg(feature = "logging")]
             log_thread: Takeable::new(log_thread),
+            #[cfg(feature = "logging")]
             log_settings: logging,
         }
     }
@@ -350,6 +365,7 @@ impl Buffer {
             .echo_user_input
             .filter_user_line(&user_buf_line)
             || (self.raw.inner.is_empty() || self.raw.inner.has_line_ending(&self.line_ending));
+        #[cfg(feature = "logging")]
         if self.log_handle.logging_active() {
             match self.log_settings.log_file_type {
                 LoggingType::Binary => (),
@@ -408,6 +424,7 @@ impl Buffer {
                 .echo_user_input
                 .filter_user_line(&user_buf_line)
                 || (self.raw.inner.is_empty() || self.raw.inner.has_line_ending(&self.line_ending));
+            #[cfg(feature = "logging")]
             if self.log_handle.logging_active() {
                 match self.log_settings.log_file_type {
                     LoggingType::Binary => (),
@@ -543,6 +560,7 @@ impl Buffer {
         self.raw.buffer_timestamps.push((index, now));
         // debug!("{lines:?}");
         // debug!("{:#?}", self.lines);
+        #[cfg(feature = "logging")]
         self.log_handle.log_rx_bytes(now, bytes.clone()).unwrap();
         for (trunc, orig, indices) in line_ending_iter(bytes, &self.line_ending.clone()) {
             index = self.raw.inner.len();
@@ -678,9 +696,11 @@ impl Buffer {
         if self.line_ending != line_ending {
             self.line_ending = line_ending.into();
             self.reconsume_raw_buffer();
+            #[cfg(feature = "logging")]
             self.log_handle
                 .update_line_ending(self.line_ending.clone())
                 .unwrap();
+            #[cfg(feature = "logging")]
             self.clear_and_relog_buffers(self.log_settings.log_user_input);
         }
     }
@@ -708,8 +728,10 @@ impl Buffer {
 
         self.scroll_by(0);
     }
+    #[cfg(feature = "logging")]
     fn clear_and_relog_buffers(&mut self, with_user_input: bool) {
         self.log_handle.clear_current_logs().unwrap();
+
         let interleaved_points = interleave_by(
             self.raw
                 .buffer_timestamps
@@ -770,6 +792,7 @@ impl Buffer {
             }
         }
     }
+    #[cfg(feature = "logging")]
     pub fn update_logging_settings(
         &mut self,
         logging: Logging,
@@ -795,6 +818,7 @@ impl Buffer {
         }
     }
     pub fn intentional_disconnect_clear(&mut self) {
+        #[cfg(feature = "logging")]
         self.log_handle.log_port_disconnected(true).unwrap();
 
         self.styled_lines.rx.clear();

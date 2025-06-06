@@ -38,7 +38,7 @@ use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    buffer::{Buffer, LoggingEvent},
+    buffer::Buffer,
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     keybinds::{Keybinds, methods::*},
@@ -51,18 +51,23 @@ use crate::{
         handle::SerialHandle,
         worker::{InnerPortStatus, MOCK_PORT_NAME},
     },
-    settings::{Behavior, Logging, PortSettings, Rendering, Settings},
+    settings::{Behavior, PortSettings, Rendering, Settings},
     traits::{LastIndex, LineHelpers, ToggleBool},
     tui::{
         centered_rect_size,
-        logging::toggle_logging_button,
         prompts::{DisconnectPrompt, PromptTable, centered_rect},
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
 };
 
 #[cfg(feature = "logging")]
+use crate::buffer::LoggingEvent;
+#[cfg(feature = "logging")]
 use crate::keybinds::logging_methods::*;
+#[cfg(feature = "logging")]
+use crate::settings::Logging;
+#[cfg(feature = "logging")]
+use crate::tui::logging::toggle_logging_button;
 
 #[cfg(feature = "espflash")]
 use crate::keybinds::esp_methods::*;
@@ -244,8 +249,6 @@ pub struct App {
 
     #[cfg(feature = "espflash")]
     espflash: EspFlashState,
-    // #[cfg(feature = "logging")]
-    // logging_toggle_selected: bool,
     // TODO
     // error_message: Option<String>,
 }
@@ -329,6 +332,7 @@ impl App {
         let buffer = Buffer::new(
             line_ending,
             settings.rendering.clone(),
+            #[cfg(feature = "logging")]
             settings.logging.clone(),
             tx.clone(),
         );
@@ -473,6 +477,7 @@ impl App {
                 }
 
                 if let Some(current_port) = &self.serial.port_status.load().current_port {
+                    #[cfg(feature = "logging")]
                     self.buffer
                         .log_handle
                         .log_port_connected(current_port.to_owned(), reconnect.clone())
@@ -491,6 +496,7 @@ impl App {
                 // if let Some(reason) = reason {
                 //     self.notify(format!("Disconnected from port! {reason}"), Color::Red);
                 // }
+                #[cfg(feature = "logging")]
                 self.buffer.log_handle.log_port_disconnected(false).unwrap();
                 if reason.is_some() {
                     let reconnect_text = match &self.settings.last_port_settings.reconnections {
@@ -2489,11 +2495,13 @@ impl App {
                     );
                     if let Some(profile) = self.espflash.profile_from_index(corrected_index) {
                         let hint_text = match profile {
-                            esp::EspProfile::Bins(_) => "Flash profile binaries to ESP Flash.",
-                            esp::EspProfile::Elf(profile) if profile.ram => {
-                                "Load profile ELF into RAM."
+                            esp::EspProfile::Bins(_) => {
+                                "Flash selected profile binaries to ESP Flash."
                             }
-                            esp::EspProfile::Elf(_) => "Flash profile ELF to ESP Flash.",
+                            esp::EspProfile::Elf(profile) if profile.ram => {
+                                "Load selected profile ELF into RAM."
+                            }
+                            esp::EspProfile::Elf(_) => "Flash selected profile ELF to ESP Flash.",
                         };
                         render_scrolling_line(
                             hint_text,
