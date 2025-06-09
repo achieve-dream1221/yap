@@ -41,7 +41,7 @@ use crate::{
     buffer::Buffer,
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
-    keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction},
+    keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
     notifications::{
         EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
     },
@@ -1121,6 +1121,8 @@ impl App {
         };
         use AppAction as A;
         match action {
+            A::Popup(popup) => self.show_popup(popup),
+
             A::Port(PortAction::ToggleDtr) => {
                 self.serial.toggle_signals(true, false).unwrap();
             }
@@ -1138,6 +1140,16 @@ impl App {
             }
             A::Port(PortAction::DeassertRts) => {
                 self.serial.write_signals(None, Some(false)).unwrap();
+            }
+            A::Port(PortAction::AttemptReconnectStrict) => {
+                self.serial
+                    .request_reconnect(Some(Reconnections::StrictChecks))
+                    .unwrap();
+            }
+            A::Port(PortAction::AttemptReconnectLoose) => {
+                self.serial
+                    .request_reconnect(Some(Reconnections::LooseChecks))
+                    .unwrap();
             }
             A::Base(BaseAction::ToggleTextwrap) => {
                 let state = pretty_bool(self.settings.rendering.wrap_text.flip());
@@ -1183,52 +1195,6 @@ impl App {
                     .notify_str(format!("Toggled Hex View Header {state}"), Color::Gray);
             }
 
-            // TODO consolidate popping up a popup menu into a func
-            #[cfg(feature = "macros")]
-            A::Macros(MacroAction::ShowPopup) => {
-                self.popup = Some(PopupMenu::Macros);
-                self.popup_hint_scroll = -2;
-                self.popup_menu_item = 0;
-                self.tx
-                    .send(Tick::Scroll.into())
-                    .map_err(|e| e.to_string())
-                    .unwrap();
-            }
-
-            A::Base(BaseAction::ShowBehavior) => {
-                self.popup = Some(PopupMenu::BehaviorSettings);
-                self.popup_hint_scroll = -2;
-                self.popup_menu_item = 0;
-
-                self.tx
-                    .send(Tick::Scroll.into())
-                    .map_err(|e| e.to_string())
-                    .unwrap();
-            }
-
-            A::Base(BaseAction::ShowRendering) => {
-                self.popup = Some(PopupMenu::RenderingSettings);
-                self.popup_hint_scroll = -2;
-                self.popup_menu_item = 0;
-
-                self.tx
-                    .send(Tick::Scroll.into())
-                    .map_err(|e| e.to_string())
-                    .unwrap();
-            }
-
-            A::Base(BaseAction::ShowPortSettings) => {
-                self.popup = Some(PopupMenu::PortSettings);
-                self.refresh_scratch();
-                self.popup_hint_scroll = -2;
-                self.popup_menu_item = 0;
-
-                self.tx
-                    .send(Tick::Scroll.into())
-                    .map_err(|e| e.to_string())
-                    .unwrap();
-            }
-
             #[cfg(feature = "macros")]
             A::Macros(MacroAction::ReloadMacros) => {
                 self.macros
@@ -1242,19 +1208,6 @@ impl App {
                 self.buffer.reload_color_rules().unwrap();
                 self.notifs
                     .notify_str(format!("Reloaded Color Rules!"), Color::Green);
-            }
-
-            #[cfg(feature = "logging")]
-            A::Logging(LoggingAction::ShowPopup) => {
-                self.popup = Some(PopupMenu::Logging);
-                self.refresh_scratch();
-                self.popup_hint_scroll = -2;
-                self.popup_menu_item = 0;
-
-                self.tx
-                    .send(Tick::Scroll.into())
-                    .map_err(|e| e.to_string())
-                    .unwrap();
             }
 
             #[cfg(feature = "logging")]
@@ -1290,19 +1243,6 @@ impl App {
                 } else {
                     self.run_method_from_action(LoggingAction::Start.into())?;
                 }
-            }
-
-            #[cfg(feature = "espflash")]
-            A::Esp(EspAction::ShowPopup) => {
-                self.popup = Some(PopupMenu::EspFlash);
-                self.refresh_scratch();
-                self.popup_hint_scroll = -2;
-                self.popup_menu_item = 0;
-
-                self.tx
-                    .send(Tick::Scroll.into())
-                    .map_err(|e| e.to_string())
-                    .unwrap();
             }
 
             #[cfg(feature = "espflash")]
@@ -1816,15 +1756,7 @@ impl App {
                 }
             }
             Menu::PortSelection(Pse::MoreOptions) => {
-                self.refresh_scratch();
-                self.popup = Some(PopupMenu::PortSettings);
-                self.table_state.select(None);
-                self.popup_menu_item = 0;
-
-                self.tx
-                    .send(Tick::Scroll.into())
-                    .map_err(|e| e.to_string())
-                    .unwrap();
+                self.show_popup(ShowPopupAction::ShowPortSettings)
             }
             Menu::PortSelection(_) => (),
             Menu::Terminal(TerminalPrompt::None) => {
@@ -1880,13 +1812,7 @@ impl App {
                     DisconnectPrompt::ExitApp => self.shutdown(),
                     DisconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
                     DisconnectPrompt::OpenPortSettings => {
-                        // TODO i hate this, consolidate this.
-                        self.menu = Menu::Terminal(TerminalPrompt::None);
-                        self.dismiss_popup();
-                        self.popup = Some(PopupMenu::PortSettings);
-                        // Select first menu item
-                        self.popup_menu_item = 1;
-                        self.tx.send(Tick::Scroll.into()).unwrap();
+                        self.show_popup(ShowPopupAction::ShowPortSettings)
                     }
                     DisconnectPrompt::Disconnect if shift_pressed || ctrl_pressed => {
                         // This is intentionally being set true unconditionally here, and also when the event pops.
@@ -1950,14 +1876,9 @@ impl App {
                         self.menu = Menu::Terminal(TerminalPrompt::None)
                     }
                     AttemptReconnectPrompt::OpenPortSettings => {
-                        // TODO i hate this, consolidate this.
-                        self.menu = Menu::Terminal(TerminalPrompt::None);
-                        self.dismiss_popup();
-                        self.popup = Some(PopupMenu::PortSettings);
-                        // Select first menu item
-                        self.popup_menu_item = 1;
-                        self.tx.send(Tick::Scroll.into()).unwrap();
+                        self.show_popup(ShowPopupAction::ShowPortSettings)
                     }
+
                     AttemptReconnectPrompt::BackToPortSelection => {
                         self.serial.disconnect().unwrap();
                         // Refresh port listings
@@ -3253,6 +3174,17 @@ impl App {
         //     port: self.serial.port_settings.load().as_ref().clone(),
         // }
         self.scratch = self.settings.clone();
+    }
+    fn show_popup(&mut self, popup: ShowPopupAction) {
+        self.popup = Some(popup.into());
+        self.refresh_scratch();
+        self.popup_hint_scroll = -2;
+        self.popup_menu_item = 0;
+
+        self.tx
+            .send(Tick::Scroll.into())
+            .map_err(|e| e.to_string())
+            .unwrap();
     }
     fn dismiss_popup(&mut self) {
         self.refresh_scratch();

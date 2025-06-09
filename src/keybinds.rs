@@ -7,21 +7,46 @@ use crokey::KeyCombination;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use crate::app::PopupMenu;
 #[cfg(feature = "macros")]
 use crate::macros::MacroNameTag;
 
-// enum ShowPopupAction {
-//     #[strum(serialize = "show-portsettings")]
-//     ShowPortSettings,
-//     ShowBehavior,
-//     ShowRendering,
-//     #[strum(serialize = "show-macros")]
-//     ShowPopup,
-//     #[strum(serialize = "show-espflash")]
-//     ShowPopup,
-//     #[strum(serialize = "show-logging")]
-//     ShowPopup,
-// }
+// Maybe combine with app::PopupMenu instead of being its own type?
+#[derive(Debug, strum::EnumString)]
+#[strum(serialize_all = "kebab-case")]
+#[strum(ascii_case_insensitive)]
+#[repr(u8)]
+// #[strum(prefix = "show-")]
+// nevermind, doesn't work with FromStr :(
+pub enum ShowPopupAction {
+    #[strum(serialize = "show-portsettings")]
+    ShowPortSettings,
+    ShowBehavior,
+    ShowRendering,
+    #[cfg(feature = "macros")]
+    ShowMacros,
+    #[cfg(feature = "espflash")]
+    #[strum(serialize = "show-espflash")]
+    ShowEspFlash,
+    #[cfg(feature = "logging")]
+    ShowLogging,
+}
+
+impl From<ShowPopupAction> for PopupMenu {
+    fn from(value: ShowPopupAction) -> Self {
+        match value {
+            ShowPopupAction::ShowBehavior => Self::BehaviorSettings,
+            ShowPopupAction::ShowRendering => Self::RenderingSettings,
+            ShowPopupAction::ShowPortSettings => Self::PortSettings,
+            #[cfg(feature = "logging")]
+            ShowPopupAction::ShowLogging => Self::Logging,
+            #[cfg(feature = "espflash")]
+            ShowPopupAction::ShowEspFlash => Self::EspFlash,
+            #[cfg(feature = "macros")]
+            ShowPopupAction::ShowMacros => Self::Macros,
+        }
+    }
+}
 
 #[derive(Debug, strum::EnumString)]
 #[strum(serialize_all = "kebab-case")]
@@ -32,11 +57,6 @@ pub enum BaseAction {
     ToggleIndices,
     ToggleHex,
     ToggleHexHeader,
-
-    #[strum(serialize = "show-portsettings")]
-    ShowPortSettings,
-    ShowBehavior,
-    ShowRendering,
 
     ReloadColors,
 }
@@ -51,6 +71,8 @@ pub enum PortAction {
     DeassertRts,
     AssertDtr,
     DeassertDtr,
+    AttemptReconnectStrict,
+    AttemptReconnectLoose,
 }
 
 #[cfg(feature = "macros")]
@@ -58,9 +80,6 @@ pub enum PortAction {
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum MacroAction {
-    #[strum(serialize = "show-macros")]
-    ShowPopup,
-
     ReloadMacros,
 }
 
@@ -69,8 +88,6 @@ pub enum MacroAction {
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum EspAction {
-    #[strum(serialize = "show-espflash")]
-    ShowPopup,
     #[strum(serialize = "reload-espflash")]
     ReloadProfiles,
     EspHardReset,
@@ -85,8 +102,6 @@ pub enum EspAction {
 // #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum LoggingAction {
-    #[strum(serialize = "show-logging")]
-    ShowPopup,
     #[strum(serialize = "logging-start")]
     Start,
     #[strum(serialize = "logging-stop")]
@@ -98,6 +113,7 @@ pub enum LoggingAction {
 #[derive(Debug)]
 pub enum AppAction {
     Base(BaseAction),
+    Popup(ShowPopupAction),
     Port(PortAction),
     #[cfg(feature = "macros")]
     Macros(MacroAction),
@@ -106,33 +122,6 @@ pub enum AppAction {
     #[cfg(feature = "logging")]
     Logging(LoggingAction),
 }
-
-// impl AppAction {
-//     pub fn requires_port_connection(&self) -> bool {
-//         match self {
-//             AppAction::Base(BaseAction::ToggleDtr) => true,
-//             AppAction::Base(BaseAction::ToggleRts) => true,
-
-//             AppAction::Base(_) => false,
-
-//             #[cfg(feature = "logging")]
-//             AppAction::Logging(LoggingAction::Start) => true,
-//             #[cfg(feature = "logging")]
-//             AppAction::Logging(LoggingAction::Toggle)
-//             | AppAction::Logging(LoggingAction::Stop)
-//             | AppAction::Logging(LoggingAction::ShowPopup) => false,
-//             #[cfg(feature = "espflash")]
-//             AppAction::Esp(EspAction::ShowPopup) | AppAction::Esp(EspAction::ReloadProfiles) => {
-//                 false
-//             }
-//             #[cfg(feature = "espflash")]
-//             AppAction::Esp(_) => true,
-//             #[cfg(feature = "macros")]
-//             AppAction::Macros(MacroAction::ReloadMacros)
-//             | AppAction::Macros(MacroAction::ShowPopup) => false,
-//         }
-//     }
-// }
 
 impl From<BaseAction> for AppAction {
     fn from(action: BaseAction) -> Self {
@@ -175,6 +164,9 @@ impl FromStr for AppAction {
         if let Ok(base) = s.parse::<BaseAction>() {
             return Ok(AppAction::Base(base));
         }
+        if let Ok(popup) = s.parse::<ShowPopupAction>() {
+            return Ok(AppAction::Popup(popup));
+        }
         if let Ok(port) = s.parse::<PortAction>() {
             return Ok(AppAction::Port(port));
         }
@@ -204,17 +196,6 @@ pub enum Action {
     MacroInvocation(MacroNameTag),
     Pause(Duration),
 }
-
-// impl Action {
-//     pub fn requires_port_connection(&self) -> bool {
-//         match self {
-//             Action::AppAction(action) => action.requires_port_connection(),
-//             Action::EspFlashProfile(_) => true,
-//             Action::MacroInvocation(_) => true,
-//             Action::Pause(_) => true,
-//         }
-//     }
-// }
 
 static CONFIG_TOML: &str = r#"
 [keybindings]
@@ -352,7 +333,7 @@ impl Keybinds {
                     return false;
                 }
 
-                if let Ok(AppAction::Base(BaseAction::ShowPortSettings)) =
+                if let Ok(AppAction::Popup(ShowPopupAction::ShowPortSettings)) =
                     actions[0].parse::<AppAction>()
                 {
                     true
