@@ -40,42 +40,135 @@ pub struct EspBins {
     pub no_verify: bool,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct EspElf {
     pub name: CompactString,
     pub path: PathBuf,
-    #[serde(default)]
     pub upload_baud: Option<u32>,
-    #[serde(deserialize_with = "deserialize_chip")]
-    #[serde(rename = "chip")]
-    #[serde(default)]
     pub expected_chip: Option<Chip>,
-    #[serde(default)]
     pub partition_table: Option<PathBuf>,
-    #[serde(default)]
     pub bootloader: Option<PathBuf>,
-    #[serde(default)]
     pub no_skip: bool,
-    #[serde(default)]
     pub no_verify: bool,
-    #[serde(default)]
     pub ram: bool,
 }
 
-fn deserialize_chip<'de, D>(deserializer: D) -> Result<Option<Chip>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::Error;
-    use std::str::FromStr;
-    let opt = Option::<String>::deserialize(deserializer)?;
-    match opt {
-        Some(s) => Chip::from_str(&s)
-            .map(Some)
-            .map_err(|_| D::Error::custom("invalid chip type given")),
-        None => Ok(None),
+impl<'de> serde::Deserialize<'de> for EspElf {
+    fn deserialize<D>(deserializer: D) -> Result<EspElf, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{Error, MapAccess, Visitor};
+        use std::fmt;
+
+        struct EspElfVisitor;
+
+        impl<'de> Visitor<'de> for EspElfVisitor {
+            type Value = EspElf;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a map representing EspElf with validation")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<EspElf, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut name = None;
+                let mut path = None;
+                let mut upload_baud = None;
+                let mut expected_chip = None;
+                let mut partition_table = None;
+                let mut bootloader = None;
+                let mut no_skip = false;
+                let mut no_verify = false;
+                let mut ram = false;
+                let mut any_chip = false;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "name" => {
+                            let value: CompactString = map.next_value()?;
+                            name = Some(value);
+                        }
+                        "path" => {
+                            let value: PathBuf = map.next_value()?;
+                            path = Some(value);
+                        }
+                        "upload_baud" => {
+                            upload_baud = Some(map.next_value()?);
+                        }
+                        "chip" => {
+                            let value: String = map.next_value()?;
+                            if value == "any" {
+                                any_chip = true;
+                            } else {
+                                expected_chip =
+                                    Some(value.parse::<Chip>().map_err(|_| {
+                                        A::Error::custom("invalid chip type given")
+                                    })?);
+                            }
+                        }
+                        "partition_table" => {
+                            partition_table = Some(map.next_value()?);
+                        }
+                        "bootloader" => {
+                            bootloader = Some(map.next_value()?);
+                        }
+                        "no_skip" => {
+                            no_skip = map.next_value()?;
+                        }
+                        "no_verify" => {
+                            no_verify = map.next_value()?;
+                        }
+                        "ram" => {
+                            ram = map.next_value()?;
+                        }
+                        _ => {
+                            let _: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+
+                let name = name.ok_or_else(|| A::Error::missing_field("name"))?;
+                let path = path.ok_or_else(|| A::Error::missing_field("path"))?;
+
+                if !any_chip && expected_chip.is_none() {
+                    return Err(A::Error::missing_field("chip"));
+                }
+
+                Ok(EspElf {
+                    name,
+                    path,
+                    upload_baud,
+                    expected_chip,
+                    partition_table,
+                    bootloader,
+                    no_skip,
+                    no_verify,
+                    ram,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(EspElfVisitor)
     }
 }
+
+// fn deserialize_chip<'de, D>(deserializer: D) -> Result<Option<Chip>, D::Error>
+// where
+//     D: serde::Deserializer<'de>,
+// {
+//     use serde::de::Error;
+//     use std::str::FromStr;
+//     let opt = Option::<String>::deserialize(deserializer)?;
+//     match opt {
+//         Some(s) => Chip::from_str(&s)
+//             .map(Some)
+//             .map_err(|_| D::Error::custom("invalid chip type given")),
+//         None => Ok(None),
+//     }
+// }
 
 impl<'de> Deserialize<'de> for EspBins {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -106,6 +199,7 @@ impl<'de> Deserialize<'de> for EspBins {
                 let mut expected_chip = None;
                 let mut no_skip = false;
                 let mut no_verify = false;
+                let mut any_chip = false;
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -118,11 +212,14 @@ impl<'de> Deserialize<'de> for EspBins {
                         }
                         "chip" => {
                             let value: String = map.next_value()?;
-                            expected_chip = Some(
-                                value
-                                    .parse::<Chip>()
-                                    .map_err(|_| A::Error::custom("invalid chip type given"))?,
-                            );
+                            if value == "any" {
+                                any_chip = true;
+                            } else {
+                                expected_chip =
+                                    Some(value.parse::<Chip>().map_err(|_| {
+                                        A::Error::custom("invalid chip type given")
+                                    })?);
+                            }
                         }
                         "no_verify" => {
                             no_verify = map.next_value()?;
@@ -147,6 +244,11 @@ impl<'de> Deserialize<'de> for EspBins {
                 }
 
                 let name = name.ok_or_else(|| A::Error::missing_field("name"))?;
+
+                if !any_chip && expected_chip.is_none() {
+                    return Err(A::Error::missing_field("chip"));
+                }
+
                 // let upload_baud =
                 //     upload_baud.ok_or_else(|| A::Error::missing_field("upload_baud"))?;
 
