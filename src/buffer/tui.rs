@@ -54,8 +54,10 @@ impl Buffer {
 
     fn visible_buflines_iter(&self) -> (impl Iterator<Item = &BufLine>, u16) {
         let last_size = &self.last_terminal_size;
-        let total_lines = self.combined_height();
-        let more_lines_than_height = total_lines > last_size.height as usize;
+        let area_height = last_size.height as usize;
+
+        let more_lines_than_height =
+            (area_height < self.styled_lines.rx.len()) || (area_height < self.combined_height());
 
         let entries_to_skip: usize;
         let entries_to_take: usize;
@@ -63,7 +65,7 @@ impl Buffer {
         let mut wrapped_scroll: u16 = 0;
 
         if more_lines_than_height {
-            let desired_visible_lines = last_size.height as usize;
+            let desired_visible_lines = area_height;
             if self.rendering.wrap_text {
                 let vert_scroll = self.state.vert_scroll;
                 let (spillover_index, spillover_lines_visible, spilt_line_total_height) = {
@@ -171,6 +173,8 @@ impl Buffer {
     }
 
     pub fn scroll_by(&mut self, up: i32) {
+        let total_lines = self.combined_height();
+
         match up {
             0 => (), // Used to trigger scroll update actions from non-user scrolling events.
             // Scroll all the way up
@@ -179,7 +183,7 @@ impl Buffer {
                 self.state.stuck_to_bottom = false;
             }
             // Scroll all the way down
-            i32::MIN => self.state.vert_scroll = self.combined_height(),
+            i32::MIN => self.state.vert_scroll = total_lines,
 
             // Scroll up
             x if up > 0 => {
@@ -193,13 +197,12 @@ impl Buffer {
         }
 
         let last_size = &self.last_terminal_size;
-        let total_lines = self.combined_height();
         let more_lines_than_height = total_lines > last_size.height as usize;
 
         if up > 0 && more_lines_than_height {
             self.state.stuck_to_bottom = false;
-        } else if self.state.vert_scroll + last_size.height as usize >= self.combined_height() {
-            self.state.vert_scroll = self.combined_height();
+        } else if self.state.vert_scroll + last_size.height as usize >= total_lines {
+            self.state.vert_scroll = total_lines;
             self.state.stuck_to_bottom = true;
         }
 
@@ -211,10 +214,7 @@ impl Buffer {
             .state
             .scrollbar_state
             .position(self.state.vert_scroll)
-            .content_length(
-                self.combined_height()
-                    .saturating_sub(last_size.height as usize),
-            );
+            .content_length(total_lines.saturating_sub(last_size.height as usize));
     }
     // fn wrapped_line_count(&self) -> usize {
     //     self.buflines_iter().map(|l| l.get_line_height()).sum()
@@ -232,7 +232,24 @@ impl Buffer {
                     .map(|l| l.get_line_height() as usize)
                     .sum()
             } else {
-                self.buflines_iter().count()
+                // self.buflines_iter().count()
+                //
+                // instead inlining some of its functionality instead
+                // to avoid .count()-ing a potentially huge iter (100k+ items)
+                // (especially when wrapping is disabled, when its even more dead simple)
+                // when we can just read the length of a vector
+                let rx_lines = self.styled_lines.rx.len();
+                if self.rendering.echo_user_input == UserEcho::None {
+                    rx_lines
+                } else {
+                    rx_lines
+                        + self
+                            .styled_lines
+                            .tx
+                            .iter()
+                            .filter(|l| self.rendering.echo_user_input.filter_user_line(l))
+                            .count()
+                }
             }
         } else {
             let header_margin = { if self.rendering.hex_view_header { 2 } else { 0 } };
