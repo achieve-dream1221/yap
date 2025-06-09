@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["logging"]
+default = ["macros","logging","espflash"]
 # Allow flashing ESP32 targets with binary and ELF files
 espflash = ["dep:espflash"]
 logging = []
 # defmt = [] TODO
-# macros = [] TODO?
+macros = []
 portable = []
 
 [dependencies]

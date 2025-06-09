@@ -295,23 +295,24 @@ pub struct Behavior {
     /// Persist Fake Shell's command history across sessions (TODO).
     pub retain_history: bool,
 
-    #[serde_inline_default(true)]
-    #[derivative(Default(value = "true"))]
-    /// Fall back to macros with same name if category missing.
-    pub fuzzy_macro_match: bool,
-
     #[serde_inline_default(Duration::from_millis(500))]
     #[derivative(Default(value = "Duration::from_millis(500)"))]
     #[table(allow_unknown_values)]
     #[table(display = Debug)]
     #[table(values = [Duration::from_millis(10), Duration::from_millis(100), Duration::from_millis(250), Duration::from_millis(500), Duration::from_secs(1)])]
-    #[serde(rename = "macro_chain_delay_ms")]
+    #[serde(rename = "action_chain_delay_ms")]
     #[serde(
         serialize_with = "serialize_duration_as_ms",
         deserialize_with = "deserialize_duration_from_ms"
     )]
-    /// Pause between chained Macros.
-    pub macro_chain_delay: Duration,
+    /// Default delay between chained Actions in keybinds. Can be overwritten with "pause_ms:XXX" in chains.
+    pub action_chain_delay: Duration,
+
+    #[cfg(feature = "macros")]
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// Fall back to macros with same name if category missing.
+    pub fuzzy_macro_match: bool,
 }
 
 #[serde_inline_default]

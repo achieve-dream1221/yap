@@ -41,7 +41,7 @@ use crate::{
     buffer::Buffer,
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
-    keybinds::{Keybinds, methods::*},
+    keybinds::{Action, AppAction, BaseAction, Keybinds, MacroAction, PortAction},
     macros::{MacroNameTag, Macros},
     notifications::{
         EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
@@ -52,7 +52,7 @@ use crate::{
         worker::{InnerPortStatus, MOCK_PORT_NAME},
     },
     settings::{Behavior, PortSettings, Rendering, Settings},
-    traits::{LastIndex, LineHelpers, ToggleBool},
+    traits::{FirstChars, LastIndex, LineHelpers, ToggleBool},
     tui::{
         centered_rect_size,
         prompts::{DisconnectPrompt, PromptTable, centered_rect},
@@ -61,16 +61,14 @@ use crate::{
 };
 
 #[cfg(feature = "logging")]
-use crate::buffer::LoggingEvent;
-#[cfg(feature = "logging")]
-use crate::keybinds::logging_methods::*;
-#[cfg(feature = "logging")]
 use crate::settings::Logging;
 #[cfg(feature = "logging")]
 use crate::tui::logging::toggle_logging_button;
+#[cfg(feature = "logging")]
+use crate::{buffer::LoggingEvent, keybinds::LoggingAction};
 
 #[cfg(feature = "espflash")]
-use crate::keybinds::esp_methods::*;
+use crate::keybinds::EspAction;
 #[cfg(feature = "espflash")]
 use crate::serial::esp::{EspEvent, EspRestartType};
 #[cfg(feature = "espflash")]
@@ -116,8 +114,8 @@ pub enum Tick {
     Scroll,
     /// Used to force UI updates when a notification is on screen
     Notification,
-    /// Used to trigger consumption of the Macro TX Queue
-    MacroTx,
+    /// Used to trigger consumption of the Action Queue
+    Action,
 }
 
 impl From<Tick> for Event {
@@ -179,6 +177,7 @@ pub enum PopupMenu {
     #[cfg(feature = "espflash")]
     #[strum(serialize = "ESP32 Flashing")]
     EspFlash,
+    #[cfg(feature = "macros")]
     Macros,
 }
 
@@ -196,13 +195,7 @@ pub const DEFAULT_BAUD: u32 = {
 
 const FAILED_SEND_VISUAL_TIME: Duration = Duration::from_millis(750);
 
-// Maybe have the buffer in the TUI struct?
-
-/// Struct for working copies of settings that the user is editing
-pub struct ScratchSpace {
-    port: PortSettings,
-    behavior: Behavior,
-}
+// Maybe have the buffer in a TUI struct?
 
 pub struct App {
     state: RunningState,
@@ -241,8 +234,9 @@ pub struct App {
     failed_send_at: Option<Instant>,
 
     macros: Macros,
-    macros_tx_queue: VecDeque<(Option<KeyCombination>, MacroNameTag)>,
+    action_queue: VecDeque<(Option<KeyCombination>, Action)>,
 
+    // user_broke_connection: bool,
     settings: Settings,
     scratch: Settings,
     keybinds: Keybinds,
@@ -368,7 +362,7 @@ impl App {
             failed_send_at: None,
             // failed_send_at: Instant::now(),
             macros: Macros::new(),
-            macros_tx_queue: VecDeque::new(),
+            action_queue: VecDeque::new(),
             scratch: settings.clone(),
             settings,
             keybinds: Keybinds::new(),
@@ -586,16 +580,8 @@ impl App {
                     );
                 }
             }
-            Event::Tick(Tick::MacroTx) => {
-                self.send_one_macro();
-                if !self.macros_tx_queue.is_empty() {
-                    let tx = self.tx.clone();
-                    self.carousel.add_oneshot(
-                        "MacroTX",
-                        Box::new(move || tx.send(Tick::MacroTx.into()).map_err(|e| e.to_string())),
-                        self.settings.behavior.macro_chain_delay,
-                    );
-                }
+            Event::Tick(Tick::Action) => {
+                self.consume_one_queued_action()?;
             }
             Event::Tick(Tick::Notification) => {
                 // debug!("notif!");
@@ -634,31 +620,37 @@ impl App {
     fn shutdown(&mut self) {
         self.state = RunningState::Finished;
     }
-    fn send_one_macro(&mut self) {
-        let serial_healthy = self.serial.port_status.load().inner.is_healthy();
+    fn send_one_macro(
+        &mut self,
+        macro_ref: MacroNameTag,
+        key_combo_opt: Option<KeyCombination>,
+    ) -> Result<(), ()> {
+        // let serial_healthy = self.serial.port_status.load().inner.is_healthy();
 
-        if !serial_healthy {
-            self.macros_tx_queue.clear();
-            return;
-        }
-        let Some((key_combo_opt, macro_ref)) = self.macros_tx_queue.pop_front() else {
-            return;
-        };
+        // if !serial_healthy {
+        //     //     self.macros_tx_queue.clear();
+        //     return Ok(());
+        // }
+        // let Some((key_combo_opt, macro_ref)) = self.macros_tx_queue.pop_front() else {
+        //     return;
+        // };
 
         let (macro_tag, macro_content) = self
             .macros
             .all
             .iter()
             .find(|(tag, _string)| &&macro_ref == tag)
-            .expect("Failed to find referenced Macro");
+            .ok_or(())?;
 
         let italic = Style::new().italic();
 
+        assert!(!macro_content.is_empty());
+
         let (notif_line, notif_color) = match (key_combo_opt, macro_content) {
-            (_, _) if macro_content.is_empty() => (
-                line!["Macro \"", span!(italic; macro_tag), "\" is empty!"],
-                Color::Yellow,
-            ),
+            // (_, _) if macro_content.is_empty() => (
+            //     line!["Macro \"", span!(italic; macro_tag), "\" is empty!"],
+            //     Color::Yellow,
+            // ),
             (Some(key_combo), _) => (
                 line![span!(italic; macro_tag), span!(" [{key_combo}]")],
                 Color::Green,
@@ -715,6 +707,8 @@ impl App {
         };
 
         self.notifs.notify(notif_line, notif_color);
+
+        Ok(())
     }
     // TODO fuzz this
     fn handle_key_press(&mut self, key: KeyEvent) {
@@ -854,137 +848,316 @@ impl App {
                 self.user_input.find_input_in_history();
             }
             // KeyCode::Tab => self.tab_pressed(),
+            #[cfg(feature = "macros")]
             key!(ctrl - r) if self.popup == Some(PopupMenu::Macros) => {
-                self.run_method_from_string(RELOAD_MACROS).unwrap();
+                self.run_method_from_action(AppAction::Macros(MacroAction::ReloadMacros))
+                    .unwrap();
             }
             #[cfg(feature = "espflash")]
             key!(ctrl - r) if self.popup == Some(PopupMenu::EspFlash) => {
-                self.run_method_from_string(RELOAD_ESPFLASH).unwrap();
+                self.run_method_from_action(AppAction::Esp(EspAction::ReloadProfiles))
+                    .unwrap();
             }
             key!(esc) => self.esc_pressed(),
             key_combo => {
-                // TODO move all these into diff func
-                if let Some(method) = self
-                    .keybinds
-                    .method_from_key_combo(key_combo)
-                    .map(ToOwned::to_owned)
-                {
-                    if let Err(e) = self.run_method_from_string(&method) {
-                        error!("Error running method `{method}`: {e}");
-                    }
+                let Some(actions_str) = self.keybinds.action_set_from_key_combo(key_combo)
+                // .map(ToOwned::to_owned)
+                else {
                     return;
-                }
+                };
 
-                let serial_healthy = self.serial.port_status.load().inner.is_healthy();
+                let mut actions = Vec::new();
 
-                #[cfg(feature = "espflash")]
-                if let Some(profile_name) = self
-                    .keybinds
-                    .espflash_profile_from_key_combo(key_combo)
-                    .map(ToOwned::to_owned)
-                {
-                    if let Some(profile) = self
-                        .espflash
-                        .profiles()
-                        .find(|(name, _, _)| *name == profile_name)
-                    {
-                        let italic = Style::new().italic();
-                        if serial_healthy {
-                            self.notifs.notify(
-                                line![
-                                    "Flashing with \"",
-                                    span!(italic;profile_name),
-                                    "\" [",
-                                    key_combo.to_string(),
-                                    "]"
-                                ],
-                                Color::LightGreen,
-                            );
-                            self.serial
-                                .esp_flash_profile(
-                                    self.espflash.profile_from_name(&profile_name).unwrap(),
-                                )
-                                .unwrap();
-                        } else {
-                            self.notifs.notify(
-                                line![
-                                    "Not flashing with \"",
-                                    span!(italic;profile_name),
-                                    "\" [",
-                                    key_combo.to_string(),
-                                    "]"
-                                ],
-                                Color::Yellow,
-                            );
-                        }
+                for action in actions_str {
+                    if let Some(action) = self.get_action_from_string(action) {
+                        actions.push(action);
                     } else {
-                        error!("No such espflash profile: \"{profile_name}\"");
                         self.notifs.notify_str(
-                            format!("No such espflash profile: \"{profile_name}\""),
+                            format!("Unrecognized keybind action: \"{action}\""),
                             Color::Yellow,
                         );
-                        // let Some(profile) =
-                        //     self.espflash.elfs.iter().find(|p| p.name == profile_name)
-                        // else {};
+                        return;
                     }
-
-                    return;
                 }
 
-                match self.macros.macro_from_key_combo(
-                    key_combo,
-                    &self.keybinds.macros,
-                    self.settings.behavior.fuzzy_macro_match,
-                ) {
-                    Ok(somes) if serial_healthy => {
-                        if !somes.is_empty() {
-                            self.macros_tx_queue.extend(
-                                somes.into_iter().map(|tag| (Some(key_combo), tag.clone())),
-                            );
-                            self.tx.send(Tick::MacroTx.into()).unwrap();
-                        }
-                    }
-                    Ok(somes) => {
-                        let unsent = somes
-                            .into_iter()
-                            .map(|tag| tag.name.clone())
-                            .map(|s| Span::raw(s).italic())
-                            .map(|s| tiny_vec!([Span;3] => span!("\""), s, span!("\"")))
-                            // TODO fully qualified syntax
-                            .intersperse(tiny_vec!([Span;3] => span!(", ")))
-                            .flatten()
-                            .chain(std::iter::once(span!(format!(" [{key_combo}] (Not Sent)"))));
-                        self.notifs.notify(Line::from_iter(unsent), Color::Yellow);
-                    }
-                    Err(Some(nones)) => {
-                        // let missed = nones.into_iter().map(|km| km.to_string()).join(", ");
-                        // self.notifs.notify_str(format!(" {missed}"), Color::Yellow);
-                        let missed_iter = nones
-                            .into_iter()
-                            .map(|km| km.name.clone())
-                            .map(|s| Span::raw(s).italic())
-                            .map(|s| tiny_vec!([Span;3] => span!("\""), s, span!("\"")))
-                            // TODO fully qualified syntax
-                            .intersperse(tiny_vec!([Span;3] => span!(", ")))
-                            .flatten();
-                        let missed = std::iter::once(span!(format!("Macro search failed for: ")))
-                            .chain(missed_iter);
+                debug!("{actions:?}");
 
-                        self.notifs.notify(Line::from_iter(missed), Color::Yellow);
-                    }
-                    // No macros found.
-                    Err(None) => (),
-                }
-            }
+                self.queue_action_set(actions, Some(key_combo)).unwrap();
+            } // key_combo => {
+              //     // TODO move all these into diff func
+              //     if let Some(method) = self
+              //         .keybinds
+              //         .action_set_from_key_combo(key_combo)
+              //         .map(ToOwned::to_owned)
+              //     {
+              //         if let Err(e) = self.run_method_from_string(&method) {
+              //             error!("Error running method `{method}`: {e}");
+              //         }
+              //         return;
+              //     }
+
+              //     let serial_healthy = self.serial.port_status.load().inner.is_healthy();
+
+              //     #[cfg(feature = "espflash")]
+              //     if let Some(profile_name) = self
+              //         .keybinds
+              //         .espflash_profile_from_key_combo(key_combo)
+              //         .map(ToOwned::to_owned)
+              //     {
+              //         if let Some(profile) = self
+              //             .espflash
+              //             .profiles()
+              //             .find(|(name, _, _)| *name == profile_name)
+              //         {
+              //             let italic = Style::new().italic();
+              //             if serial_healthy {
+              //                 self.notifs.notify(
+              //                     line![
+              //                         "Flashing with \"",
+              //                         span!(italic;profile_name),
+              //                         "\" [",
+              //                         key_combo.to_string(),
+              //                         "]"
+              //                     ],
+              //                     Color::LightGreen,
+              //                 );
+              //                 self.serial
+              //                     .esp_flash_profile(
+              //                         self.espflash.profile_from_name(&profile_name).unwrap(),
+              //                     )
+              //                     .unwrap();
+              //             } else {
+              //                 self.notifs.notify(
+              //                     line![
+              //                         "Not flashing with \"",
+              //                         span!(italic;profile_name),
+              //                         "\" [",
+              //                         key_combo.to_string(),
+              //                         "]"
+              //                     ],
+              //                     Color::Yellow,
+              //                 );
+              //             }
+              //         } else {
+              //             error!("No such espflash profile: \"{profile_name}\"");
+              //             self.notifs.notify_str(
+              //                 format!("No such espflash profile: \"{profile_name}\""),
+              //                 Color::Yellow,
+              //             );
+              //             // let Some(profile) =
+              //             //     self.espflash.elfs.iter().find(|p| p.name == profile_name)
+              //             // else {};
+              //         }
+
+              //         return;
+              //     }
+
+              //     match self.macros.macro_from_key_combo(
+              //         key_combo,
+              //         &self.keybinds.macros,
+              //         self.settings.behavior.fuzzy_macro_match,
+              //     ) {
+              //         Ok(somes) if serial_healthy => {
+              //             if !somes.is_empty() {
+              //                 self.macros_tx_queue.extend(
+              //                     somes.into_iter().map(|tag| (Some(key_combo), tag.clone())),
+              //                 );
+              //                 self.tx.send(Tick::MacroTx.into()).unwrap();
+              //             }
+              //         }
+              //         Ok(somes) => {
+              //             let unsent = somes
+              //                 .into_iter()
+              //                 .map(|tag| tag.name.clone())
+              //                 .map(|s| Span::raw(s).italic())
+              //                 .map(|s| tiny_vec!([Span;3] => span!("\""), s, span!("\"")))
+              //                 // TODO fully qualified syntax
+              //                 .intersperse(tiny_vec!([Span;3] => span!(", ")))
+              //                 .flatten()
+              //                 .chain(std::iter::once(span!(format!(" [{key_combo}] (Not Sent)"))));
+              //             self.notifs.notify(Line::from_iter(unsent), Color::Yellow);
+              //         }
+              //         Err(Some(nones)) => {
+              //             // let missed = nones.into_iter().map(|km| km.to_string()).join(", ");
+              //             // self.notifs.notify_str(format!(" {missed}"), Color::Yellow);
+              //             let missed_iter = nones
+              //                 .into_iter()
+              //                 .map(|km| km.name.clone())
+              //                 .map(|s| Span::raw(s).italic())
+              //                 .map(|s| tiny_vec!([Span;3] => span!("\""), s, span!("\"")))
+              //                 // TODO fully qualified syntax
+              //                 .intersperse(tiny_vec!([Span;3] => span!(", ")))
+              //                 .flatten();
+              //             let missed = std::iter::once(span!(format!("Macro search failed for: ")))
+              //                 .chain(missed_iter);
+
+              //             self.notifs.notify(Line::from_iter(missed), Color::Yellow);
+              //         }
+              //         // No macros found.
+              //         Err(None) => (),
+              //     }
+              // }
         }
     }
-    fn run_method_from_string(&mut self, method: &str) -> Result<()> {
-        let m = method;
+    fn queue_action_set(
+        &mut self,
+        mut actions: Vec<Action>,
+        key_combo_opt: Option<KeyCombination>,
+    ) -> Result<()> {
+        assert!(
+            !actions.is_empty(),
+            "should never be asked to queue no actions"
+        );
+
+        // Don't bother queuing if it's just one action, send it.
+        if actions.len() == 1 {
+            self.action_dispatch(actions.pop().unwrap(), key_combo_opt)?;
+            return Ok(());
+        }
+
+        self.action_queue
+            .extend(actions.into_iter().map(|a| (key_combo_opt, a)));
+
+        self.tx.send(Tick::Action.into())?;
+
+        Ok(())
+    }
+    fn get_action_from_string(&self, action: &str) -> Option<Action> {
+        if action.trim().is_empty() {
+            return None;
+        }
+
+        let action = action.trim();
+
+        // Check for matching app method
+        if let Ok(app_action) = action.parse::<AppAction>() {
+            return Some(Action::AppAction(app_action));
+        }
+
+        // Try to find esp profile by exact name match.
+        if let Some(_) = self.espflash.profile_from_name(action) {
+            return Some(Action::EspFlashProfile(action.to_owned()));
+        }
+
+        // Get Macro by name and category, optionally categorically fuzzy
+        if let Some(nametag) = self
+            .macros
+            .get_by_string(action, self.settings.behavior.fuzzy_macro_match)
+        {
+            return Some(Action::MacroInvocation(nametag));
+        }
+
+        let parse_duration = |s: &str| -> Option<Duration> {
+            let pause_prefix = "pause_ms:";
+            let s_start = s.first_chars(pause_prefix.len())?;
+            if !s_start.eq_ignore_ascii_case(pause_prefix) {
+                return None;
+            }
+            let delay_ms = s[pause_prefix.len()..].parse().ok()?;
+            Some(Duration::from_millis(delay_ms))
+        };
+
+        // Check if it's a pause request
+        if let Some(duration) = parse_duration(action) {
+            return Some(Action::Pause(duration));
+        }
+
+        // Otherwise, it's nothing we recognize.
+        None
+    }
+    fn consume_one_queued_action(&mut self) -> Result<()> {
+        let Some((key_combo_opt, action)) = self.action_queue.front() else {
+            return Ok(());
+        };
+
+        // if action.requires_port_connection() {
+        let port_status_guard = self.serial.port_status.load().inner;
+        match port_status_guard {
+            InnerPortStatus::Connected => (),
+            InnerPortStatus::LentOut => {
+                let tx = self.tx.clone();
+                self.carousel.add_oneshot(
+                    "ActionQueue",
+                    Box::new(move || tx.send(Tick::Action.into()).map_err(|e| e.to_string())),
+                    Duration::from_millis(500),
+                );
+                return Ok(());
+            }
+            InnerPortStatus::Idle | InnerPortStatus::PrematureDisconnect => {
+                let text = format!(
+                    "Port isn't ready, clearing {} queued actions.",
+                    self.action_queue.len()
+                );
+                self.notifs.notify_str(text, Color::Red);
+                self.action_queue.clear();
+                return Ok(());
+            }
+        }
+        // }
+
+        let Some((key_combo_opt, action)) = self.action_queue.pop_front() else {
+            unreachable!()
+        };
+
+        let pause_duration_opt = self.action_dispatch(action, key_combo_opt)?;
+
+        let next_action_delay =
+            pause_duration_opt.unwrap_or(self.settings.behavior.action_chain_delay);
+        let tx = self.tx.clone();
+        self.carousel.add_oneshot(
+            "ActionQueue",
+            Box::new(move || tx.send(Tick::Action.into()).map_err(|e| e.to_string())),
+            next_action_delay,
+        );
+
+        Ok(())
+    }
+    // TODO figure out more error handling
+    // TODO and figure out logic with device connection halting certain actions
+    fn action_dispatch(
+        &mut self,
+        action: Action,
+        key_combo_opt: Option<KeyCombination>,
+    ) -> Result<Option<Duration>> {
+        debug!("Consuming action: {action:?}");
+        match action {
+            Action::AppAction(method) => self.run_method_from_action(method)?,
+            Action::Pause(duration) => return Ok(Some(duration)),
+            Action::MacroInvocation(name_tag) => {
+                self.send_one_macro(name_tag, key_combo_opt).unwrap()
+            }
+            #[cfg(feature = "espflash")]
+            Action::EspFlashProfile(profile) => self
+                .serial
+                .esp_flash_profile(self.espflash.profile_from_name(&profile).unwrap())?,
+        }
+        Ok(None)
+    }
+    fn run_method_from_action(&mut self, action: AppAction) -> Result<()> {
         let pretty_bool = |b: bool| {
             if b { "On" } else { "Off" }
         };
-        match m {
-            _ if m == TOGGLE_TEXTWRAP => {
+        use AppAction as A;
+        match action {
+            A::Port(PortAction::ToggleDtr) => {
+                self.serial.toggle_signals(true, false).unwrap();
+            }
+            A::Port(PortAction::ToggleRts) => {
+                self.serial.toggle_signals(false, true).unwrap();
+            }
+            A::Port(PortAction::AssertDtr) => {
+                self.serial.write_signals(Some(true), None).unwrap();
+            }
+            A::Port(PortAction::DeassertDtr) => {
+                self.serial.write_signals(Some(false), None).unwrap();
+            }
+            A::Port(PortAction::AssertRts) => {
+                self.serial.write_signals(None, Some(true)).unwrap();
+            }
+            A::Port(PortAction::DeassertRts) => {
+                self.serial.write_signals(None, Some(false)).unwrap();
+            }
+            A::Base(BaseAction::ToggleTextwrap) => {
                 let state = pretty_bool(self.settings.rendering.wrap_text.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
@@ -992,27 +1165,7 @@ impl App {
                 self.notifs
                     .notify_str(format!("Toggled Text Wrapping {state}"), Color::Gray);
             }
-            _ if m == TOGGLE_DTR => {
-                self.serial.toggle_signals(true, false).unwrap();
-            }
-            _ if m == TOGGLE_RTS => {
-                self.serial.toggle_signals(false, true).unwrap();
-            }
-            // key!(ctrl - e) => {
-            // "esp-bootloader" => {
-            // self.serial.write_signals(Some(false), Some(false));
-            // self.serial.write_signals(Some(true), Some(true));
-            // self.serial.write_signals(Some(false), Some(true));
-            // std::thread::sleep(Duration::from_millis(100));
-            // self.serial.write_signals(Some(true), Some(false));
-            // std::thread::sleep(Duration::from_millis(100));
-            // self.serial.write_signals(Some(false), Some(false));
-
-            // self.buffer
-            //     .append_user_text("Attempting to put Espressif device into bootloader...");
-            // self.serial.esp_restart(None);
-            // }
-            _ if m == TOGGLE_TIMESTAMPS => {
+            A::Base(BaseAction::ToggleTimestamps) => {
                 let state = pretty_bool(self.settings.rendering.timestamps.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
@@ -1021,7 +1174,7 @@ impl App {
                     .notify_str(format!("Toggled Timestamps {state}"), Color::Gray);
             }
 
-            _ if m == TOGGLE_INDICES => {
+            A::Base(BaseAction::ToggleIndices) => {
                 let state = pretty_bool(self.settings.rendering.show_indices.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
@@ -1031,7 +1184,7 @@ impl App {
                 );
             }
 
-            _ if m == TOGGLE_HEX => {
+            A::Base(BaseAction::ToggleHex) => {
                 let state = pretty_bool(self.settings.rendering.hex_view.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
@@ -1040,7 +1193,7 @@ impl App {
                     .notify_str(format!("Toggled Hex View {state}"), Color::Gray);
             }
 
-            _ if m == TOGGLE_HEX_HEADER => {
+            A::Base(BaseAction::ToggleHexHeader) => {
                 let state = pretty_bool(self.settings.rendering.hex_view_header.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
@@ -1049,7 +1202,7 @@ impl App {
             }
 
             // TODO consolidate popping up a popup menu into a func
-            _ if m == SHOW_MACROS => {
+            A::Macros(MacroAction::ShowPopup) => {
                 self.popup = Some(PopupMenu::Macros);
                 self.popup_hint_scroll = -2;
                 self.popup_menu_item = 0;
@@ -1059,7 +1212,7 @@ impl App {
                     .unwrap();
             }
 
-            _ if m == SHOW_BEHAVIOR => {
+            A::Base(BaseAction::ShowBehavior) => {
                 self.popup = Some(PopupMenu::BehaviorSettings);
                 self.popup_hint_scroll = -2;
                 self.popup_menu_item = 0;
@@ -1070,7 +1223,7 @@ impl App {
                     .unwrap();
             }
 
-            _ if m == SHOW_RENDERING => {
+            A::Base(BaseAction::ShowRendering) => {
                 self.popup = Some(PopupMenu::RenderingSettings);
                 self.popup_hint_scroll = -2;
                 self.popup_menu_item = 0;
@@ -1081,7 +1234,7 @@ impl App {
                     .unwrap();
             }
 
-            _ if m == SHOW_PORTSETTINGS => {
+            A::Base(BaseAction::ShowPortSettings) => {
                 self.popup = Some(PopupMenu::PortSettings);
                 self.refresh_scratch();
                 self.popup_hint_scroll = -2;
@@ -1093,7 +1246,7 @@ impl App {
                     .unwrap();
             }
 
-            _ if m == RELOAD_MACROS => {
+            A::Macros(MacroAction::ReloadMacros) => {
                 self.macros
                     .load_from_folder("../../example_macros")
                     .unwrap();
@@ -1101,14 +1254,14 @@ impl App {
                     .notify_str(format!("Reloaded Macros!"), Color::Green);
             }
 
-            _ if m == RELOAD_COLORS => {
+            A::Base(BaseAction::ReloadColors) => {
                 self.buffer.reload_color_rules().unwrap();
                 self.notifs
                     .notify_str(format!("Reloaded Color Rules!"), Color::Green);
             }
 
             #[cfg(feature = "logging")]
-            _ if m == SHOW_LOGGING => {
+            A::Logging(LoggingAction::ShowPopup) => {
                 self.popup = Some(PopupMenu::Logging);
                 self.refresh_scratch();
                 self.popup_hint_scroll = -2;
@@ -1121,7 +1274,7 @@ impl App {
             }
 
             #[cfg(feature = "logging")]
-            _ if m == LOGGING_START => {
+            A::Logging(LoggingAction::Start) => {
                 let port_status_guard = self.serial.port_status.load();
                 let Some(port_info) = &port_status_guard.current_port else {
                     self.notifs
@@ -1137,7 +1290,7 @@ impl App {
             }
 
             #[cfg(feature = "logging")]
-            _ if m == LOGGING_STOP => {
+            A::Logging(LoggingAction::Stop) => {
                 if self.buffer.log_handle.logging_active() {
                     self.buffer.log_handle.request_log_stop().unwrap();
                 } else {
@@ -1147,16 +1300,16 @@ impl App {
             }
 
             #[cfg(feature = "logging")]
-            _ if m == LOGGING_TOGGLE => {
+            A::Logging(LoggingAction::Toggle) => {
                 if self.buffer.log_handle.logging_active() {
-                    self.run_method_from_string(LOGGING_STOP)?;
+                    self.run_method_from_action(LoggingAction::Stop.into())?;
                 } else {
-                    self.run_method_from_string(LOGGING_START)?;
+                    self.run_method_from_action(LoggingAction::Start.into())?;
                 }
             }
 
             #[cfg(feature = "espflash")]
-            _ if m == SHOW_ESPFLASH => {
+            A::Esp(EspAction::ShowPopup) => {
                 self.popup = Some(PopupMenu::EspFlash);
                 self.refresh_scratch();
                 self.popup_hint_scroll = -2;
@@ -1169,47 +1322,45 @@ impl App {
             }
 
             #[cfg(feature = "espflash")]
-            _ if m == ESP_HARD_RESET => {
+            A::Esp(EspAction::EspHardReset) => {
                 self.serial.esp_restart(EspRestartType::UserCode).unwrap();
             }
 
             #[cfg(feature = "espflash")]
-            _ if m == ESP_BOOTLOADER => {
+            A::Esp(EspAction::EspBootloader) => {
                 self.serial
                     .esp_restart(EspRestartType::Bootloader { active: true })
                     .unwrap();
             }
 
             #[cfg(feature = "espflash")]
-            _ if m == ESP_BOOTLOADER_UNCHECKED => {
+            A::Esp(EspAction::EspBootloaderUnchecked) => {
                 self.serial
                     .esp_restart(EspRestartType::Bootloader { active: false })
                     .unwrap();
             }
 
             #[cfg(feature = "espflash")]
-            _ if m == ESP_DEVICE_INFO => {
+            A::Esp(EspAction::EspDeviceInfo) => {
                 self.serial.esp_device_info().unwrap();
             }
 
             #[cfg(feature = "espflash")]
-            _ if m == ESP_ERASE_FLASH => {
+            A::Esp(EspAction::EspEraseFlash) => {
                 self.serial.esp_erase_flash().unwrap();
             }
             #[cfg(feature = "espflash")]
-            _ if m == RELOAD_ESPFLASH => {
+            A::Esp(EspAction::ReloadProfiles) => {
                 self.notifs
                     .notify_str("Reloaded espflash profiles!", Color::Green);
                 self.espflash.reload().unwrap();
-            }
-
-            unknown => {
-                warn!("Unknown keybind action: {unknown}");
-                self.notifs.notify_str(
-                    format!("Unknown keybind action: \"{unknown}\""),
-                    Color::Yellow,
-                );
-            }
+            } // unknown => {
+              //     warn!("Unknown keybind action: {unknown}");
+              //     self.notifs.notify_str(
+              //         format!("Unknown keybind action: \"{unknown}\""),
+              //         Color::Yellow,
+              //     );
+              // }
         };
         Ok(())
     }
@@ -1531,8 +1682,9 @@ impl App {
                             self.notifs.notify_str("Macro is empty!", Color::Yellow)
                         }
                         _ => {
-                            self.macros_tx_queue.push_back((None, tag));
-                            self.tx.send(Tick::MacroTx.into()).unwrap();
+                            self.send_one_macro(tag, None).unwrap();
+                            // self.action_queue.push_back((None, tag));
+                            // self.tx.send(Tick::Action.into()).unwrap();
                         }
                     };
                 }
@@ -1559,20 +1711,28 @@ impl App {
                         .unwrap();
                 } else {
                     match selected {
-                        0 => self.run_method_from_string(ESP_HARD_RESET).unwrap(),
-                        1 if ctrl_pressed || shift_pressed => self
-                            .run_method_from_string(ESP_BOOTLOADER_UNCHECKED)
+                        0 => self
+                            .run_method_from_action(EspAction::EspHardReset.into())
                             .unwrap(),
-                        1 => self.run_method_from_string(ESP_BOOTLOADER).unwrap(),
-                        2 => self.run_method_from_string(ESP_DEVICE_INFO).unwrap(),
+                        1 if ctrl_pressed || shift_pressed => self
+                            .run_method_from_action(EspAction::EspBootloaderUnchecked.into())
+                            .unwrap(),
+                        1 => self
+                            .run_method_from_action(EspAction::EspBootloader.into())
+                            .unwrap(),
+                        2 => self
+                            .run_method_from_action(EspAction::EspDeviceInfo.into())
+                            .unwrap(),
                         3 => {
+                            // TODO config option to allow skipping this?
                             if !shift_pressed && !ctrl_pressed {
                                 self.notifs.notify_str(
                                     "Press Shift/Ctrl+Enter to erase flash!",
                                     Color::Yellow,
                                 );
                             } else {
-                                self.run_method_from_string(ESP_ERASE_FLASH).unwrap();
+                                self.run_method_from_action(EspAction::EspEraseFlash.into())
+                                    .unwrap();
                             }
                         }
                         unknown => unreachable!("unknown espflash command index {unknown}"),
@@ -2495,6 +2655,9 @@ impl App {
                     );
                     if let Some(profile) = self.espflash.profile_from_index(corrected_index) {
                         let hint_text = match profile {
+                            esp::EspProfile::Bins(bins) if bins.bins.len() == 1 => {
+                                "Flash selected profile binary to ESP Flash."
+                            }
                             esp::EspProfile::Bins(_) => {
                                 "Flash selected profile binaries to ESP Flash."
                             }
@@ -2691,10 +2854,16 @@ impl App {
             );
         }
 
-        {
+        if self.action_queue.is_empty() {
             let port_name_line = Line::raw(port_text).centered();
             frame.render_widget(port_name_line, line_area);
+        } else {
+            let port_name_line =
+                Line::raw(format!("Queued Actions: {}", self.action_queue.len())).centered();
+            frame.render_widget(port_name_line, line_area);
+        }
 
+        {
             let reversed_if_true = |signal: bool| -> Modifier {
                 if signal {
                     Modifier::REVERSED
@@ -2767,11 +2936,10 @@ impl App {
             // TODO make binding hint dynamic (should maybe cache?)
             let port_settings_combo = self
                 .keybinds
-                .keybindings
-                .iter()
-                .find(|(kc, m)| m.as_str() == SHOW_PORTSETTINGS)
-                .map(|(kc, m)| kc.to_compact_string())
-                .unwrap_or_else(|| CompactString::const_new("UNBOUND"));
+                .port_settings_hint
+                .as_ref()
+                .map(CompactString::as_str)
+                .unwrap_or_else(|| "UNBOUND");
             let input_hint = Line::raw(format!(
                 " Input goes here. `{key}` for port settings.",
                 key = port_settings_combo

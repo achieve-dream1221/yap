@@ -151,20 +151,29 @@ impl Macros {
             .filtered_macro_iter()
             .map(|m| (m.0.name.as_str(), m))
             .map(|(title, (tag, string))| {
-                let macro_string = keybinds
-                    .macros
+                let mut filtered_keybinds = keybinds
+                    .keybindings
                     .iter()
                     .filter(|(kc, km)| km.len() == 1)
-                    .map(|(kc, km)| (kc, &km[0]))
-                    .find(|(kc, km)| *km == tag)
+                    .map(|(kc, km)| (kc, &km[0]));
+
+                let macro_string = filtered_keybinds
+                    .clone()
+                    .find(|(kc, km)| {
+                        let Ok(keybind_as_tag) = km.parse::<MacroNameTag>() else {
+                            return false;
+                        };
+                        &keybind_as_tag == tag
+                    })
                     .or_else(|| {
                         if fuzzy_macro_name_match {
-                            keybinds
-                                .macros
-                                .iter()
-                                .filter(|(kc, km)| km.len() == 1)
-                                .map(|(kc, km)| (kc, &km[0]))
-                                .find(|(kc, km)| km.eq_fuzzy(tag))
+                            filtered_keybinds.find(|(kc, km)| {
+                                let Ok(keybind_as_tag) = km.parse::<MacroNameTag>() else {
+                                    return false;
+                                };
+
+                                keybind_as_tag.eq_fuzzy(tag)
+                            })
                         } else {
                             None
                         }
@@ -192,6 +201,29 @@ impl Macros {
             .collect();
 
         no_category.chain(categories.into_iter())
+    }
+    pub fn get_by_string<'a>(
+        &'a self,
+        query: &str,
+        fuzzy_macro_name_match: bool,
+    ) -> Option<MacroNameTag> {
+        let query_nametag: MacroNameTag = query.parse().ok()?;
+
+        let find_result = self
+            .all
+            .iter()
+            .find(|(tag, content)| query_nametag.eq(tag))
+            .map(|(t, c)| t.clone());
+
+        match find_result {
+            None if fuzzy_macro_name_match => self
+                .all
+                .iter()
+                .find(|(tag, content)| query_nametag.eq_fuzzy(tag))
+                .map(|(t, c)| t.clone()),
+            None => None,
+            Some(tag) => Some(tag),
+        }
     }
     pub fn macro_from_key_combo<'a>(
         &'a self,

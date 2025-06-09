@@ -138,7 +138,7 @@ impl BufLine {
         // Paragraph::line_count comes from an unstable ratatui feature (unstable-rendered-line-info)
         // which may be changed/removed in the future. If so, I'll need to roll my own wrapping/find someone's to steal.
         let height = para.line_count(area_width.saturating_sub(1));
-        self.rendered_line_height = (height as u16);
+        self.rendered_line_height = height as u16;
         height
     }
 
