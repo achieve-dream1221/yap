@@ -29,7 +29,14 @@ pub enum SerialEvent {
     RxBuffer(Vec<u8>),
     #[cfg(feature = "espflash")]
     EspFlash(EspEvent),
-    Disconnected(Option<String>),
+    Disconnected(SerialDisconnectReason),
+}
+
+#[derive(Debug, Clone)]
+pub enum SerialDisconnectReason {
+    Intentional,
+    UserBrokeConnection,
+    Error(String),
 }
 
 impl From<SerialEvent> for Event {
@@ -53,6 +60,15 @@ pub enum Reconnections {
     Disabled,
     StrictChecks,
     LooseChecks,
+}
+
+impl Reconnections {
+    pub fn allowed(&self) -> bool {
+        match self {
+            Reconnections::Disabled => false,
+            Reconnections::LooseChecks | Reconnections::StrictChecks => true,
+        }
+    }
 }
 
 pub trait PrintablePortInfo {

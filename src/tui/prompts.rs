@@ -29,14 +29,27 @@ pub enum Test {
     Debug, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
 )]
 #[repr(u8)]
+#[strum(serialize_all = "title_case")]
 pub enum DisconnectPrompt {
     Disconnect,
-    #[strum(serialize = "Open Port Settings")]
-    PortSettings,
-    #[strum(serialize = "Exit App")]
-    Exit,
+    OpenPortSettings,
+    ExitApp,
     Cancel,
 }
+
+#[derive(
+    Debug, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
+)]
+#[repr(u8)]
+#[strum(serialize_all = "title_case")]
+pub enum AttemptReconnectPrompt {
+    AttemptReconnect,
+    BackToPortSelection,
+    OpenPortSettings,
+    ExitApp,
+    Cancel,
+}
+
 // #[derive(
 //     Debug, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
 // )]

@@ -16,7 +16,7 @@ use virtual_serialport::VirtualPort;
 use crate::{
     app::{Event, Tick},
     errors::{YapError, YapResult},
-    serial::SerialEvent,
+    serial::{SerialDisconnectReason, SerialEvent},
     settings::{Ignored, PortSettings},
     traits::ToggleBool,
 };
@@ -163,8 +163,10 @@ impl SerialWorker {
                     if let Err(e) = self.handle_port_command(port_cmd) {
                         error!("Port command error: {e}");
                         self.unhealthy_disconnection();
-                        self.event_tx
-                            .send(SerialEvent::Disconnected(Some(e.to_string())).into())?;
+                        self.event_tx.send(
+                            SerialEvent::Disconnected(SerialDisconnectReason::Error(e.to_string()))
+                                .into(),
+                        )?;
                     }
                 }
                 Ok(cmd) => self.handle_worker_command(cmd)?,
@@ -200,8 +202,10 @@ impl SerialWorker {
                     Err(e) => {
                         error!("{:?}", e);
                         self.unhealthy_disconnection();
-                        self.event_tx
-                            .send(SerialEvent::Disconnected(Some(e.to_string())).into())?;
+                        self.event_tx.send(
+                            SerialEvent::Disconnected(SerialDisconnectReason::Error(e.to_string()))
+                                .into(),
+                        )?;
                     }
                 }
 
@@ -210,8 +214,10 @@ impl SerialWorker {
                     if let Err(e) = self.read_and_share_serial_signals(false) {
                         error!("{:?}", e);
                         self.unhealthy_disconnection();
-                        self.event_tx
-                            .send(SerialEvent::Disconnected(Some(e.to_string())).into())?;
+                        self.event_tx.send(
+                            SerialEvent::Disconnected(SerialDisconnectReason::Error(e.to_string()))
+                                .into(),
+                        )?;
                     }
                 }
             }
@@ -266,7 +272,9 @@ impl SerialWorker {
                 self.update_settings(settings)?;
                 self.connect_to_port(&port, None)?;
             }
-            SerialWorkerCommand::Disconnect => {
+            SerialWorkerCommand::Disconnect {
+                user_wants_break: false,
+            } => {
                 // self.port_status = SerialStatus::idle();
 
                 let settings = self.shared_settings.load();
@@ -276,16 +284,30 @@ impl SerialWorker {
                 self.shared_status
                     .store(Arc::new(previous_status.to_idle(&*settings)));
                 self.port.drop();
-                self.event_tx.send(SerialEvent::Disconnected(None).into())?;
+                self.event_tx
+                    .send(SerialEvent::Disconnected(SerialDisconnectReason::Intentional).into())?;
             }
+
+            SerialWorkerCommand::Disconnect {
+                user_wants_break: true,
+            } if self.port.is_some() => {
+                self.unhealthy_disconnection();
+
+                self.event_tx.send(
+                    SerialEvent::Disconnected(SerialDisconnectReason::UserBrokeConnection).into(),
+                )?;
+            }
+            SerialWorkerCommand::Disconnect {
+                user_wants_break: true,
+            } => warn!("No owned port connection to break!"),
 
             SerialWorkerCommand::RequestPortScan => {
                 let ports = self.scan_for_serial_ports()?;
                 self.scan_snapshot = ports.clone();
                 self.event_tx.send(SerialEvent::Ports(ports).into())?;
             }
-            SerialWorkerCommand::RequestReconnect => {
-                if let Err(e) = self.attempt_reconnect() {
+            SerialWorkerCommand::RequestReconnect(strictness_opt) => {
+                if let Err(e) = self.attempt_reconnect(strictness_opt) {
                     // TODO maybe show on UI?
                     error!("Failed reconnect attempt: {e}");
                 }
@@ -387,7 +409,12 @@ impl SerialWorker {
                         Err(e) => {
                             self.unhealthy_disconnection();
                             self.event_tx
-                                .send(SerialEvent::Disconnected(Some(e.to_string())).into())
+                                .send(
+                                    SerialEvent::Disconnected(SerialDisconnectReason::Error(
+                                        e.to_string(),
+                                    ))
+                                    .into(),
+                                )
                                 .map_err(|_| SerialError::FailedSend)?;
                             return Ok(());
                         }
@@ -417,7 +444,10 @@ impl SerialWorker {
         Ok(())
     }
 
-    fn attempt_reconnect(&mut self) -> Result<(), serialport::Error> {
+    fn attempt_reconnect(
+        &mut self,
+        strictness_opt: Option<Reconnections>,
+    ) -> Result<(), serialport::Error> {
         // assert!(self.connected_port_info.read().unwrap().is_some());
         // assert!(self.port.is_none());
         if self.port.is_owned() || self.port.is_borrowed() {
@@ -425,7 +455,8 @@ impl SerialWorker {
             return Ok(());
         }
 
-        let reconnections = { self.shared_settings.load().reconnections.clone() };
+        let reconnections =
+            strictness_opt.unwrap_or_else(|| self.shared_settings.load().reconnections.clone());
 
         if reconnections == Reconnections::Disabled {
             error!("Got request to reconnect when reconnections are disabled!");

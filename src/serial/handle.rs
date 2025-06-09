@@ -15,6 +15,7 @@ use tracing::error;
 use crate::{
     app::Event,
     errors::{YapError, YapResult},
+    serial::{ReconnectType, Reconnections},
     settings::{Ignored, PortSettings},
 };
 
@@ -33,8 +34,10 @@ pub enum SerialWorkerCommand {
         settings: PortSettings,
     },
     PortCommand(PortCommand),
-    RequestReconnect,
-    Disconnect,
+    RequestReconnect(Option<Reconnections>),
+    Disconnect {
+        user_wants_break: bool,
+    },
     Shutdown(Sender<()>),
 }
 
@@ -103,9 +106,18 @@ impl SerialHandle {
             })
             .map_err(|_| YapError::NoSerialWorker)
     }
+    pub fn break_connection(&self) -> YapResult<()> {
+        self.command_tx
+            .send(SerialWorkerCommand::Disconnect {
+                user_wants_break: true,
+            })
+            .map_err(|_| YapError::NoSerialWorker)
+    }
     pub fn disconnect(&self) -> YapResult<()> {
         self.command_tx
-            .send(SerialWorkerCommand::Disconnect)
+            .send(SerialWorkerCommand::Disconnect {
+                user_wants_break: false,
+            })
             .map_err(|_| YapError::NoSerialWorker)
     }
     pub fn update_settings(&self, settings: PortSettings) -> YapResult<()> {
@@ -161,9 +173,9 @@ impl SerialHandle {
             .map_err(|_| YapError::NoSerialWorker)
     }
     /// Non-blocking request for the serial worker to attempt to reconnect to the "current" device
-    pub fn request_reconnect(&self) -> YapResult<()> {
+    pub fn request_reconnect(&self, strictness_opt: Option<Reconnections>) -> YapResult<()> {
         self.command_tx
-            .send(SerialWorkerCommand::RequestReconnect)
+            .send(SerialWorkerCommand::RequestReconnect(strictness_opt))
             .map_err(|_| YapError::NoSerialWorker)
     }
     // TODO maybe just shut down when we lose all Tx handles?
