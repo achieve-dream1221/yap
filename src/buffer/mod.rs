@@ -328,17 +328,30 @@ impl Buffer {
     // pub fn append_str(&mut self, str: &str) {
     // }
 
-    pub fn append_user_bytes(&mut self, bytes: &[u8], line_ending: &[u8], is_macro: bool) {
+    pub fn append_user_bytes(
+        &mut self,
+        bytes: &[u8],
+        line_ending: &[u8],
+        is_macro: bool,
+        sensitive: bool,
+    ) {
         let now = Local::now();
-        let text: Span = bytes
-            .iter()
-            .chain(line_ending.iter())
-            .map(|b| format!("\\x{:02X}", b))
-            .join("")
-            .into();
-        let text = text.dark_gray().italic().bold();
 
         let user_span = span!(Color::DarkGray; "BYTE> ");
+
+        let text = if !sensitive {
+            let text: Span = bytes
+                .iter()
+                .chain(line_ending.iter())
+                .map(|b| format!("\\x{:02X}", b))
+                .join("")
+                .into();
+            let text = text.dark_gray().italic().bold();
+
+            text
+        } else {
+            span!(Style::new().dark_gray(); "*".repeat(bytes.len()))
+        };
 
         let line = Line::from(vec![user_span, text]);
 
@@ -356,7 +369,7 @@ impl Buffer {
             LineType::User {
                 is_bytes: true,
                 is_macro,
-                raw: combined,
+                reloggable_raw: combined,
             },
         );
 
@@ -378,7 +391,13 @@ impl Buffer {
         self.styled_lines.tx.push(user_buf_line);
     }
 
-    pub fn append_user_text(&mut self, text: &str, line_ending: &[u8], is_macro: bool) {
+    pub fn append_user_text(
+        &mut self,
+        text: &str,
+        line_ending: &[u8],
+        is_macro: bool,
+        sensitive: bool,
+    ) {
         let now = Local::now();
         let escaped_line_ending = line_ending.escape_bytes().to_string();
         let escaped_chained: Vec<u8> = text
@@ -401,10 +420,17 @@ impl Buffer {
             //     }
             // };
 
-            let mut line = Line::from(String::from_utf8_lossy(trunc).to_string());
+            let line = if !sensitive {
+                let mut line = Line::from(String::from_utf8_lossy(trunc).to_string());
+                line.spans.insert(0, user_span.clone());
+                line.style_all_spans(Color::DarkGray.into());
+                line
+            } else {
+                let text = span!(Style::new().dark_gray(); "*".repeat(trunc.len()));
+                let line = Line::from(vec![user_span.clone(), text]);
+                line
+            };
 
-            line.spans.insert(0, user_span.clone());
-            line.style_all_spans(Color::DarkGray.into());
             let user_buf_line = BufLine::new_with_line(
                 line,
                 orig,
@@ -415,7 +441,7 @@ impl Buffer {
                 LineType::User {
                     is_bytes: false,
                     is_macro,
-                    raw: orig.to_owned(),
+                    reloggable_raw: orig.to_owned(),
                 },
             );
             // Used to be out of the for loop.
@@ -745,7 +771,11 @@ impl Buffer {
                 // If a user line isn't visible, ignore it when taking external new-lines into account.
                 .filter(|_| with_user_input)
                 .map(|b| {
-                    let LineType::User { raw, .. } = &b.line_type else {
+                    let LineType::User {
+                        reloggable_raw: raw,
+                        ..
+                    } = &b.line_type
+                    else {
                         unreachable!();
                     };
                     (b.raw_buffer_index, b.timestamp, Some(raw))

@@ -64,7 +64,7 @@ pub(super) enum LineType {
     User {
         is_bytes: bool,
         is_macro: bool,
-        raw: Vec<u8>,
+        reloggable_raw: Vec<u8>,
     },
 }
 

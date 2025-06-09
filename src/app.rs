@@ -501,7 +501,7 @@ impl App {
             }
             Event::Serial(SerialEvent::Disconnected(reason)) => {
                 #[cfg(feature = "espflash")]
-                self.espflash.reset();
+                self.espflash.reset_popup();
                 // self.menu = Menu::PortSelection;
                 // if let Some(reason) = reason {
                 //     self.notify(format!("Disconnected from port! {reason}"), Color::Red);
@@ -722,15 +722,23 @@ impl App {
                     .unwrap();
 
                 debug!("{}", format!("Sending Macro Bytes: {:02X?}", content));
-                self.buffer
-                    .append_user_bytes(&content, &macro_line_ending, true);
+                self.buffer.append_user_bytes(
+                    &content,
+                    &macro_line_ending,
+                    true,
+                    macro_content.sensitive,
+                );
             }
             _ => {
                 self.serial
                     .send_str(&macro_content.content, &macro_line_ending, true)
                     .unwrap();
-                self.buffer
-                    .append_user_text(&macro_content.content, &macro_line_ending, true);
+                self.buffer.append_user_text(
+                    &macro_content.content,
+                    &macro_line_ending,
+                    true,
+                    macro_content.sensitive,
+                );
 
                 debug!(
                     "{}",
@@ -1775,7 +1783,7 @@ impl App {
                             )
                             .unwrap();
                         self.buffer
-                            .append_user_text(user_input, user_le_bytes, false);
+                            .append_user_text(user_input, user_le_bytes, false, false);
                         self.user_input.history.push(user_input);
 
                         self.user_input.clear();
@@ -2461,11 +2469,15 @@ impl App {
                     //     .map(|i| )
                     //     .unwrap_or(&"");
 
-                    let (tag, string) = self.macros.filtered_macro_iter().nth(index).unwrap();
+                    let (tag, content) = self.macros.filtered_macro_iter().nth(index).unwrap();
                     // for now i guess
                     // TOOD replace with fancy line preview
-                    let macro_preview = string.as_str();
-                    let line = macro_preview.to_line().italic();
+                    let macro_preview = content.as_str();
+                    let line = if !content.sensitive {
+                        macro_preview.to_line().italic()
+                    } else {
+                        Line::from(span!("[SENSITIVE]")).italic()
+                    };
                     // let line = if matches!(macro_binding.content, MacroContent::Bytes { .. }) {
                     //     line.light_blue()
                     // } else {
@@ -3169,10 +3181,6 @@ impl App {
         }
     }
     fn refresh_scratch(&mut self) {
-        // self.scratch = ScratchSpace {
-        //     behavior: self.settings.behavior.clone(),
-        //     port: self.serial.port_settings.load().as_ref().clone(),
-        // }
         self.scratch = self.settings.clone();
     }
     fn show_popup(&mut self, popup: ShowPopupAction) {

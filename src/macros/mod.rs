@@ -52,20 +52,14 @@ pub enum MacroCategorySelection<'a> {
     Category(&'a str),
 }
 
-// TODO search when typing
-
+// TODO sensitive macros
+//      (log sensitive macros option?)
 pub struct Macros {
     pub all: BTreeMap<MacroNameTag, MacroContent>,
 
-    // pub ui_state: MacrosPrompt,
-    // ["All Bytes", "All Strings", "All Macros", "OpenShock"]
-    //     Start here, at user's first category.  ^
     pub categories_selector: SingleLineSelectorState,
-    // TODO search
+
     pub search_input: Input,
-    // pub scrollbar_state: ScrollbarState,
-    // // maybe just take from macros
-    // pub categories: BTreeSet<String>,
 }
 
 impl Macros {
@@ -404,6 +398,8 @@ struct SerializedMacro {
     category: Option<CompactString>,
     content: CompactString,
     line_ending: Option<CompactString>,
+    #[serde(default)]
+    sensitive: bool,
 }
 impl SerializedMacro {
     fn into_tag_and_content(self) -> (MacroNameTag, MacroContent) {
@@ -412,11 +408,12 @@ impl SerializedMacro {
             category,
             content,
             line_ending,
+            sensitive,
         } = self;
 
         (
             MacroNameTag { name, category },
-            MacroContent::new_with_line_ending(&content, line_ending),
+            MacroContent::new_with_line_ending(&content, line_ending, sensitive),
         )
     }
 }
@@ -426,14 +423,13 @@ fn load_macros_from_path(path: &Path) -> color_eyre::Result<MacroFile> {
     Ok(file)
 }
 
-#[derive(
-    Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MacroContent {
     pub content: CompactString,
     pub has_bytes: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    // #[serde(skip_serializing_if = "Option::is_none")]
     pub escaped_line_ending: Option<CompactString>,
+    pub sensitive: bool,
 }
 
 impl MacroContent {
@@ -451,11 +447,13 @@ impl MacroContent {
     pub fn new_with_line_ending<S: AsRef<str>>(
         value: S,
         escaped_line_ending: Option<CompactString>,
+        sensitive: bool,
     ) -> Self {
         Self {
             has_bytes: value.as_ref().has_escaped_bytes(),
             content: value.as_ref().into(),
             escaped_line_ending,
+            sensitive,
         }
     }
     pub fn is_empty(&self) -> bool {

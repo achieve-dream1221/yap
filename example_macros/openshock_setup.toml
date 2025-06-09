@@ -16,10 +16,12 @@ content = "keepalive false"
 [[macro]]
 name = "Setup Authtoken"
 content = "authtoken "
+sensitive = true
 
 [[macro]]
 name = "Setup Networks"
 content = "networks "
+sensitive = true
 
 [[macro]]
 name = "CaiX Vib (ID 12345, 0.5s)"

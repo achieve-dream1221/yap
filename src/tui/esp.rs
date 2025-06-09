@@ -212,7 +212,7 @@ impl EspFlashState {
         }
     }
     pub fn reload(&mut self) -> color_eyre::Result<()> {
-        self.reset();
+        self.reset_popup();
 
         let meow = fs::read_to_string("../../esp_profiles.toml")?;
         let SerializedEspFiles { bin, elf } = toml::from_str(&meow)?;
@@ -307,7 +307,7 @@ impl EspFlashState {
             _ => (),
         }
     }
-    pub fn reset(&mut self) {
+    pub fn reset_popup(&mut self) {
         _ = self.popup.take();
     }
     pub fn render_espflash(&self, frame: &mut Frame, screen: Rect) {
