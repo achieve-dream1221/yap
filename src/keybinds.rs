@@ -7,6 +7,7 @@ use crokey::KeyCombination;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "macros")]
 use crate::macros::MacroNameTag;
 
 // enum ShowPopupAction {
@@ -197,7 +198,9 @@ impl FromStr for AppAction {
 #[derive(Debug)]
 pub enum Action {
     AppAction(AppAction),
+    #[cfg(feature = "espflash")]
     EspFlashProfile(String),
+    #[cfg(feature = "macros")]
     MacroInvocation(MacroNameTag),
     Pause(Duration),
 }

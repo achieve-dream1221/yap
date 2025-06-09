@@ -41,8 +41,7 @@ use crate::{
     buffer::Buffer,
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
-    keybinds::{Action, AppAction, BaseAction, Keybinds, MacroAction, PortAction},
-    macros::{MacroNameTag, Macros},
+    keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction},
     notifications::{
         EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
     },
@@ -59,6 +58,12 @@ use crate::{
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
 };
+
+#[cfg(feature = "macros")]
+use crate::macros::{MacroNameTag, Macros};
+
+#[cfg(feature = "macros")]
+use crate::keybinds::MacroAction;
 
 #[cfg(feature = "logging")]
 use crate::settings::Logging;
@@ -233,6 +238,7 @@ pub struct App {
     repeating_line_flip: bool,
     failed_send_at: Option<Instant>,
 
+    #[cfg(feature = "macros")]
     macros: Macros,
     action_queue: VecDeque<(Option<KeyCombination>, Action)>,
 
@@ -361,6 +367,7 @@ impl App {
             repeating_line_flip: false,
             failed_send_at: None,
             // failed_send_at: Instant::now(),
+            #[cfg(feature = "macros")]
             macros: Macros::new(),
             action_queue: VecDeque::new(),
             scratch: settings.clone(),
@@ -372,8 +379,8 @@ impl App {
 
             #[cfg(feature = "espflash")]
             espflash: EspFlashState::new(),
-            // #[cfg(feature = "logging")]
-            // logging_toggle_selected: false,
+
+            user_broke_connection: false,
         }
     }
     fn is_running(&self) -> bool {
@@ -620,6 +627,7 @@ impl App {
     fn shutdown(&mut self) {
         self.state = RunningState::Finished;
     }
+    #[cfg(feature = "macros")]
     fn send_one_macro(
         &mut self,
         macro_ref: MacroNameTag,
@@ -722,6 +730,7 @@ impl App {
         // Filter for when we decide to handle user *text input*.
         // TODO move these into per-menu funcs.
         match self.popup {
+            #[cfg(feature = "macros")]
             Some(PopupMenu::Macros) => {
                 match self
                     .macros
@@ -782,6 +791,7 @@ impl App {
         }
         let vim_scrollable_menu: bool = match (self.menu, &self.popup) {
             // (_, Some(PopupMenu::Macros), MacrosPrompt::Keybind) => false,
+            #[cfg(feature = "macros")]
             (_, Some(PopupMenu::Macros)) => false,
             (Menu::Terminal(TerminalPrompt::None), None) => false,
             _ => true,
@@ -883,22 +893,7 @@ impl App {
                 debug!("{actions:?}");
 
                 self.queue_action_set(actions, Some(key_combo)).unwrap();
-            } // key_combo => {
-              //     // TODO move all these into diff func
-              //     if let Some(method) = self
-              //         .keybinds
-              //         .action_set_from_key_combo(key_combo)
-              //         .map(ToOwned::to_owned)
-              //     {
-              //         if let Err(e) = self.run_method_from_string(&method) {
-              //             error!("Error running method `{method}`: {e}");
-              //         }
-              //         return;
-              //     }
-
-              //     let serial_healthy = self.serial.port_status.load().inner.is_healthy();
-
-              //     #[cfg(feature = "espflash")]
+            } //     #[cfg(feature = "espflash")]
               //     if let Some(profile_name) = self
               //         .keybinds
               //         .espflash_profile_from_key_combo(key_combo)
@@ -951,52 +946,6 @@ impl App {
 
               //         return;
               //     }
-
-              //     match self.macros.macro_from_key_combo(
-              //         key_combo,
-              //         &self.keybinds.macros,
-              //         self.settings.behavior.fuzzy_macro_match,
-              //     ) {
-              //         Ok(somes) if serial_healthy => {
-              //             if !somes.is_empty() {
-              //                 self.macros_tx_queue.extend(
-              //                     somes.into_iter().map(|tag| (Some(key_combo), tag.clone())),
-              //                 );
-              //                 self.tx.send(Tick::MacroTx.into()).unwrap();
-              //             }
-              //         }
-              //         Ok(somes) => {
-              //             let unsent = somes
-              //                 .into_iter()
-              //                 .map(|tag| tag.name.clone())
-              //                 .map(|s| Span::raw(s).italic())
-              //                 .map(|s| tiny_vec!([Span;3] => span!("\""), s, span!("\"")))
-              //                 // TODO fully qualified syntax
-              //                 .intersperse(tiny_vec!([Span;3] => span!(", ")))
-              //                 .flatten()
-              //                 .chain(std::iter::once(span!(format!(" [{key_combo}] (Not Sent)"))));
-              //             self.notifs.notify(Line::from_iter(unsent), Color::Yellow);
-              //         }
-              //         Err(Some(nones)) => {
-              //             // let missed = nones.into_iter().map(|km| km.to_string()).join(", ");
-              //             // self.notifs.notify_str(format!(" {missed}"), Color::Yellow);
-              //             let missed_iter = nones
-              //                 .into_iter()
-              //                 .map(|km| km.name.clone())
-              //                 .map(|s| Span::raw(s).italic())
-              //                 .map(|s| tiny_vec!([Span;3] => span!("\""), s, span!("\"")))
-              //                 // TODO fully qualified syntax
-              //                 .intersperse(tiny_vec!([Span;3] => span!(", ")))
-              //                 .flatten();
-              //             let missed = std::iter::once(span!(format!("Macro search failed for: ")))
-              //                 .chain(missed_iter);
-
-              //             self.notifs.notify(Line::from_iter(missed), Color::Yellow);
-              //         }
-              //         // No macros found.
-              //         Err(None) => (),
-              //     }
-              // }
         }
     }
     fn queue_action_set(
@@ -1034,11 +983,13 @@ impl App {
             return Some(Action::AppAction(app_action));
         }
 
+        #[cfg(feature = "espflash")]
         // Try to find esp profile by exact name match.
         if let Some(_) = self.espflash.profile_from_name(action) {
             return Some(Action::EspFlashProfile(action.to_owned()));
         }
 
+        #[cfg(feature = "macros")]
         // Get Macro by name and category, optionally categorically fuzzy
         if let Some(nametag) = self
             .macros
@@ -1123,10 +1074,12 @@ impl App {
         match action {
             Action::AppAction(method) => self.run_method_from_action(method)?,
             Action::Pause(duration) => return Ok(Some(duration)),
+            #[cfg(feature = "macros")]
             Action::MacroInvocation(name_tag) => {
                 self.send_one_macro(name_tag, key_combo_opt).unwrap()
             }
             #[cfg(feature = "espflash")]
+            // TODO show name of flashing profile
             Action::EspFlashProfile(profile) => self
                 .serial
                 .esp_flash_profile(self.espflash.profile_from_name(&profile).unwrap())?,
@@ -1202,6 +1155,7 @@ impl App {
             }
 
             // TODO consolidate popping up a popup menu into a func
+            #[cfg(feature = "macros")]
             A::Macros(MacroAction::ShowPopup) => {
                 self.popup = Some(PopupMenu::Macros);
                 self.popup_hint_scroll = -2;
@@ -1246,6 +1200,7 @@ impl App {
                     .unwrap();
             }
 
+            #[cfg(feature = "macros")]
             A::Macros(MacroAction::ReloadMacros) => {
                 self.macros
                     .load_from_folder("../../example_macros")
@@ -1491,6 +1446,7 @@ impl App {
                     .handle_input(ArrowKey::Left, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
+            #[cfg(feature = "macros")]
             Some(PopupMenu::Macros) => {
                 if !self.macros.search_input.value().is_empty() {
                     return;
@@ -1561,6 +1517,7 @@ impl App {
                     .handle_input(ArrowKey::Right, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
+            #[cfg(feature = "macros")]
             Some(PopupMenu::Macros) => {
                 if !self.macros.search_input.value().is_empty() {
                     return;
@@ -1646,6 +1603,7 @@ impl App {
                 self.notifs
                     .notify_str("Rendering settings saved!", Color::Green);
             }
+            #[cfg(feature = "macros")]
             Some(PopupMenu::Macros) => {
                 if self.popup_menu_item < 2 {
                     return;
@@ -1946,6 +1904,7 @@ impl App {
             .as_ref()
             .expect("popup needed to get max scroll index");
         match popup {
+            #[cfg(feature = "macros")]
             PopupMenu::Macros => {
                 1 + // Macros' category selector
                 self.macros.visible_len()
@@ -1987,8 +1946,10 @@ impl App {
             | (PopupMenu::RenderingSettings, _)
             | (PopupMenu::BehaviorSettings, _) => Some(self.popup_menu_item - 1),
 
+            #[cfg(feature = "macros")]
             // Macro Categories selector active
             (PopupMenu::Macros, 1) => None,
+            #[cfg(feature = "macros")]
             // Macros selection
             (PopupMenu::Macros, _) => Some(raw_scroll - 2),
 
@@ -2070,6 +2031,7 @@ impl App {
         };
 
         let popup_color = match popup {
+            #[cfg(feature = "macros")]
             PopupMenu::Macros => Color::Green,
             PopupMenu::RenderingSettings => Color::Red,
             PopupMenu::BehaviorSettings => Color::Blue,
@@ -2080,45 +2042,57 @@ impl App {
             PopupMenu::Logging => Color::Yellow,
         };
 
-        let macros_visible_amt = self.macros.visible_len();
-
         let mut menu_selector_state = SingleLineSelectorState::new();
 
         // Set active states based on item index
-        match (self.popup_menu_item, popup) {
-            (0, _) => {
-                menu_selector_state.active = true;
-                self.macros.categories_selector.active = false;
+        #[cfg(not(feature = "macros"))]
+        {
+            match self.popup_menu_item {
+                0 => menu_selector_state.active = true,
+
+                _ => menu_selector_state.active = false,
             }
-            (1, PopupMenu::Macros) => {
-                menu_selector_state.active = false;
-                self.macros.categories_selector.active = true;
-            }
-            (_, _) => {
-                menu_selector_state.active = false;
-                self.macros.categories_selector.active = false;
-            }
+
+            assert!(
+                menu_selector_state.active == (self.popup_menu_item == 0),
+                "Either a table element needs to be selected, or the menu title widget, but never both or neither."
+            );
         }
-        // Above match should ensure these pass without issue.
-        let selector_range = match popup {
-            PopupMenu::Macros => 0..=1,
-            _ => 0..=0,
-        };
-        assert!(
-            (menu_selector_state.active || self.macros.categories_selector.active)
-                == selector_range.contains(&self.popup_menu_item),
-            "Either a table element needs to be selected, or the menu title widget, but never both or neither."
-        );
-        // assert!(
-        //     (self.popup_single_line_state.active || self.macros.categories_selector.active)
-        //         != self.popup_table_state.selected().is_some(),
-        //     "Either a table element needs to be selected, or the menu title widget, but never both or neither."
-        // );
-        assert_eq!(
-            menu_selector_state.active && self.macros.categories_selector.active,
-            false,
-            "Both selectors can't be active."
-        );
+        #[cfg(feature = "macros")]
+        {
+            match (self.popup_menu_item, popup) {
+                (0, _) => {
+                    menu_selector_state.active = true;
+                    self.macros.categories_selector.active = false;
+                }
+                (1, PopupMenu::Macros) => {
+                    menu_selector_state.active = false;
+                    self.macros.categories_selector.active = true;
+                }
+                (_, _) => {
+                    menu_selector_state.active = false;
+                    self.macros.categories_selector.active = false;
+                }
+            }
+            // Above match should ensure these pass without issue.
+            let selector_range = match popup {
+                PopupMenu::Macros => 0..=1,
+                _ => 0..=0,
+            };
+
+            assert!(
+                (menu_selector_state.active || self.macros.categories_selector.active)
+                    == selector_range.contains(&self.popup_menu_item),
+                "Either a table element needs to be selected, or the menu title widget, but never both or neither."
+            );
+
+            assert_eq!(
+                menu_selector_state.active && self.macros.categories_selector.active,
+                false,
+                "Both selectors can't be active."
+            );
+        }
+
         let center_area = centered_rect_size(
             Size {
                 width: area.width.min(60),
@@ -2223,6 +2197,8 @@ impl App {
         // };
 
         let height = match popup {
+            // TODO do for other popups?
+            #[cfg(feature = "macros")]
             PopupMenu::Macros => macros_table_area.height,
             _ => settings_area.height,
         };
@@ -2331,6 +2307,7 @@ impl App {
                     hint_text_area,
                 );
             }
+            #[cfg(feature = "macros")]
             PopupMenu::Macros => {
                 let new_seperator = {
                     let mut area = center_inner.clone();
@@ -3164,6 +3141,7 @@ impl App {
 
         self.refresh_scratch();
         self.popup_hint_scroll = -2;
+        #[cfg(feature = "macros")]
         self.macros.search_input.reset();
     }
 }

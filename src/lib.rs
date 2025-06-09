@@ -25,6 +25,7 @@ mod errors;
 mod event_carousel;
 mod history;
 mod keybinds;
+#[cfg(feature = "macros")]
 mod macros;
 mod notifications;
 mod panic_handler;

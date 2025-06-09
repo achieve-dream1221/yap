@@ -251,11 +251,11 @@ pub struct Logging {
     /// Show timestamps next to each line in text outputs.
     pub timestamp: String,
 
-    #[serde_inline_default(true)]
-    #[derivative(Default(value = "true"))]
-    /// Escape invalid UTF-8 byte sequences in \xFF notation in text outputs.
-    pub escape_unprintable_bytes: bool,
-
+    // Just always doing instead right now, no need for the option.
+    // #[serde_inline_default(true)]
+    // #[derivative(Default(value = "true"))]
+    // /// Escape invalid UTF-8 byte sequences in \xFF notation in text outputs.
+    // pub escape_unprintable_bytes: bool,
     #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]
     /// Record user input in text outputs.
@@ -378,6 +378,8 @@ pub struct PortSettings {
     )]
     #[serde_inline_default(TxLineEnding::InheritRx)]
     pub tx_line_ending: TxLineEnding,
+
+    #[cfg(feature = "macros")]
     /// Default line ending for sent macros.
     #[table(display = ["Inherit TX", "Inherit RX", "\\n", "\\r", "\\r\\n", "None"])]
     #[table(values = [MacroTxLineEnding::InheritTx, MacroTxLineEnding::InheritRx, MacroTxLineEnding::Preset("\\n", &[b'\n']), MacroTxLineEnding::Preset("\\r", &[b'\r']), MacroTxLineEnding::Preset("\\r\\n", &[b'\r', b'\n']), MacroTxLineEnding::Preset("", &[])])]
@@ -408,6 +410,7 @@ impl Default for PortSettings {
             stop_bits: StopBits::One,
             rx_line_ending: "\n".into(),
             tx_line_ending: TxLineEnding::InheritRx,
+            #[cfg(feature = "macros")]
             macro_line_ending: MacroTxLineEnding::InheritTx,
             dtr_on_connect: true,
             reconnections: Reconnections::LooseChecks,
