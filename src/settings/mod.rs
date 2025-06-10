@@ -107,6 +107,10 @@ pub struct Rendering {
     pub wrap_text: bool,
 
     #[serde(default)]
+    /// Show line ending at end of recieved lines.
+    pub show_line_ending: bool,
+
+    #[serde(default)]
     /// Show invalid byte sequences in \xFF notation.
     pub escape_invalid_bytes: bool,
 

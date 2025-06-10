@@ -315,25 +315,6 @@ impl App {
             Duration::from_secs(1),
         );
 
-        // let serial_signal_tick_handle = serial_handle.clone();
-        // let mut cache = arc_swap::Cache::new(std::sync::Arc::clone(
-        //     &serial_signal_tick_handle.port_status,
-        // ));
-        // event_carousel.add_repeating(
-        //     "SerialSignals",
-        //     Box::new(move || {
-        //         let port_status = cache.load();
-        //         if port_status.state.is_healthy() {
-        //             serial_signal_tick_handle
-        //                 .read_signals()
-        //                 .map_err(|e| e.to_string())
-        //         } else {
-        //             Ok(())
-        //         }
-        //     }),
-        //     Duration::from_millis(100),
-        // );
-
         let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
         let buffer = Buffer::new(
             line_ending,

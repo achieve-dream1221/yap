@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use bstr::ByteSlice;
 use chrono::{DateTime, Local};
 use compact_str::{CompactString, ToCompactString, format_compact};
 use ratatui::{
@@ -11,6 +12,7 @@ use ratatui_macros::{line, span};
 use tracing::debug;
 
 use crate::{
+    buffer::LineEnding,
     settings::Rendering,
     traits::{ByteSuffixCheck, FirstChars, LineHelpers},
 };
@@ -60,7 +62,9 @@ pub struct BufLine {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LineType {
-    Port,
+    Port {
+        escaped_line_ending: Option<CompactString>,
+    },
     User {
         is_bytes: bool,
         is_macro: bool,
@@ -92,6 +96,7 @@ impl BufLine {
         raw_buffer_index: usize,
         area_width: u16,
         rendering: &Rendering,
+        line_ending: &LineEnding,
         now: DateTime<Local>,
         line_type: LineType,
     ) -> Self {
@@ -115,8 +120,26 @@ impl BufLine {
             rendered_line_height: 0,
             line_type,
         };
+        bufline.populate_line_ending(raw_value, line_ending);
         bufline.update_line_height(area_width, rendering);
         bufline
+    }
+    pub fn populate_line_ending(&mut self, full_line_slice: &[u8], line_ending: &LineEnding) {
+        match &mut self.line_type {
+            LineType::Port {
+                escaped_line_ending,
+            } => {
+                if escaped_line_ending.is_some() {
+                    unreachable!();
+                }
+                if full_line_slice.has_line_ending(line_ending) {
+                    _ = escaped_line_ending
+                        .insert(line_ending.as_bytes().escape_bytes().to_compact_string());
+                }
+            }
+            // TODO?
+            LineType::User { .. } => (),
+        }
     }
     pub fn update_line(
         &mut self,
@@ -124,11 +147,15 @@ impl BufLine {
         full_line_slice: &[u8],
         area_width: u16,
         rendering: &Rendering,
+        line_ending: &LineEnding,
     ) {
         self.index_info = make_index_info(full_line_slice, self.raw_buffer_index, &self.line_type);
 
         self.value = line;
         self.value.remove_unsavory_chars();
+
+        self.populate_line_ending(full_line_slice, line_ending);
+
         self.update_line_height(area_width, rendering);
     }
 
@@ -150,21 +177,36 @@ impl BufLine {
     pub fn as_line(&self, rendering: &Rendering) -> Line {
         let borrowed_spans = self.value.borrowed_spans_iter();
 
-        let indices_span_iter = std::iter::once(Span::styled(
+        let indices_and_len = std::iter::once(Span::styled(
             Cow::Borrowed(self.index_info.as_ref()),
             Style::new().dark_gray(),
         ))
         .filter(|_| rendering.show_indices);
 
-        let spans = std::iter::once(Span::styled(
+        let timestamp = std::iter::once(Span::styled(
             Cow::Borrowed(self.timestamp_str.as_ref()),
             Style::new().dark_gray(),
         ))
         .filter(|_| rendering.timestamps);
 
-        let spans = spans.chain(indices_span_iter);
+        let line_ending = std::iter::once(&self.line_type).filter_map(|lt| match lt {
+            _ if !rendering.show_line_ending => None,
+            LineType::Port {
+                escaped_line_ending: Some(line_ending),
+            } => Some(Span::styled(
+                Cow::Borrowed(line_ending.as_str()),
+                Style::new().dark_gray(),
+            )),
+            LineType::Port {
+                escaped_line_ending: None,
+            } => None,
+            LineType::User { .. } => None,
+        });
 
-        let spans = spans.chain(borrowed_spans);
+        let spans = timestamp
+            .chain(indices_and_len)
+            .chain(borrowed_spans)
+            .chain(line_ending);
 
         Line::from_iter(spans)
     }

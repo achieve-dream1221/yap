@@ -366,6 +366,7 @@ impl Buffer {
             self.raw.inner.len(), // .max(1)
             self.last_terminal_size.width,
             &self.rendering,
+            &self.line_ending,
             now,
             LineType::User {
                 is_bytes: true,
@@ -438,6 +439,7 @@ impl Buffer {
                 self.raw.inner.len(), // .max(1)
                 self.last_terminal_size.width,
                 &self.rendering,
+                &self.line_ending,
                 now,
                 LineType::User {
                     is_bytes: false,
@@ -484,6 +486,8 @@ impl Buffer {
             return;
         }
 
+        let this_rx_completed = self.raw.inner.has_line_ending(&self.line_ending);
+
         if append_to_last {
             let last_line = self
                 .styled_lines
@@ -492,18 +496,19 @@ impl Buffer {
                 .expect("can't append to nothing");
             let last_index = last_line.index_in_buffer();
 
-            let slice = &self.raw.inner[last_index..start_index + trunc.len()];
+            let trunc = &self.raw.inner[last_index..start_index + trunc.len()];
+            let orig = &self.raw.inner[last_index..start_index + orig.len()];
             // info!("AAAFG: {:?}", slice);
             let lossy_flavor = if self.rendering.escape_invalid_bytes {
                 LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
             } else {
                 LossyFlavor::replacement_char()
             };
-            let mut line = match slice.into_line_lossy(Style::new(), lossy_flavor) {
+            let mut line = match trunc.into_line_lossy(Style::new(), lossy_flavor) {
                 Ok(line) => line,
                 Err(_) => {
                     error!("ansi-to-tui failed to parse input! Using unstyled text.");
-                    Line::from(String::from_utf8_lossy(slice).to_string())
+                    Line::from(String::from_utf8_lossy(trunc).to_string())
                 }
             };
             // debug!(
@@ -520,10 +525,16 @@ impl Buffer {
             //     line.style_slice(1..3, Style::new().red().italic());
             // }
 
-            let line_opt = self.color_rules.apply_onto(slice, line);
+            let line_opt = self.color_rules.apply_onto(trunc, line);
 
             if let Some(line) = line_opt {
-                last_line.update_line(line, slice, self.last_terminal_size.width, &self.rendering);
+                last_line.update_line(
+                    line,
+                    orig,
+                    self.last_terminal_size.width,
+                    &self.rendering,
+                    &self.line_ending,
+                );
             } else {
                 _ = self.styled_lines.rx.pop();
                 self.styled_lines.last_rx_completed = true;
@@ -545,25 +556,6 @@ impl Buffer {
 
             let line_opt = self.color_rules.apply_onto(trunc, line);
 
-            // if line.width() >= 5 {
-            //     line.style_slice(1..3, Style::new().red().italic());
-            // }
-
-            // if !line.is_styled() {
-            //     assert!(line.spans.len() <= 1);
-            // }
-
-            // debug!(
-            //     "buf_index: {start_index}, new: {line}",
-            //     line = line
-            //         .spans
-            //         .iter()
-            //         .map(|s| s.content.as_ref())
-            //         .join("")
-            //         .escape_default()
-            // );
-
-            // let line = line_opt.unwrap_or_default();
             if let Some(line) = line_opt {
                 self.styled_lines.rx.push(BufLine::new_with_line(
                     line,
@@ -571,13 +563,16 @@ impl Buffer {
                     start_index,
                     self.last_terminal_size.width,
                     &self.rendering,
+                    &self.line_ending,
                     known_time.unwrap_or_else(Local::now),
-                    LineType::Port,
+                    LineType::Port {
+                        escaped_line_ending: None,
+                    },
                 ));
             }
         };
-        let last_rx_completed = self.raw.inner.has_line_ending(&self.line_ending);
-        self.styled_lines.last_rx_completed = last_rx_completed;
+
+        self.styled_lines.last_rx_completed = this_rx_completed;
     }
 
     // Forced to use Vec<u8> for now
@@ -737,8 +732,9 @@ impl Buffer {
         let should_reconsume =
             changed!(old, new, echo_user_input) || changed!(old, new, escape_invalid_bytes);
 
-        let should_rewrap_lines =
-            changed!(old, new, timestamps) || changed!(old, new, show_indices);
+        let should_rewrap_lines = changed!(old, new, timestamps)
+            || changed!(old, new, show_indices)
+            || changed!(old, new, show_line_ending);
 
         if changed!(old, new, bytes_per_line) {
             self.determine_bytes_per_line(new.bytes_per_line.into());
