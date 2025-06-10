@@ -2685,17 +2685,36 @@ impl App {
                             .with_selected(Some(corrected_index)),
                     );
                     if let Some(profile) = self.espflash.profile_from_index(corrected_index) {
-                        let hint_text = match profile {
+                        let chip = match &profile {
+                            esp::EspProfile::Bins(bins) => {
+                                if let Some(chip) = &bins.expected_chip {
+                                    Cow::from(chip.to_string().to_ascii_uppercase())
+                                } else {
+                                    Cow::from("ESP")
+                                }
+                            }
+                            esp::EspProfile::Elf(elf) => {
+                                if let Some(chip) = &elf.expected_chip {
+                                    Cow::from(chip.to_string().to_ascii_uppercase())
+                                } else {
+                                    Cow::from("ESP")
+                                }
+                            }
+                        };
+
+                        let hint_text = match &profile {
                             esp::EspProfile::Bins(bins) if bins.bins.len() == 1 => {
-                                "Flash selected profile binary to ESP Flash."
+                                format!("Flash selected profile binary to {chip} Flash.")
                             }
                             esp::EspProfile::Bins(_) => {
-                                "Flash selected profile binaries to ESP Flash."
+                                format!("Flash selected profile binaries to {chip} Flash.")
                             }
                             esp::EspProfile::Elf(profile) if profile.ram => {
-                                "Load selected profile ELF into RAM."
+                                format!("Load selected profile ELF into {chip} RAM.")
                             }
-                            esp::EspProfile::Elf(_) => "Flash selected profile ELF to ESP Flash.",
+                            esp::EspProfile::Elf(_) => {
+                                format!("Flash selected profile ELF to {chip} Flash.")
+                            }
                         };
                         render_scrolling_line(
                             hint_text,
