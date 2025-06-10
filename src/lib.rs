@@ -72,7 +72,7 @@ fn run_inner() -> color_eyre::Result<()> {
     // Err(color_eyre::Report::msg("AAA"))?;
     // None::<u8>.unwrap();
 
-    let (tx, rx) = mpsc::channel::<app::Event>();
+    let (tx, rx) = crossbeam::channel::unbounded::<app::Event>();
     let crossterm_tx = tx.clone();
     let crossterm_events = std::thread::spawn(move || -> color_eyre::Result<()> {
         loop {

@@ -5,7 +5,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, SendError, Sender},
     },
     thread::JoinHandle,
     time::Duration,
@@ -14,6 +13,7 @@ use std::{
 use bstr::ByteSlice;
 use chrono::{DateTime, Local};
 use compact_str::CompactString;
+use crossbeam::channel::{Receiver, SendError, Sender};
 use fs_err as fs;
 use ratatui::text::Line;
 use serialport::SerialPortInfo;
@@ -141,7 +141,7 @@ impl LoggingHandle {
         settings: Logging,
         event_tx: Sender<Event>,
     ) -> (Self, JoinHandle<()>) {
-        let (command_tx, command_rx) = mpsc::channel();
+        let (command_tx, command_rx) = crossbeam::channel::unbounded();
 
         let session_open = Arc::new(AtomicBool::new(false));
 
@@ -263,7 +263,7 @@ impl LoggingHandle {
         Ok(())
     }
     pub(super) fn shutdown(&self) -> Result<(), ()> {
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = crossbeam::channel::bounded(0);
         if self
             .command_tx
             .send(LoggingCommand::Shutdown(shutdown_tx))

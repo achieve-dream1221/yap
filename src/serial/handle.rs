@@ -1,14 +1,8 @@
-use std::{
-    sync::{
-        Arc,
-        mpsc::{self, Sender},
-    },
-    thread::JoinHandle,
-    time::Duration,
-};
+use std::{sync::Arc, thread::JoinHandle, time::Duration};
 
 use arc_swap::ArcSwap;
 use bstr::ByteVec;
+use crossbeam::channel::{Receiver, Sender};
 use serialport::SerialPortInfo;
 use tracing::error;
 
@@ -67,10 +61,11 @@ pub struct SerialHandle {
 impl SerialHandle {
     pub fn new(
         event_tx: Sender<Event>,
+        buffer_tx: Sender<Vec<u8>>,
         port_settings: PortSettings,
         ignored_devices: Ignored,
     ) -> (Self, JoinHandle<()>) {
-        let (command_tx, command_rx) = mpsc::channel();
+        let (command_tx, command_rx) = crossbeam::channel::unbounded();
 
         let port_status = Arc::new(ArcSwap::from_pointee(PortStatus::new_idle(&port_settings)));
 
@@ -79,6 +74,7 @@ impl SerialHandle {
         let mut worker = SerialWorker::new(
             command_rx,
             event_tx,
+            buffer_tx,
             port_status.clone(),
             port_settings.clone(),
             ignored_devices,
@@ -182,7 +178,7 @@ impl SerialHandle {
     // Would still want to detect a locked thread and handle it though
     /// Tells the worker thread to shutdown, blocking for up to three seconds before aborting.
     pub fn shutdown(&self) -> Result<(), ()> {
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = crossbeam::channel::bounded(0);
         if self
             .command_tx
             .send(SerialWorkerCommand::Shutdown(shutdown_tx))

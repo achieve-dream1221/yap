@@ -1,14 +1,11 @@
 use std::{
     io::Write,
-    sync::{
-        Arc,
-        mpsc::{Receiver, Sender},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use arc_swap::ArcSwap;
-
+use crossbeam::channel::{Receiver, Sender};
 use serialport::{SerialPort, SerialPortInfo, SerialPortType};
 use tracing::{debug, error, info, warn};
 use virtual_serialport::VirtualPort;
@@ -98,6 +95,7 @@ impl TakeablePort {
 pub struct SerialWorker {
     command_rx: Receiver<SerialWorkerCommand>,
     event_tx: Sender<Event>,
+    buffer_tx: Sender<Vec<u8>>,
     port: TakeablePort,
     last_signal_check: Instant,
     // settings: PortSettings,
@@ -112,6 +110,7 @@ impl SerialWorker {
     pub fn new(
         command_rx: Receiver<SerialWorkerCommand>,
         event_tx: Sender<Event>,
+        buffer_tx: Sender<Vec<u8>>,
         port_status: Arc<ArcSwap<PortStatus>>,
         port_settings: Arc<ArcSwap<PortSettings>>,
         ignored_devices: Ignored,
@@ -119,6 +118,7 @@ impl SerialWorker {
         Self {
             command_rx,
             event_tx,
+            buffer_tx,
             shared_status: port_status,
             shared_settings: port_settings,
             // port_status: SerialStatus::idle(),
@@ -171,10 +171,10 @@ impl SerialWorker {
                 }
                 Ok(cmd) => self.handle_worker_command(cmd)?,
 
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
                     // info!("no message");
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
                     panic!("Worker lost all Handles without shutting down!");
                 }
             }
@@ -192,8 +192,7 @@ impl SerialWorker {
                     Ok(t) if t > 0 => {
                         let cloned_buff = self.rx_buffer[..t].to_owned();
                         // info!("{:?}", &serial_buf[..t]);
-                        self.event_tx
-                            .send(SerialEvent::RxBuffer(cloned_buff).into())?;
+                        self.buffer_tx.send(cloned_buff)?;
                     }
                     // 0-size read, ignoring
                     Ok(_) => (),

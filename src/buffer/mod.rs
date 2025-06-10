@@ -1,10 +1,11 @@
-use std::{cmp::Ordering, sync::mpsc::Sender, thread::JoinHandle};
+use std::{cmp::Ordering, thread::JoinHandle};
 
 use ansi_to_tui::{IntoText, LossyFlavor};
 use bstr::{ByteSlice, ByteVec};
 use buf_line::{BufLine, LineType};
 use chrono::{DateTime, Local};
 use compact_str::{CompactString, ToCompactString};
+use crossbeam::channel::{Receiver, Sender};
 use itertools::{Either, Itertools};
 use memchr::memmem::Finder;
 use ratatui::{

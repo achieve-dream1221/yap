@@ -2,7 +2,6 @@ use std::{
     borrow::Cow,
     collections::VecDeque,
     i32,
-    sync::mpsc::{Receiver, Sender},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -12,6 +11,7 @@ use bstr::ByteVec;
 use color_eyre::{eyre::Result, owo_colors::OwoColorize};
 use compact_str::{CompactString, ToCompactString};
 use crokey::{KeyCombination, key};
+use crossbeam::channel::{Receiver, Select, Sender};
 use enum_rotate::EnumRotate;
 use itertools::Itertools;
 use ratatui::{
@@ -99,6 +99,7 @@ impl From<CrosstermEvent> for Event {
 pub enum Event {
     Crossterm(CrosstermEvent),
     Serial(SerialEvent),
+    RxBuffer(Vec<u8>),
     #[cfg(feature = "logging")]
     Logging(LoggingEvent),
     Tick(Tick),
@@ -209,6 +210,7 @@ pub struct App {
 
     tx: Sender<Event>,
     rx: Receiver<Event>,
+    serial_buf_rx: Receiver<Vec<u8>>,
 
     table_state: TableState,
     baud_selection_state: SingleLineSelectorState,
@@ -292,9 +294,12 @@ impl App {
 
         debug!("{settings:#?}");
 
+        let (serial_buf_tx, serial_buf_rx) = crossbeam::channel::unbounded();
+
         let (event_carousel, carousel_thread) = CarouselHandle::new();
         let (serial_handle, serial_thread) = SerialHandle::new(
             tx.clone(),
+            serial_buf_tx,
             settings.last_port_settings.clone(),
             settings.ignored.clone(),
         );
@@ -377,6 +382,7 @@ impl App {
             notifs: Notifications::new(tx.clone()),
             tx,
             rx,
+            serial_buf_rx,
 
             #[cfg(feature = "espflash")]
             espflash: EspFlashState::new(),
@@ -398,10 +404,35 @@ impl App {
             let end = Instant::now();
             let end1 = end.saturating_duration_since(start);
             max_draw = max_draw.max(end1);
-            let msg = self.rx.recv()?;
-            // debug!("{msg:?}");
+
+            // Waiting until we either get a normal app event
+            // or an incoming serial buffer.
+            //
+            // Serial devices can sometimes just go *wild* and spit data like crazy,
+            // and having other events like port (dis)connection, input handling, etc.,
+            // potentially sitting behind queued serial buffers isn't ideal.
+            // So Serial RX buffers have their own channel, and when either wakes up the Select,
+            // we check both channels, draw, and wait again.
+            let mut channel_notifier = Select::new();
+            channel_notifier.recv(&self.rx);
+            channel_notifier.recv(&self.serial_buf_rx);
+            // Waiting...
+            let _ready_index = channel_notifier.ready();
+            // A channel is ready!
             let start2 = Instant::now();
-            self.handle_event(msg, &mut terminal)?;
+
+            match self.serial_buf_rx.try_recv() {
+                Ok(buf) => self.handle_event(Event::RxBuffer(buf), &mut terminal)?,
+                Err(crossbeam::channel::TryRecvError::Empty) => (),
+                Err(crossbeam::channel::TryRecvError::Disconnected) => todo!(),
+            }
+
+            match self.rx.try_recv() {
+                Ok(event) => self.handle_event(event, &mut terminal)?,
+                Err(crossbeam::channel::TryRecvError::Empty) => (),
+                Err(crossbeam::channel::TryRecvError::Disconnected) => todo!(),
+            }
+
             let end2 = start2.elapsed();
             max_handle = max_handle.max(end2);
             debug!(
@@ -534,7 +565,7 @@ impl App {
                     }
                 }
             }
-            Event::Serial(SerialEvent::RxBuffer(mut data)) => {
+            Event::RxBuffer(mut data) => {
                 self.buffer.append_rx_bytes(&mut data);
                 self.buffer.scroll_by(0);
 

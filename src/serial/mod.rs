@@ -26,7 +26,7 @@ pub enum ReconnectType {
 pub enum SerialEvent {
     Ports(Vec<SerialPortInfo>),
     Connected(Option<ReconnectType>),
-    RxBuffer(Vec<u8>),
+    // RxBuffer(Vec<u8>),
     #[cfg(feature = "espflash")]
     EspFlash(EspEvent),
     Disconnected(SerialDisconnectReason),

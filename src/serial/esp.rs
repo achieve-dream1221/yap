@@ -1,9 +1,10 @@
 use compact_str::{CompactString, ToCompactString};
+use crossbeam::channel::{Receiver, Sender};
 use espflash::{
     connection::reset::ResetStrategy,
     flasher::{DeviceInfo, ProgressCallbacks},
 };
-use std::{sync::mpsc::Sender, time::Duration};
+use std::time::Duration;
 use tracing::debug;
 
 use super::{

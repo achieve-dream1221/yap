@@ -1,10 +1,10 @@
 use std::{
     borrow::Cow,
-    sync::mpsc::Sender,
     time::{Duration, Instant},
 };
 
 use compact_str::{CompactString, format_compact};
+use crossbeam::channel::{Receiver, Sender};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear},
