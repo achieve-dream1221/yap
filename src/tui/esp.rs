@@ -15,7 +15,7 @@ use crate::{
     traits::{LastIndex, LineHelpers},
 };
 
-use std::collections::BTreeMap;
+const ESP_PROFILES_PATH: &str = "yap_espflash_profiles.toml";
 
 use serde::Deserialize;
 
@@ -304,7 +304,7 @@ pub struct EspFlashState {
 
 impl EspFlashState {
     pub fn new() -> Self {
-        let meow = fs::read_to_string("../../esp_profiles.toml").unwrap();
+        let meow = fs::read_to_string(ESP_PROFILES_PATH).unwrap();
         let SerializedEspFiles { bin, elf } = toml::from_str(&meow).unwrap();
         debug!("{bin:#?}");
         Self {
@@ -316,7 +316,7 @@ impl EspFlashState {
     pub fn reload(&mut self) -> color_eyre::Result<()> {
         self.reset_popup();
 
-        let meow = fs::read_to_string("../../esp_profiles.toml")?;
+        let meow = fs::read_to_string(ESP_PROFILES_PATH)?;
         let SerializedEspFiles { bin, elf } = toml::from_str(&meow)?;
         debug!("{bin:#?}");
 

@@ -1,0 +1,47 @@
+[rendering]
+echo_user_input = "None"
+timestamps = true
+show_indices = true
+wrap_text = true
+show_line_ending = true
+escape_invalid_bytes = false
+hex_view = false
+hex_view_header = true
+bytes_per_line = 0
+hex_view_highlights = "HighlightAsciiSymbols"
+
+[behavior]
+fake_shell = true
+fake_shell_unescape = true
+retain_port_setting_changes = true
+retain_history = false
+action_chain_delay_ms = 500
+fuzzy_macro_match = true
+
+[misc]
+log_level = "debug"
+
+[last_port_settings]
+baud_rate = 115200
+data_bits = 8
+flow_control = "None"
+parity_bits = "None"
+stop_bits = 1
+dtr_on_connect = true
+reconnections = "LooseChecks"
+rx_line_ending = '\n'
+tx_line_ending = "InheritRX"
+macro_line_ending = "InheritTX"
+
+[logging]
+log_file_type = "Text"
+always_begin_on_connect = false
+timestamp = "%Y-%m-%d %H:%M:%S%.9f"
+log_user_input = true
+keep_log_across_devices = true
+log_connection_events = true
+
+[ignored]
+usb = [
+    "28DE:2102", # Valve Watchman Serial Interface
+]

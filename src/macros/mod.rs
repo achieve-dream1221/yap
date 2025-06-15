@@ -44,6 +44,8 @@ mod tui;
 //     AddEdit(MacroEditing),
 // }
 
+pub const MACROS_DIR_PATH: &str = "macros";
+
 pub enum MacroCategorySelection<'a> {
     AllMacros,
     StringsOnly,
@@ -75,7 +77,7 @@ impl Macros {
             categories_selector: SingleLineSelectorState::new().with_selected(2),
             // categories: BTreeSet::new(),
         };
-        macros.load_from_folder("../../example_macros").unwrap();
+        macros.load_from_folder(MACROS_DIR_PATH).unwrap();
 
         macros
     }

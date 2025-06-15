@@ -22,6 +22,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     app::Event,
+    buffer::tui::COLOR_RULES_PATH,
     changed,
     errors::YapResult,
     settings::{LoggingType, Rendering},
@@ -317,7 +318,7 @@ impl Buffer {
             },
             rendering,
             line_ending,
-            color_rules: ColorRules::load_from_file("../../color_rules.toml"),
+            color_rules: ColorRules::load_from_file(COLOR_RULES_PATH),
             #[cfg(feature = "logging")]
             log_handle,
             #[cfg(feature = "logging")]

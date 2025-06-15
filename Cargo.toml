@@ -71,6 +71,8 @@ tui-input = "0.11.1"
 unicode-width = "0.2.0"
 virtual-serialport = "0.1.3"
 
+[build-dependencies]
+copy_to_output = { git = "https://github.com/dougcooper/copy_to_output", rev = "270cffcb13b6e3716a3309515b20f0d70137561c" }
 
 [dev-dependencies]
 enable-ansi-support = "0.2.1"

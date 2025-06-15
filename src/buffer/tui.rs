@@ -16,6 +16,8 @@ use crate::{
 
 use super::{Buffer, UserEcho, buf_line::BufLine, hex_spans::*};
 
+pub const COLOR_RULES_PATH: &str = "yap_colors.toml";
+
 impl Buffer {
     /// Updates each BufLine's render height with the new terminal width, returning the sum total at the end
     pub fn update_wrapped_line_heights(&mut self) -> usize {
@@ -284,7 +286,7 @@ impl Buffer {
     // }
 
     pub fn reload_color_rules(&mut self) -> color_eyre::Result<()> {
-        self.color_rules = ColorRules::load_from_file("../../color_rules.toml");
+        self.color_rules = ColorRules::load_from_file(COLOR_RULES_PATH);
         self.reconsume_raw_buffer();
         Ok(())
     }

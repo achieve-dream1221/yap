@@ -295,6 +295,8 @@ impl App {
             }
         };
 
+        let keybinds = Keybinds::new();
+
         let mut user_input = UserInput::default();
 
         let saved_baud_rate = settings.last_port_settings.baud_rate;
@@ -368,7 +370,7 @@ impl App {
             action_queue: VecDeque::new(),
             scratch: settings.clone(),
             settings,
-            keybinds: Keybinds::new(),
+            keybinds,
             notifs: Notifications::new(tx.clone()),
             tx,
             rx,
@@ -928,6 +930,11 @@ impl App {
                 self.user_input.find_input_in_history();
             }
             // KeyCode::Tab => self.tab_pressed(),
+            key!(ctrl - r) if self.popup == Some(Popup::CurrentKeybinds) => {
+                // TODO make into an action?
+                self.keybinds = Keybinds::new();
+                self.notifs.notify_str("Reloaded Keybinds!", Color::Green);
+            }
             #[cfg(feature = "macros")]
             key!(ctrl - r) if self.popup == Some(Popup::PopupMenu(PopupMenu::Macros)) => {
                 self.run_method_from_action(AppAction::Macros(MacroAction::ReloadMacros))
@@ -963,59 +970,7 @@ impl App {
                 debug!("{actions:?}");
 
                 self.queue_action_set(actions, Some(key_combo)).unwrap();
-            } //     #[cfg(feature = "espflash")]
-              //     if let Some(profile_name) = self
-              //         .keybinds
-              //         .espflash_profile_from_key_combo(key_combo)
-              //         .map(ToOwned::to_owned)
-              //     {
-              //         if let Some(profile) = self
-              //             .espflash
-              //             .profiles()
-              //             .find(|(name, _, _)| *name == profile_name)
-              //         {
-              //             let italic = Style::new().italic();
-              //             if serial_healthy {
-              //                 self.notifs.notify(
-              //                     line![
-              //                         "Flashing with \"",
-              //                         span!(italic;profile_name),
-              //                         "\" [",
-              //                         key_combo.to_string(),
-              //                         "]"
-              //                     ],
-              //                     Color::LightGreen,
-              //                 );
-              //                 self.serial
-              //                     .esp_flash_profile(
-              //                         self.espflash.profile_from_name(&profile_name).unwrap(),
-              //                     )
-              //                     .unwrap();
-              //             } else {
-              //                 self.notifs.notify(
-              //                     line![
-              //                         "Not flashing with \"",
-              //                         span!(italic;profile_name),
-              //                         "\" [",
-              //                         key_combo.to_string(),
-              //                         "]"
-              //                     ],
-              //                     Color::Yellow,
-              //                 );
-              //             }
-              //         } else {
-              //             error!("No such espflash profile: \"{profile_name}\"");
-              //             self.notifs.notify_str(
-              //                 format!("No such espflash profile: \"{profile_name}\""),
-              //                 Color::Yellow,
-              //             );
-              //             // let Some(profile) =
-              //             //     self.espflash.elfs.iter().find(|p| p.name == profile_name)
-              //             // else {};
-              //         }
-
-              //         return;
-              //     }
+            }
         }
     }
     fn queue_action_set(
@@ -1241,7 +1196,7 @@ impl App {
             #[cfg(feature = "macros")]
             A::Macros(MacroAction::ReloadMacros) => {
                 self.macros
-                    .load_from_folder("../../example_macros")
+                    .load_from_folder(crate::macros::MACROS_DIR_PATH)
                     .unwrap();
                 self.notifs
                     .notify_str(format!("Reloaded Macros!"), Color::Green);
