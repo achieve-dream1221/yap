@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
 use std::{collections::HashMap, time::Duration};
@@ -12,7 +13,9 @@ use crate::app::PopupMenu;
 use crate::macros::MacroNameTag;
 
 // Maybe combine with app::PopupMenu instead of being its own type?
-#[derive(Debug, strum::EnumString)]
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+)]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 #[repr(u8)]
@@ -48,7 +51,9 @@ impl From<ShowPopupAction> for PopupMenu {
     }
 }
 
-#[derive(Debug, strum::EnumString)]
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+)]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum BaseAction {
@@ -58,10 +63,14 @@ pub enum BaseAction {
     ToggleHex,
     ToggleHexHeader,
 
+    ShowKeybinds,
+
     ReloadColors,
 }
 
-#[derive(Debug, strum::EnumString)]
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+)]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum PortAction {
@@ -76,7 +85,9 @@ pub enum PortAction {
 }
 
 #[cfg(feature = "macros")]
-#[derive(Debug, strum::EnumString)]
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+)]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum MacroAction {
@@ -84,7 +95,9 @@ pub enum MacroAction {
 }
 
 #[cfg(feature = "espflash")]
-#[derive(Debug, strum::EnumString)]
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+)]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum EspAction {
@@ -98,7 +111,9 @@ pub enum EspAction {
 }
 
 #[cfg(feature = "logging")]
-#[derive(Debug, strum::EnumString)]
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+)]
 // #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum LoggingAction {
@@ -110,7 +125,7 @@ pub enum LoggingAction {
     Toggle,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, strum::AsRefStr)]
 pub enum AppAction {
     Base(BaseAction),
     Popup(ShowPopupAction),
@@ -121,6 +136,39 @@ pub enum AppAction {
     Esp(EspAction),
     #[cfg(feature = "logging")]
     Logging(LoggingAction),
+}
+
+// // TODO replace this
+// impl AppAction {
+//     pub fn discriminant(&self) -> u8 {
+//         match self {
+//             Self::Base(_) => 0,
+//             Self::Popup(_) => 1,
+//             Self::Port(_) => 2,
+//             #[cfg(feature = "macros")]
+//             Self::Macros(_) => 3,
+//             #[cfg(feature = "espflash")]
+//             Self::Esp(_) => 5,
+//             #[cfg(feature = "logging")]
+//             Self::Logging(_) => 6,
+//         }
+//     }
+// }
+
+impl fmt::Display for AppAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AppAction::Base(action) => write!(f, "{action}"),
+            AppAction::Popup(action) => write!(f, "{action}"),
+            AppAction::Port(action) => write!(f, "{action}"),
+            #[cfg(feature = "macros")]
+            AppAction::Macros(action) => write!(f, "{action}"),
+            #[cfg(feature = "espflash")]
+            AppAction::Esp(action) => write!(f, "{action}"),
+            #[cfg(feature = "logging")]
+            AppAction::Logging(action) => write!(f, "{action}"),
+        }
+    }
 }
 
 impl From<BaseAction> for AppAction {
@@ -187,7 +235,7 @@ impl FromStr for AppAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
     AppAction(AppAction),
     #[cfg(feature = "espflash")]
@@ -196,6 +244,42 @@ pub enum Action {
     MacroInvocation(MacroNameTag),
     Pause(Duration),
 }
+
+// impl Action {
+//     pub fn meow_ordering(&self, rhs: &Self) -> std::cmp::Ordering {
+//         let inter_action_ordering =
+//             matches!((self, rhs), (Action::AppAction(_), Action::AppAction(_)));
+
+//         if inter_action_ordering {
+//             let Action::AppAction(lhs_action) = &self else {
+//                 unreachable!()
+//             };
+//             let Action::AppAction(rhs_action) = &rhs else {
+//                 unreachable!()
+//             };
+//             let lhs: &str = lhs_action.as_ref();
+//             let rhs: &str = rhs_action.as_ref();
+
+//             lhs.cmp(rhs)
+//         } else {
+//             self.cmp(rhs)
+//         }
+//     }
+// }
+
+// // TODO replace this
+// impl Action {
+//     pub fn discriminant(&self) -> u8 {
+//         match self {
+//             Action::AppAction(action) => action.discriminant(),
+//             #[cfg(feature = "espflash")]
+//             Action::EspFlashProfile(_) => 253,
+//             #[cfg(feature = "macros")]
+//             Action::MacroInvocation(_) => 254,
+//             Action::Pause(_) => 255,
+//         }
+//     }
+// }
 
 static CONFIG_TOML: &str = r#"
 [keybindings]
@@ -218,6 +302,7 @@ ctrl-z = "esp-bootloader-unchecked"
 ctrl-r = "show-rendering"
 ctrl-h = "toggle-hex"
 ctrl-l = "show-logging"
+ctrl-k = "show-keybinds"
 
 # macros
 F19 = "Restart"
@@ -297,10 +382,6 @@ where
                     SingleOrSeveral::Single(value) if value.trim().is_empty() => vec![],
                     SingleOrSeveral::Single(single) => vec![single],
                     SingleOrSeveral::Several(pre_split) => pre_split,
-                    // SingleOrSeveral::Single(maybe_combined) => maybe_combined
-                    //     .split(MACRO_CHAIN_DELIMITER_CHAR)
-                    //     .map(str::to_string)
-                    //     .collect::<Vec<String>>(),
                 };
 
                 // Remove any empty chain entries

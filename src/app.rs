@@ -55,6 +55,7 @@ use crate::{
     tui::{
         centered_rect_size,
         prompts::{AttemptReconnectPrompt, DisconnectPrompt, PromptTable, centered_rect},
+        show_keybinds,
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
 };
@@ -188,6 +189,19 @@ pub enum PopupMenu {
     Macros,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Popup {
+    PopupMenu(PopupMenu),
+    CurrentKeybinds,
+    ErrorMessage(String),
+}
+
+impl From<PopupMenu> for Popup {
+    fn from(value: PopupMenu) -> Self {
+        Self::PopupMenu(value)
+    }
+}
+
 // 0 is for a custom baud rate
 pub const COMMON_BAUD: &[u32] = &[
     4800, 9600, 19200, 38400, 57600, 74880, 115200, 230400, 460800, 921600, 0,
@@ -214,8 +228,8 @@ pub struct App {
 
     table_state: TableState,
     baud_selection_state: SingleLineSelectorState,
-    popup: Option<PopupMenu>,
-    popup_menu_item: usize,
+    popup: Option<Popup>,
+    popup_menu_scroll: usize,
     popup_hint_scroll: i32,
     popup_table_state: TableState,
     // popup_scrollbar_state: ScrollbarState,
@@ -314,7 +328,6 @@ impl App {
             }),
             Duration::from_secs(1),
         );
-
         let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
         let buffer = Buffer::new(
             line_ending,
@@ -331,7 +344,7 @@ impl App {
             popup_hint_scroll: -2,
             table_state: TableState::new().with_selected(Some(0)),
             baud_selection_state: SingleLineSelectorState::new().with_selected(selected_baud_index),
-            popup_menu_item: 0,
+            popup_menu_scroll: 0,
             popup_table_state: TableState::new(),
             // popup_scrollbar_state: ScrollbarState::default(),
             // popup_single_line_state: SingleLineSelectorState::new(),
@@ -346,14 +359,10 @@ impl App {
             user_input,
 
             buffer,
-            // buffer_scroll: 0,
-            // buffer_scroll_state: ScrollbarState::default(),
-            // buffer_stick_to_bottom: true,
-            // // buffer_rendered_lines: 0,
-            // buffer_wrapping: false,
+
             repeating_line_flip: false,
             failed_send_at: None,
-            // failed_send_at: Instant::now(),
+
             #[cfg(feature = "macros")]
             macros: Macros::new(),
             action_queue: VecDeque::new(),
@@ -453,6 +462,15 @@ impl App {
                 self.buffer.update_terminal_size(terminal)?;
             }
             Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
+            Event::Crossterm(CrosstermEvent::MouseScroll { up })
+                if matches!(self.popup, Some(Popup::CurrentKeybinds)) =>
+            {
+                if up {
+                    self.popup_menu_scroll = self.popup_menu_scroll.saturating_sub(1);
+                } else {
+                    self.popup_menu_scroll += 1;
+                }
+            }
             Event::Crossterm(CrosstermEvent::MouseScroll { up }) => {
                 let amount = if up { 1 } else { -1 };
                 self.buffer.scroll_by(amount);
@@ -779,7 +797,7 @@ impl App {
         // TODO move these into per-menu funcs.
         match self.popup {
             #[cfg(feature = "macros")]
-            Some(PopupMenu::Macros) => {
+            Some(Popup::PopupMenu(PopupMenu::Macros)) => {
                 match self
                     .macros
                     .search_input
@@ -841,10 +859,13 @@ impl App {
         let vim_scrollable_menu: bool = match (self.menu, &self.popup) {
             // (_, Some(PopupMenu::Macros), MacrosPrompt::Keybind) => false,
             #[cfg(feature = "macros")]
-            (_, Some(PopupMenu::Macros)) => false,
+            (_, Some(Popup::PopupMenu(PopupMenu::Macros))) => false,
             (Menu::Terminal(TerminalPrompt::None), None) => false,
             _ => true,
         };
+        // TODO have these _hardcoded_ keybinds, and then allow user keybinds to
+        // overwrite some default ones.
+        // (Ctrl-h for Help, Ctrl-. and Ctrl-/ for Port Settings, etc etc)
         // TODO split this up into more functions based on menu
         match key_combo {
             // Start of hardcoded keybinds.
@@ -864,7 +885,7 @@ impl App {
                 self.user_input.all_text_selected = true;
             }
             key!(home) if self.popup.is_some() => {
-                self.popup_menu_item = 0;
+                self.popup_menu_scroll = 0;
             }
             // TODO ctrl+backspace remove a word
             key!(ctrl - pageup) | key!(shift - pageup) => self.buffer.scroll_by(i32::MAX),
@@ -908,12 +929,12 @@ impl App {
             }
             // KeyCode::Tab => self.tab_pressed(),
             #[cfg(feature = "macros")]
-            key!(ctrl - r) if self.popup == Some(PopupMenu::Macros) => {
+            key!(ctrl - r) if self.popup == Some(Popup::PopupMenu(PopupMenu::Macros)) => {
                 self.run_method_from_action(AppAction::Macros(MacroAction::ReloadMacros))
                     .unwrap();
             }
             #[cfg(feature = "espflash")]
-            key!(ctrl - r) if self.popup == Some(PopupMenu::EspFlash) => {
+            key!(ctrl - r) if self.popup == Some(Popup::PopupMenu(PopupMenu::EspFlash)) => {
                 self.run_method_from_action(AppAction::Esp(EspAction::ReloadProfiles))
                     .unwrap();
             }
@@ -1020,12 +1041,12 @@ impl App {
 
         Ok(())
     }
-    fn get_action_from_string(&self, action: &str) -> Option<Action> {
-        if action.trim().is_empty() {
+    pub fn get_action_from_string(&self, action: &str) -> Option<Action> {
+        let action = action.trim();
+
+        if action.is_empty() {
             return None;
         }
-
-        let action = action.trim();
 
         // Check for matching app method
         if let Ok(app_action) = action.parse::<AppAction>() {
@@ -1141,7 +1162,7 @@ impl App {
         };
         use AppAction as A;
         match action {
-            A::Popup(popup) => self.show_popup(popup),
+            A::Popup(popup) => self.show_popup_menu(popup),
 
             A::Port(PortAction::ToggleDtr) => {
                 self.serial.toggle_signals(true, false).unwrap();
@@ -1214,6 +1235,8 @@ impl App {
                 self.notifs
                     .notify_str(format!("Toggled Hex View Header {state}"), Color::Gray);
             }
+
+            A::Base(BaseAction::ShowKeybinds) => self.show_popup(Popup::CurrentKeybinds),
 
             #[cfg(feature = "macros")]
             A::Macros(MacroAction::ReloadMacros) => {
@@ -1346,13 +1369,23 @@ impl App {
     }
     fn up_pressed(&mut self) {
         self.user_input.all_text_selected = false;
-        if self.popup.is_some() {
-            self.popup_hint_scroll = -2;
-            match self.popup_menu_item {
-                0 => self.popup_menu_item = self.current_popup_item_count(),
-                _ => self.popup_menu_item = self.popup_menu_item - 1,
-            }
 
+        match &self.popup {
+            None => (),
+            Some(Popup::ErrorMessage(_)) => (),
+            Some(Popup::CurrentKeybinds) => {
+                self.popup_menu_scroll = self.popup_menu_scroll.saturating_sub(1);
+            }
+            Some(Popup::PopupMenu(_)) => {
+                self.popup_hint_scroll = -2;
+                match self.popup_menu_scroll {
+                    0 => self.popup_menu_scroll = self.current_popup_item_count(),
+                    _ => self.popup_menu_scroll = self.popup_menu_scroll - 1,
+                }
+            }
+        }
+
+        if self.popup.is_some() {
             return;
         }
 
@@ -1380,15 +1413,24 @@ impl App {
     }
     fn down_pressed(&mut self) {
         self.user_input.all_text_selected = false;
-        if self.popup.is_some() {
-            self.popup_hint_scroll = -2;
-            match self.popup_menu_item {
-                _ if self.popup_menu_item == self.current_popup_item_count() => {
-                    self.popup_menu_item = 0
-                }
-                _ => self.popup_menu_item = self.popup_menu_item + 1,
+        match &self.popup {
+            None => (),
+            Some(Popup::ErrorMessage(_)) => (),
+            Some(Popup::CurrentKeybinds) => {
+                self.popup_menu_scroll += 1;
             }
+            Some(Popup::PopupMenu(_)) => {
+                self.popup_hint_scroll = -2;
+                match self.popup_menu_scroll {
+                    _ if self.popup_menu_scroll == self.current_popup_item_count() => {
+                        self.popup_menu_scroll = 0
+                    }
+                    _ => self.popup_menu_scroll = self.popup_menu_scroll + 1,
+                }
+            }
+        }
 
+        if self.popup.is_some() {
             return;
         }
 
@@ -1436,46 +1478,47 @@ impl App {
     fn left_pressed(&mut self) {
         match &mut self.popup {
             None => (),
-            Some(_popup) if self.popup_menu_item == 0 => {
-                self.scroll_popup(false);
+            Some(Popup::CurrentKeybinds) | Some(Popup::ErrorMessage(_)) => (),
+            Some(Popup::PopupMenu(popup)) if self.popup_menu_scroll == 0 => {
+                self.cycle_popup_menu(false);
             }
-            Some(PopupMenu::PortSettings) => {
+            Some(Popup::PopupMenu(PopupMenu::PortSettings)) => {
                 self.scratch
                     .last_port_settings
                     .handle_input(ArrowKey::Left, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
-            Some(PopupMenu::BehaviorSettings) => {
+            Some(Popup::PopupMenu(PopupMenu::BehaviorSettings)) => {
                 self.scratch
                     .behavior
                     .handle_input(ArrowKey::Left, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
-            Some(PopupMenu::RenderingSettings) => {
+            Some(Popup::PopupMenu(PopupMenu::RenderingSettings)) => {
                 self.scratch
                     .rendering
                     .handle_input(ArrowKey::Left, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
             #[cfg(feature = "macros")]
-            Some(PopupMenu::Macros) => {
+            Some(Popup::PopupMenu(PopupMenu::Macros)) => {
                 if !self.macros.search_input.value().is_empty() {
                     return;
                 }
                 self.macros.categories_selector.prev();
-                if self.popup_menu_item >= 2 {
+                if self.popup_menu_scroll >= 2 {
                     if self.macros.none_visible() {
-                        self.popup_menu_item = 1;
+                        self.popup_menu_scroll = 1;
                     } else {
-                        self.popup_menu_item = 2;
+                        self.popup_menu_scroll = 2;
                     }
                 }
             }
             #[cfg(feature = "espflash")]
-            Some(PopupMenu::EspFlash) => (),
+            Some(Popup::PopupMenu(PopupMenu::EspFlash)) => (),
             #[cfg(feature = "logging")]
-            Some(PopupMenu::Logging) => {
-                if self.popup_menu_item == 1 {
+            Some(Popup::PopupMenu(PopupMenu::Logging)) => {
+                if self.popup_menu_scroll == 1 {
                     return;
                 }
 
@@ -1507,46 +1550,47 @@ impl App {
         // }
         match &mut self.popup {
             None => (),
-            Some(popup) if self.popup_menu_item == 0 => {
-                self.scroll_popup(true);
+            Some(Popup::CurrentKeybinds) | Some(Popup::ErrorMessage(_)) => (),
+            Some(Popup::PopupMenu(popup)) if self.popup_menu_scroll == 0 => {
+                self.cycle_popup_menu(true);
             }
-            Some(PopupMenu::PortSettings) => {
+            Some(Popup::PopupMenu(PopupMenu::PortSettings)) => {
                 self.scratch
                     .last_port_settings
                     .handle_input(ArrowKey::Right, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
-            Some(PopupMenu::BehaviorSettings) => {
+            Some(Popup::PopupMenu(PopupMenu::BehaviorSettings)) => {
                 self.scratch
                     .behavior
                     .handle_input(ArrowKey::Right, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
-            Some(PopupMenu::RenderingSettings) => {
+            Some(Popup::PopupMenu(PopupMenu::RenderingSettings)) => {
                 self.scratch
                     .rendering
                     .handle_input(ArrowKey::Right, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
             #[cfg(feature = "macros")]
-            Some(PopupMenu::Macros) => {
+            Some(Popup::PopupMenu(PopupMenu::Macros)) => {
                 if !self.macros.search_input.value().is_empty() {
                     return;
                 }
                 self.macros.categories_selector.next();
-                if self.popup_menu_item >= 2 {
+                if self.popup_menu_scroll >= 2 {
                     if self.macros.none_visible() {
-                        self.popup_menu_item = 1;
+                        self.popup_menu_scroll = 1;
                     } else {
-                        self.popup_menu_item = 2;
+                        self.popup_menu_scroll = 2;
                     }
                 }
             }
             #[cfg(feature = "espflash")]
-            Some(PopupMenu::EspFlash) => (),
+            Some(Popup::PopupMenu(PopupMenu::EspFlash)) => (),
             #[cfg(feature = "logging")]
-            Some(PopupMenu::Logging) => {
-                if self.popup_menu_item == 1 {
+            Some(Popup::PopupMenu(PopupMenu::Logging)) => {
+                if self.popup_menu_scroll == 1 {
                     return;
                 }
 
@@ -1573,7 +1617,8 @@ impl App {
         use PortSelectionElement as Pse;
         match self.popup {
             None => (),
-            Some(PopupMenu::PortSettings) => {
+            Some(Popup::ErrorMessage(_)) | Some(Popup::CurrentKeybinds) => self.dismiss_popup(),
+            Some(Popup::PopupMenu(PopupMenu::PortSettings)) => {
                 self.settings.last_port_settings = self.scratch.last_port_settings.clone();
                 self.buffer
                     .update_line_ending(self.scratch.last_port_settings.rx_line_ending.as_bytes());
@@ -1596,7 +1641,7 @@ impl App {
                 }
                 self.dismiss_popup();
             }
-            Some(PopupMenu::BehaviorSettings) => {
+            Some(Popup::PopupMenu(PopupMenu::BehaviorSettings)) => {
                 self.settings.behavior = self.scratch.behavior.clone();
 
                 self.settings.save().unwrap();
@@ -1604,7 +1649,7 @@ impl App {
                 self.notifs
                     .notify_str("Behavior settings saved!", Color::Green);
             }
-            Some(PopupMenu::RenderingSettings) => {
+            Some(Popup::PopupMenu(PopupMenu::RenderingSettings)) => {
                 self.settings.rendering = self.scratch.rendering.clone();
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
@@ -1615,8 +1660,8 @@ impl App {
                     .notify_str("Rendering settings saved!", Color::Green);
             }
             #[cfg(feature = "macros")]
-            Some(PopupMenu::Macros) => {
-                if self.popup_menu_item < 2 {
+            Some(Popup::PopupMenu(PopupMenu::Macros)) => {
+                if self.popup_menu_scroll < 2 {
                     return;
                 }
                 let index = self.get_corrected_popup_item().unwrap();
@@ -1659,8 +1704,8 @@ impl App {
                 }
             }
             #[cfg(feature = "espflash")]
-            Some(PopupMenu::EspFlash) => {
-                if self.popup_menu_item == 0 {
+            Some(Popup::PopupMenu(PopupMenu::EspFlash)) => {
+                if self.popup_menu_scroll == 0 {
                     return;
                 }
                 if !serial_healthy {
@@ -1669,7 +1714,7 @@ impl App {
                 }
                 let selected = self.get_corrected_popup_item().unwrap();
                 // If a profile is selected
-                if self.popup_menu_item > esp::ESPFLASH_BUTTON_COUNT {
+                if self.popup_menu_scroll > esp::ESPFLASH_BUTTON_COUNT {
                     assert!(
                         !self.espflash.is_empty(),
                         "shouldn't have selected a non-existant flash profile"
@@ -1709,10 +1754,10 @@ impl App {
                 }
             }
             #[cfg(feature = "logging")]
-            Some(PopupMenu::Logging) => {
-                if self.popup_menu_item == 0 {
+            Some(Popup::PopupMenu(PopupMenu::Logging)) => {
+                if self.popup_menu_scroll == 0 {
                     return;
-                } else if self.popup_menu_item == 1 {
+                } else if self.popup_menu_scroll == 1 {
                     let logging_active = self.buffer.log_handle.logging_active();
                     if logging_active {
                         self.buffer.log_handle.request_log_stop().unwrap();
@@ -1776,7 +1821,7 @@ impl App {
                 }
             }
             Menu::PortSelection(Pse::MoreOptions) => {
-                self.show_popup(ShowPopupAction::ShowPortSettings)
+                self.show_popup_menu(ShowPopupAction::ShowPortSettings)
             }
             Menu::PortSelection(_) => (),
             Menu::Terminal(TerminalPrompt::None) => {
@@ -1832,7 +1877,7 @@ impl App {
                     DisconnectPrompt::ExitApp => self.shutdown(),
                     DisconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
                     DisconnectPrompt::OpenPortSettings => {
-                        self.show_popup(ShowPopupAction::ShowPortSettings)
+                        self.show_popup_menu(ShowPopupAction::ShowPortSettings)
                     }
                     DisconnectPrompt::Disconnect if shift_pressed || ctrl_pressed => {
                         // This is intentionally being set true unconditionally here, and also when the event pops.
@@ -1896,7 +1941,7 @@ impl App {
                         self.menu = Menu::Terminal(TerminalPrompt::None)
                     }
                     AttemptReconnectPrompt::OpenPortSettings => {
-                        self.show_popup(ShowPopupAction::ShowPortSettings)
+                        self.show_popup_menu(ShowPopupAction::ShowPortSettings)
                     }
 
                     AttemptReconnectPrompt::BackToPortSelection => {
@@ -1961,10 +2006,10 @@ impl App {
     ///
     /// Panics if no popup is active.
     fn current_popup_item_count(&self) -> usize {
-        let popup = self
-            .popup
-            .as_ref()
-            .expect("popup needed to get max scroll index");
+        let Some(Popup::PopupMenu(popup)) = &self.popup else {
+            unreachable!()
+        };
+
         match popup {
             #[cfg(feature = "macros")]
             PopupMenu::Macros => {
@@ -1992,11 +2037,11 @@ impl App {
     ///
     /// Panics if no popup is active.
     fn get_corrected_popup_item(&self) -> Option<usize> {
-        let popup = self
-            .popup
-            .as_ref()
-            .expect("popup needed to get corrected scroll index");
-        let raw_scroll = self.popup_menu_item;
+        let Some(Popup::PopupMenu(popup)) = &self.popup else {
+            unreachable!()
+        };
+
+        let raw_scroll = self.popup_menu_scroll;
         // debug_assert!(raw_scroll > 0);
         match (popup, raw_scroll) {
             // Menu selector active
@@ -2006,7 +2051,7 @@ impl App {
             // Just correct for the category selector
             (PopupMenu::PortSettings, _)
             | (PopupMenu::RenderingSettings, _)
-            | (PopupMenu::BehaviorSettings, _) => Some(self.popup_menu_item - 1),
+            | (PopupMenu::BehaviorSettings, _) => Some(self.popup_menu_scroll - 1),
 
             #[cfg(feature = "macros")]
             // Macro Categories selector active
@@ -2088,7 +2133,19 @@ impl App {
         }
     }
     fn render_popups(&mut self, frame: &mut Frame, area: Rect) {
-        let Some(popup) = &self.popup else {
+        match &self.popup {
+            None => (),
+            Some(Popup::PopupMenu(_)) => self.render_popup_menus(frame, area),
+            Some(Popup::CurrentKeybinds) => {
+                let mut scroll: u16 = self.popup_menu_scroll as u16;
+                show_keybinds(&self.keybinds, &mut scroll, frame, area, &self);
+                self.popup_menu_scroll = scroll as usize;
+            }
+            Some(Popup::ErrorMessage(_)) => todo!(),
+        }
+    }
+    fn render_popup_menus(&mut self, frame: &mut Frame, area: Rect) {
+        let Some(Popup::PopupMenu(popup)) = &self.popup else {
             return;
         };
 
@@ -2122,7 +2179,7 @@ impl App {
         }
         #[cfg(feature = "macros")]
         {
-            match (self.popup_menu_item, popup) {
+            match (self.popup_menu_scroll, popup) {
                 (0, _) => {
                     menu_selector_state.active = true;
                     self.macros.categories_selector.active = false;
@@ -2144,7 +2201,7 @@ impl App {
 
             assert!(
                 (menu_selector_state.active || self.macros.categories_selector.active)
-                    == selector_range.contains(&self.popup_menu_item),
+                    == selector_range.contains(&self.popup_menu_scroll),
                 "Either a table element needs to be selected, or the menu title widget, but never both or neither."
             );
 
@@ -2557,7 +2614,7 @@ impl App {
 
                 let logging_active = self.buffer.log_handle.logging_active();
                 let toggle_button = toggle_logging_button(logging_active);
-                let logging_toggle_selected = self.popup_menu_item == 1;
+                let logging_toggle_selected = self.popup_menu_scroll == 1;
                 if logging_toggle_selected {
                     self.popup_table_state.select(Some(0));
                     self.popup_table_state.select_first_column();
@@ -2681,7 +2738,7 @@ impl App {
                     hint_text_area,
                 );
 
-                let profiles_selected = self.popup_menu_item >= esp::ESPFLASH_BUTTON_COUNT + 1;
+                let profiles_selected = self.popup_menu_scroll >= esp::ESPFLASH_BUTTON_COUNT + 1;
 
                 // if self.popup_menu_item ==
                 if profiles_selected {
@@ -3214,25 +3271,29 @@ impl App {
     fn refresh_scratch(&mut self) {
         self.scratch = self.settings.clone();
     }
-    fn show_popup(&mut self, popup: ShowPopupAction) {
-        self.popup = Some(popup.into());
+    fn show_popup(&mut self, popup: Popup) {
+        self.popup = Some(popup);
         self.refresh_scratch();
         self.popup_hint_scroll = -2;
-        self.popup_menu_item = 0;
+        self.popup_menu_scroll = 0;
 
         self.tx
             .send(Tick::Scroll.into())
             .map_err(|e| e.to_string())
             .unwrap();
     }
+    fn show_popup_menu(&mut self, popup: ShowPopupAction) {
+        let popup_menu: PopupMenu = popup.into();
+        self.show_popup(Popup::PopupMenu(popup_menu));
+    }
     fn dismiss_popup(&mut self) {
         self.refresh_scratch();
         self.popup.take();
-        self.popup_menu_item = 0;
+        self.popup_menu_scroll = 0;
         self.popup_hint_scroll = -2;
     }
-    fn scroll_popup(&mut self, next: bool) {
-        let Some(popup) = &mut self.popup else {
+    fn cycle_popup_menu(&mut self, next: bool) {
+        let Some(Popup::PopupMenu(popup)) = &mut self.popup else {
             return;
         };
 

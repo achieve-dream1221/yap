@@ -9,7 +9,9 @@ pub mod logging;
 pub mod color_rules;
 pub mod port_settings;
 pub mod prompts;
+mod show_keybinds;
 pub mod single_line_selector;
+pub use show_keybinds::show_keybinds;
 
 /// Returns a `Rect` with the provided percentage of the parent `Rect` and centered.
 pub fn centered_rect_ratio(percent_x: u16, percent_y: u16, parent: Rect) -> Rect {
