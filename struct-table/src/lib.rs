@@ -1,8 +1,8 @@
-use ratatui::widgets::{Table, TableState};
+use ratatui::widgets::Table;
 
 pub use struct_table_derive::*;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ArrowKey {
     Up,
     Down,

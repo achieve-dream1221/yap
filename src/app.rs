@@ -610,11 +610,11 @@ impl App {
             #[cfg(feature = "logging")]
             Event::Logging(LoggingEvent::Stopped { error: Some(error) }) => self
                 .notifs
-                .notify_str("Logging stopped with error!", Color::Red),
+                .notify_str(format!("Logging stopped with error: {error}"), Color::Red),
             #[cfg(feature = "logging")]
-            Event::Logging(LoggingEvent::Error(error)) => {
-                self.notifs.notify_str("Logging error!", Color::Red)
-            }
+            Event::Logging(LoggingEvent::Error(error)) => self
+                .notifs
+                .notify_str(format!("Logging error: {error}"), Color::Red),
             Event::Tick(Tick::PerSecond) => match self.menu {
                 Menu::Terminal(TerminalPrompt::None) => {
                     let port_status = &self.serial.port_status.load().inner;
@@ -881,12 +881,9 @@ impl App {
             (Menu::Terminal(TerminalPrompt::None), None) => false,
             _ => true,
         };
-        // TODO have these _hardcoded_ keybinds, and then allow user keybinds to
-        // overwrite some default ones.
-        // (Ctrl-h for Help, Ctrl-. and Ctrl-/ for Port Settings, etc etc)
         // TODO split this up into more functions based on menu
         match key_combo {
-            // Start of hardcoded keybinds.
+            // Start of _Hardcoded_ keybinds.
             key!(q) if at_port_selection && self.popup.is_none() => self.shutdown(),
             key!(ctrl - shift - c) => self.shutdown(),
             // move into ctrl-c func?
@@ -3041,7 +3038,6 @@ impl App {
 
         if self.user_input.input_box.value().is_empty() {
             // Leading space leaves room for full-width cursors.
-            // TODO make binding hint dynamic (should maybe cache?)
             let port_settings_combo = self
                 .keybinds
                 .port_settings_hint

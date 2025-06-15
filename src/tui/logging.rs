@@ -1,47 +1,7 @@
-use std::{borrow::Cow, path::PathBuf};
-
-use compact_str::CompactString;
 use ratatui::{
     prelude::*,
-    widgets::{Block, Clear, Gauge, Row, Table, TableState},
+    widgets::{Row, Table},
 };
-use ratatui_macros::{line, vertical};
-use tracing::debug;
-
-use crate::traits::{LastIndex, LineHelpers};
-
-use std::collections::BTreeMap;
-
-use serde::Deserialize;
-
-use super::centered_rect_size;
-
-// // TODO move file stuff out of TUI module
-
-// pub struct LoggingTui {
-//     logging_active: bool,
-//     settings: Table<'static>,
-// }
-
-// impl LoggingTui {
-//     pub fn new(logging_active: bool, settings: Table<'static>) -> Self {
-//         Self {
-//             logging_active,
-//             settings,
-//         }
-//     }
-// }
-
-// impl Widget for LoggingTui {
-//     fn render(self, area: Rect, buf: &mut Buffer)
-//     where
-//         Self: Sized,
-//     {
-
-//     }
-// }
-
-// pub const ESPFLASH_BUTTON_COUNT: usize = 4;
 
 pub fn toggle_logging_button(logging_active: bool) -> Table<'static> {
     let selected_row_style = Style::new().reversed();

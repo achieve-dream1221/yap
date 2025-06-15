@@ -1,4 +1,3 @@
-use deluxe::ParseMetaItem;
 use heck::ToTitleCase;
 use proc_macro2_diagnostics::SpanDiagnosticExt;
 use quote::quote;

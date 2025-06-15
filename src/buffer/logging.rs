@@ -38,12 +38,6 @@ pub struct LoggingHandle {
 
 pub const DEFAULT_TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.9f";
 
-// TODO events from logging thread
-// error
-// logging started
-// logging stopped?
-//
-
 pub enum LoggingCommand {
     PortConnected(DateTime<Local>, SerialPortInfo, Option<ReconnectType>),
     PortDisconnect {

@@ -11,18 +11,6 @@ use ratatui_macros::{row, span};
 use strum::{EnumProperty, VariantArray, VariantNames};
 use unicode_width::UnicodeWidthStr;
 
-pub struct Prompt {}
-
-pub struct PromptState {}
-
-// #[derive(Debug, strum::VariantNames, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
-#[repr(u8)]
-pub enum Test {
-    Yes,
-    No,
-    Cancel,
-}
-
 pub trait PromptKeybind: Clone + strum::VariantArray + strum::EnumProperty {
     fn from_key_code(value: KeyCode) -> Option<Self> {
         Self::VARIANTS
@@ -36,15 +24,11 @@ pub trait PromptKeybind: Clone + strum::VariantArray + strum::EnumProperty {
                     (KeyCode::Char(given_char), Some(variant_char)) => given_char == variant_char,
                     _ => false,
                 }
-                // value == variant_key_combo.as_letter()
             })
             .cloned()
     }
 }
 
-// TODO think about way to do keyboard shortcuts with these
-// https://docs.rs/strum_macros/latest/strum_macros/derive.EnumProperty.html
-// #[derive(Debug, strum::VariantNames, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
 #[derive(
     Debug, Clone, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
 )]

@@ -21,32 +21,32 @@ enum ActionOption {
     // Empty,
 }
 
-impl ActionOption {
-    fn meow_ordering(&self, rhs: &Self) -> std::cmp::Ordering {
-        let inter_action_ordering = matches!(
-            (self, rhs),
-            (
-                ActionOption::Recognized(Action::AppAction(_)),
-                ActionOption::Recognized(Action::AppAction(_))
-            )
-        );
+// impl ActionOption {
+//     fn meow_ordering(&self, rhs: &Self) -> std::cmp::Ordering {
+//         let inter_action_ordering = matches!(
+//             (self, rhs),
+//             (
+//                 ActionOption::Recognized(Action::AppAction(_)),
+//                 ActionOption::Recognized(Action::AppAction(_))
+//             )
+//         );
 
-        if inter_action_ordering {
-            let ActionOption::Recognized(Action::AppAction(lhs_action)) = &self else {
-                unreachable!()
-            };
-            let ActionOption::Recognized(Action::AppAction(rhs_action)) = &rhs else {
-                unreachable!()
-            };
-            let lhs: &str = rhs_action.as_ref();
-            let rhs: &str = lhs_action.as_ref();
+//         if inter_action_ordering {
+//             let ActionOption::Recognized(Action::AppAction(lhs_action)) = &self else {
+//                 unreachable!()
+//             };
+//             let ActionOption::Recognized(Action::AppAction(rhs_action)) = &rhs else {
+//                 unreachable!()
+//             };
+//             let lhs: &str = rhs_action.as_ref();
+//             let rhs: &str = lhs_action.as_ref();
 
-            lhs.cmp(rhs)
-        } else {
-            self.cmp(rhs)
-        }
-    }
-}
+//             lhs.cmp(rhs)
+//         } else {
+//             self.cmp(rhs)
+//         }
+//     }
+// }
 
 impl std::fmt::Display for ActionOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -89,16 +89,8 @@ pub fn show_keybinds(
     let (all_single_actions, all_chains): (Vec<_>, Vec<_>) = keybinds
         .keybindings
         .iter()
-        // Sort all by the first action if present
+        // Sort all by the first action's actual string
         .sorted_by(|a, b| {
-            // let a_first = a.1.get(0);
-            // let b_first = b.1.get(0);
-            // match (a_first, b_first) {
-            //     (Some(a_val), Some(b_val)) => Ord::cmp(b_val, a_val),
-            //     (Some(_), None) => Ordering::Greater,
-            //     (None, Some(_)) => Ordering::Less,
-            //     (None, None) => Ordering::Equal,
-            // }
             let a_first = &a.1[0];
             let b_first = &b.1[0];
             Ord::cmp(b_first, a_first)
@@ -247,8 +239,15 @@ pub fn show_keybinds(
                 let mut rows = Vec::new();
                 let space = " ";
                 for action in v {
+                    let space_amt = if matches!(action, ActionOption::Recognized(Action::Pause(_)))
+                    {
+                        max_keycombo_length + 1
+                    } else {
+                        max_keycombo_length
+                    };
+
                     let line = line![
-                        format!("{space:0$} - ", max_keycombo_length),
+                        format!("{space:space_amt$} - "),
                         span!(action_style(&action); "{action}")
                     ];
                     max_line_length = max_line_length.max(line.width());
