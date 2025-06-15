@@ -245,41 +245,22 @@ pub enum Action {
     Pause(Duration),
 }
 
-// impl Action {
-//     pub fn meow_ordering(&self, rhs: &Self) -> std::cmp::Ordering {
-//         let inter_action_ordering =
-//             matches!((self, rhs), (Action::AppAction(_), Action::AppAction(_)));
+static OVERRIDABLE_DEFAULTS: &str = r#"
+[keybindings]
+ctrl-o = "toggle-dtr"
+ctrl-p = "toggle-rts"
 
-//         if inter_action_ordering {
-//             let Action::AppAction(lhs_action) = &self else {
-//                 unreachable!()
-//             };
-//             let Action::AppAction(rhs_action) = &rhs else {
-//                 unreachable!()
-//             };
-//             let lhs: &str = lhs_action.as_ref();
-//             let rhs: &str = rhs_action.as_ref();
+ctrl-w = "toggle-textwrap"
+ctrl-t = "toggle-timestamps"
+ctrl-d = "toggle-indices"
 
-//             lhs.cmp(rhs)
-//         } else {
-//             self.cmp(rhs)
-//         }
-//     }
-// }
+ctrl-b = "show-behavior"
+'ctrl-.' = "show-portsettings"
 
-// // TODO replace this
-// impl Action {
-//     pub fn discriminant(&self) -> u8 {
-//         match self {
-//             Action::AppAction(action) => action.discriminant(),
-//             #[cfg(feature = "espflash")]
-//             Action::EspFlashProfile(_) => 253,
-//             #[cfg(feature = "macros")]
-//             Action::MacroInvocation(_) => 254,
-//             Action::Pause(_) => 255,
-//         }
-//     }
-// }
+ctrl-f = "reload-colors"
+ctrl-h = "show-keybinds"
+'ctrl-/' = "show-keybinds"
+"#;
 
 static CONFIG_TOML: &str = r#"
 [keybindings]
@@ -301,7 +282,7 @@ shift-F21 = "esp-bootloader-unchecked"
 ctrl-z = "esp-bootloader-unchecked"
 ctrl-r = "show-rendering"
 ctrl-h = "toggle-hex"
-ctrl-l = "show-logging"
+ctrl-l = "show-losgging"
 ctrl-k = "show-keybinds"
 
 # macros
@@ -403,10 +384,8 @@ where
 }
 
 impl Keybinds {
-    pub fn new() -> Self {
-        let mut deserialized: Self = toml::from_str(CONFIG_TOML).unwrap();
-
-        deserialized.port_settings_hint = deserialized
+    pub fn fill_port_settings_hint(&mut self) {
+        self.port_settings_hint = self
             .keybindings
             .iter()
             .find(|(_, actions)| {
@@ -423,8 +402,26 @@ impl Keybinds {
                 }
             })
             .map(|(kc, _)| kc.to_compact_string());
+    }
+    pub fn overridable_default() -> Self {
+        let mut deserialized: Self = toml::from_str(OVERRIDABLE_DEFAULTS).unwrap();
+
+        deserialized.fill_port_settings_hint();
 
         deserialized
+    }
+    pub fn new() -> Self {
+        let mut overridable = Self::overridable_default();
+
+        let user_settings: Self = toml::from_str(CONFIG_TOML).unwrap();
+
+        overridable
+            .keybindings
+            .extend(user_settings.keybindings.into_iter());
+
+        overridable.fill_port_settings_hint();
+
+        overridable
     }
     pub fn action_set_from_key_combo(&self, key_combo: KeyCombination) -> Option<&Vec<String>> {
         self.keybindings

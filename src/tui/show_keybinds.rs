@@ -86,7 +86,7 @@ pub fn show_keybinds(
     let mut max_keycombo_length = 0;
     let mut max_line_length = 0;
 
-    let all_actions: Vec<_> = keybinds
+    let (all_single_actions, all_chains): (Vec<_>, Vec<_>) = keybinds
         .keybindings
         .iter()
         // Sort all by the first action if present
@@ -116,7 +116,7 @@ pub fn show_keybinds(
                 .collect();
             (kc, actions)
         })
-        .collect();
+        .partition(|(kc, v)| v.len() == 1);
 
     let mut rows: Vec<Line<'static>> = Vec::new();
 
@@ -140,18 +140,17 @@ pub fn show_keybinds(
     };
 
     let (single_action_binds, unknown_single_actions): (
-        Vec<(&KeyCombination, &ActionOption)>,
-        Vec<(&KeyCombination, &ActionOption)>,
-    ) = all_actions
-        .iter()
-        .filter(|(kc, v)| v.len() == 1)
-        .map(|(kc, v)| (*kc, &v[0]))
-        .sorted_by(|a, b| a.1.cmp(b.1))
+        Vec<(&KeyCombination, ActionOption)>,
+        Vec<(&KeyCombination, ActionOption)>,
+    ) = all_single_actions
+        .into_iter()
+        .map(|(kc, mut v)| (kc, v.pop().unwrap()))
+        .sorted_by(|a, b| a.1.cmp(&b.1))
         // .sorted_by(|a, b| a.1.cmp(b.1))
         .partition(|(kc, action_opt)| action_opt.is_recognized());
 
     // let mut last_discriminant = None;
-    let single_action_binds = single_action_binds.into_iter()
+    let single_action_binds: Vec<_> = single_action_binds.into_iter()
         // .sorted_by(|a,b| {
         //     match (a.1, b.1) {
         //         (ActionOption::Recognized(a), ActionOption::Recognized(b)) => a.meow_ordering(b),
@@ -164,13 +163,13 @@ pub fn show_keybinds(
 
             let mut lines = Vec::new();
 
-            let ActionOption::Recognized(action) = action_opt else {
+            let ActionOption::Recognized(action) = &action_opt else {
                 unreachable!()
             };
 
             let line = line![
-                span!(key_combo_style(action_opt); "{key_combo:width$} - ", width = max_keycombo_length),
-                span!(action_style(action_opt);"{action_opt}")
+                span!(key_combo_style(&action_opt); "{key_combo:width$} - ", width = max_keycombo_length),
+                span!(action_style(&action_opt);"{action_opt}")
             ];
 
             // if action.discriminant() != last_discriminant {
@@ -183,7 +182,7 @@ pub fn show_keybinds(
 
             //     }
             // }
-            // max_line_length = max_line_length.max(line.width());
+            max_line_length = max_line_length.max(line.width());
 
             // line
             lines.push(line);
@@ -206,13 +205,21 @@ pub fn show_keybinds(
             lines
         })
         .flatten()
+        .collect()
         // .partition(|l| !l.spans.iter().any(|s|s.style == Style::new().yellow()))
     ;
 
-    let unknowns: Vec<Line<'static>> = unknown_single_actions.into_iter().map(|(key_combo,action_opt)|line![
-        span!(key_combo_style(action_opt); "{key_combo:width$} - ", width = max_keycombo_length),
-        span!(action_style(action_opt);"{action_opt}")
-    ]).collect();
+    let unknowns: Vec<Line<'static>> = unknown_single_actions
+        .into_iter()
+        .map(|(key_combo, action_opt)| {
+            let line = line![
+                span!(key_combo_style(&action_opt); "{key_combo:width$} - ", width = max_keycombo_length),
+                span!(action_style(&action_opt); "{action_opt}")
+            ];
+            max_line_length = max_line_length.max(line.width());
+            line
+        })
+        .collect();
 
     if !unknowns.is_empty() {
         rows.push(
@@ -225,53 +232,54 @@ pub fn show_keybinds(
         rows.push(Line::default());
     }
 
-    rows.extend(single_action_binds);
+    rows.extend(single_action_binds.into_iter());
 
-    rows.push(Line::default());
-    rows.push(Line::raw("Action Chain Keybinds:").centered().bold());
-    rows.push(Line::default());
+    if !all_chains.is_empty() {
+        rows.push(Line::default());
+        rows.push(Line::raw("Action Chain Keybinds:").centered().bold());
+        rows.push(Line::default());
 
-    let chain_rows = all_actions
-        .iter()
-        .filter(|(kc, v)| v.len() > 1)
-        .map(|(kc, v)| {
-            let key_combo = kc.to_string();
+        let chain_rows = all_chains
+            .into_iter()
+            .map(|(kc, v)| {
+                let key_combo = kc.to_string();
 
-            let mut rows = Vec::new();
-            let space = " ";
-            for action in v {
-                let line = line![
-                    format!("{space:0$} - ", max_keycombo_length),
-                    span!(action_style(action); "{action}")
-                ];
-                max_line_length = max_line_length.max(line.width());
+                let mut rows = Vec::new();
+                let space = " ";
+                for action in v {
+                    let line = line![
+                        format!("{space:0$} - ", max_keycombo_length),
+                        span!(action_style(&action); "{action}")
+                    ];
+                    max_line_length = max_line_length.max(line.width());
 
-                rows.push(line);
-            }
+                    rows.push(line);
+                }
 
-            let any_unrecognized = rows
-                .iter()
-                .map(|l| l.spans.iter())
-                .flatten()
-                .any(|s| s.style == Style::new().yellow());
-            let key_combo_style = if any_unrecognized {
-                Style::new().yellow()
-            } else {
-                Style::new()
-            };
+                let any_unrecognized = rows
+                    .iter()
+                    .map(|l| l.spans.iter())
+                    .flatten()
+                    .any(|s| s.style == Style::new().yellow());
+                let key_combo_style = if any_unrecognized {
+                    Style::new().yellow()
+                } else {
+                    Style::new()
+                };
 
-            rows.insert(0, Line::styled(key_combo, key_combo_style));
+                rows.insert(0, Line::styled(key_combo, key_combo_style));
 
-            rows
-        })
-        .flatten();
+                rows
+            })
+            .flatten();
 
-    rows.extend(chain_rows);
+        rows.extend(chain_rows);
+    }
 
     let area = {
         let mut block_area = area;
         block_area.width = block_area.width.min((max_line_length as u16) + 2);
-        block_area.height = block_area.height.min(20);
+        block_area.height = block_area.height.min(20).min(rows.len() as u16 + 2);
         block_area.x = area.width.saturating_sub(block_area.width) / 2;
         block_area.y = area.height.saturating_sub(block_area.height) / 2;
         block_area
