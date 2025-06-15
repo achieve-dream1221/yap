@@ -54,7 +54,9 @@ use crate::{
     traits::{FirstChars, LastIndex, LineHelpers, ToggleBool},
     tui::{
         centered_rect_size,
-        prompts::{AttemptReconnectPrompt, DisconnectPrompt, PromptTable, centered_rect},
+        prompts::{
+            AttemptReconnectPrompt, DisconnectPrompt, PromptKeybind, PromptTable, centered_rect,
+        },
         show_keybinds,
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
@@ -844,8 +846,22 @@ impl App {
                 }
             }
             Menu::Terminal(TerminalPrompt::None) => (),
-            Menu::Terminal(TerminalPrompt::DisconnectPrompt) => (),
-            Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) => (),
+            Menu::Terminal(TerminalPrompt::DisconnectPrompt) => {
+                if let Some(pressed) = DisconnectPrompt::from_key_code(key.code) {
+                    let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
+                    let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
+
+                    self.disconnect_prompt_choice(pressed, shift_pressed, ctrl_pressed);
+                }
+            }
+            Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) => {
+                if let Some(pressed) = AttemptReconnectPrompt::from_key_code(key.code) {
+                    let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
+                    let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
+
+                    self.reconnect_prompt_choice(pressed, shift_pressed, ctrl_pressed);
+                }
+            }
             Menu::PortSelection(PortSelectionElement::CustomBaud) => {
                 // filtering out just letters from being put into the custom baud entry
                 // extra checks will be needed at parse stage to ensure non-digit chars arent present
@@ -1828,90 +1844,114 @@ impl App {
                     return;
                 }
                 let index = self.table_state.selected().unwrap() as u8;
-                match DisconnectPrompt::try_from(index).unwrap() {
-                    DisconnectPrompt::ExitApp => self.shutdown(),
-                    DisconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
-                    DisconnectPrompt::OpenPortSettings => {
-                        self.show_popup_menu(ShowPopupAction::ShowPortSettings)
-                    }
-                    DisconnectPrompt::Disconnect if shift_pressed || ctrl_pressed => {
-                        // This is intentionally being set true unconditionally here, and also when the event pops.
-                        // This is so that I or a user can forcibly trigger the pausing of reconnections/the appearance of the
-                        // manual reconnection Esc popup.
-                        self.user_broke_connection = true;
-                        self.menu = Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt);
-                        self.serial.break_connection().unwrap();
-
-                        // let port_status_guard = self.serial.port_status.load();
-                        // if port_status_guard.inner.is_healthy() {
-                        // } else {
-                        // self.notifs
-                        // .notify_str("Can't break connection!", Color::Red);
-                        // }
-                    }
-                    DisconnectPrompt::Disconnect => {
-                        self.serial.disconnect().unwrap();
-                        // Refresh port listings
-                        self.ports.clear();
-                        self.serial.request_port_scan().unwrap();
-
-                        self.buffer.intentional_disconnect_clear();
-                        // Clear the input box, but keep the user history!
-                        self.user_input.clear();
-
-                        self.menu = Menu::PortSelection(Pse::Ports);
-                    }
-                }
+                self.disconnect_prompt_choice(
+                    DisconnectPrompt::try_from(index).unwrap(),
+                    shift_pressed,
+                    ctrl_pressed,
+                );
             }
             Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) => {
                 if self.table_state.selected().is_none() {
                     return;
                 }
                 let index = self.table_state.selected().unwrap() as u8;
-                match AttemptReconnectPrompt::try_from(index).unwrap() {
-                    AttemptReconnectPrompt::ExitApp => self.shutdown(),
-                    AttemptReconnectPrompt::AttemptReconnect if shift_pressed && ctrl_pressed => {
-                        self.user_broke_connection = false;
-                        self.menu = Menu::Terminal(TerminalPrompt::None);
-                        self.notifs
-                            .notify_str("Unpausing reconnections!", Color::LightGreen);
-                    }
-                    AttemptReconnectPrompt::AttemptReconnect if shift_pressed || ctrl_pressed => {
-                        self.repeating_line_flip.flip();
-                        self.notifs
-                            .notify_str("Attempting to reconnect! (Loose Checks)", Color::Yellow);
-                        self.serial
-                            .request_reconnect(Some(Reconnections::LooseChecks))
-                            .unwrap();
-                    }
-                    AttemptReconnectPrompt::AttemptReconnect => {
-                        self.repeating_line_flip.flip();
-                        self.notifs
-                            .notify_str("Attempting to reconnect! (Strict Checks)", Color::Yellow);
-                        self.serial
-                            .request_reconnect(Some(Reconnections::StrictChecks))
-                            .unwrap();
-                    }
-                    AttemptReconnectPrompt::Cancel => {
-                        self.menu = Menu::Terminal(TerminalPrompt::None)
-                    }
-                    AttemptReconnectPrompt::OpenPortSettings => {
-                        self.show_popup_menu(ShowPopupAction::ShowPortSettings)
-                    }
+                self.reconnect_prompt_choice(
+                    AttemptReconnectPrompt::try_from(index).unwrap(),
+                    shift_pressed,
+                    ctrl_pressed,
+                );
+            }
+        }
+    }
+    fn disconnect_prompt_choice(
+        &mut self,
+        choice: DisconnectPrompt,
+        shift_pressed: bool,
+        ctrl_pressed: bool,
+    ) {
+        use PortSelectionElement as Pse;
+        match choice {
+            DisconnectPrompt::ExitApp => self.shutdown(),
+            DisconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
+            DisconnectPrompt::OpenPortSettings => {
+                self.show_popup_menu(ShowPopupAction::ShowPortSettings)
+            }
+            DisconnectPrompt::Disconnect if shift_pressed || ctrl_pressed => {
+                // This is intentionally being set true unconditionally here, and also when the event pops.
+                // This is so that I or a user can forcibly trigger the pausing of reconnections/the appearance of the
+                // manual reconnection Esc popup.
+                self.user_broke_connection = true;
+                self.menu = Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt);
+                self.serial.break_connection().unwrap();
 
-                    AttemptReconnectPrompt::BackToPortSelection => {
-                        self.serial.disconnect().unwrap();
-                        // Refresh port listings
-                        self.ports.clear();
-                        self.serial.request_port_scan().unwrap();
+                // let port_status_guard = self.serial.port_status.load();
+                // if port_status_guard.inner.is_healthy() {
+                // } else {
+                // self.notifs
+                // .notify_str("Can't break connection!", Color::Red);
+                // }
+            }
+            DisconnectPrompt::Disconnect => {
+                self.serial.disconnect().unwrap();
+                // Refresh port listings
+                self.ports.clear();
+                self.serial.request_port_scan().unwrap();
 
-                        self.buffer.intentional_disconnect_clear();
-                        // Clear the input box, but keep the user history!
-                        self.user_input.clear();
+                self.buffer.intentional_disconnect_clear();
+                // Clear the input box, but keep the user history!
+                self.user_input.clear();
 
-                        self.menu = Menu::PortSelection(Pse::Ports);
-                    }
-                }
+                self.menu = Menu::PortSelection(Pse::Ports);
+            }
+        }
+    }
+    fn reconnect_prompt_choice(
+        &mut self,
+        choice: AttemptReconnectPrompt,
+        shift_pressed: bool,
+        ctrl_pressed: bool,
+    ) {
+        use PortSelectionElement as Pse;
+        match choice {
+            AttemptReconnectPrompt::ExitApp => self.shutdown(),
+            AttemptReconnectPrompt::AttemptReconnect if shift_pressed && ctrl_pressed => {
+                self.user_broke_connection = false;
+                self.menu = Menu::Terminal(TerminalPrompt::None);
+                self.notifs
+                    .notify_str("Unpausing reconnections!", Color::LightGreen);
+            }
+            AttemptReconnectPrompt::AttemptReconnect if shift_pressed || ctrl_pressed => {
+                self.repeating_line_flip.flip();
+                self.notifs
+                    .notify_str("Attempting to reconnect! (Loose Checks)", Color::Yellow);
+                self.serial
+                    .request_reconnect(Some(Reconnections::LooseChecks))
+                    .unwrap();
+            }
+            AttemptReconnectPrompt::AttemptReconnect => {
+                self.repeating_line_flip.flip();
+                self.notifs
+                    .notify_str("Attempting to reconnect! (Strict Checks)", Color::Yellow);
+                self.serial
+                    .request_reconnect(Some(Reconnections::StrictChecks))
+                    .unwrap();
+            }
+            AttemptReconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
+            AttemptReconnectPrompt::OpenPortSettings => {
+                self.show_popup_menu(ShowPopupAction::ShowPortSettings)
+            }
+
+            AttemptReconnectPrompt::BackToPortSelection => {
+                self.serial.disconnect().unwrap();
+                // Refresh port listings
+                self.ports.clear();
+                self.serial.request_port_scan().unwrap();
+
+                self.buffer.intentional_disconnect_clear();
+                // Clear the input box, but keep the user history!
+                self.user_input.clear();
+
+                self.menu = Menu::PortSelection(Pse::Ports);
             }
         }
     }

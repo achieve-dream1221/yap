@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use crokey::{KeyCombination, crossterm::event::KeyCode};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Rect},
@@ -22,33 +23,65 @@ pub enum Test {
     Cancel,
 }
 
+pub trait PromptKeybind: Clone + strum::VariantArray + strum::EnumProperty {
+    fn from_key_code(value: KeyCode) -> Option<Self> {
+        Self::VARIANTS
+            .into_iter()
+            .find(|v| {
+                let Some(variant_binding) = v.get_str("keybind") else {
+                    return false;
+                };
+                let variant_key_combo: KeyCombination = variant_binding.parse().unwrap();
+                match (value, variant_key_combo.as_letter()) {
+                    (KeyCode::Char(given_char), Some(variant_char)) => given_char == variant_char,
+                    _ => false,
+                }
+                // value == variant_key_combo.as_letter()
+            })
+            .cloned()
+    }
+}
+
 // TODO think about way to do keyboard shortcuts with these
 // https://docs.rs/strum_macros/latest/strum_macros/derive.EnumProperty.html
 // #[derive(Debug, strum::VariantNames, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
 #[derive(
-    Debug, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
+    Debug, Clone, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
 )]
 #[repr(u8)]
 #[strum(serialize_all = "title_case")]
 pub enum DisconnectPrompt {
+    #[strum(props(keybind = "d"))]
     Disconnect,
+    #[strum(props(keybind = "s"))]
     OpenPortSettings,
+    #[strum(props(keybind = "e"))]
     ExitApp,
+    #[strum(props(keybind = "c"))]
     Cancel,
 }
 
+impl PromptKeybind for DisconnectPrompt {}
+
 #[derive(
-    Debug, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
+    Debug, Clone, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
 )]
 #[repr(u8)]
 #[strum(serialize_all = "title_case")]
 pub enum AttemptReconnectPrompt {
+    #[strum(props(keybind = "r"))]
     AttemptReconnect,
+    #[strum(props(keybind = "p"))]
     BackToPortSelection,
+    #[strum(props(keybind = "s"))]
     OpenPortSettings,
+    #[strum(props(keybind = "e"))]
     ExitApp,
+    #[strum(props(keybind = "c"))]
     Cancel,
 }
+
+impl PromptKeybind for AttemptReconnectPrompt {}
 
 // #[derive(
 //     Debug, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
