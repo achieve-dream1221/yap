@@ -1,8 +1,9 @@
 #![deny(unused_must_use)]
 
 use std::{
-    net::TcpStream,
+    net::{SocketAddr, TcpStream},
     sync::{Mutex, mpsc},
+    time::Duration,
 };
 
 use app::{App, CrosstermEvent};
@@ -157,7 +158,9 @@ pub fn initialize_logging(max_level: Level) -> color_eyre::Result<WorkerGuard> {
         .with(fmt_layer);
 
     // Try to connect to tcp_log_listener
-    if let Ok(stream) = TcpStream::connect("127.0.0.1:7331") {
+    let listener_address: SocketAddr = "127.0.0.1:7331".parse().unwrap();
+
+    if let Ok(stream) = TcpStream::connect_timeout(&listener_address, Duration::from_millis(50)) {
         let tcp_layer = tracing_subscriber::fmt::layer()
             .with_writer(Mutex::new(stream))
             // .pretty()
