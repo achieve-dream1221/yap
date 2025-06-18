@@ -54,6 +54,7 @@ struct SerializedRule {
 
 impl ColorRules {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Self {
+        // TODO check for missing file and fill with commented example contents
         let buffer = fs::read_to_string(path.as_ref()).unwrap();
         let ColorRulesFile { regex, literal } = toml::from_str(&buffer).unwrap();
 

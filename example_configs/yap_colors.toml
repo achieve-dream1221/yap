@@ -1,3 +1,14 @@
+# Color Highlight Rule Example: case-insensitive match
+# Example
+# [[regex]] ## type of rule (regex/literal)
+# rule = '(?i)lorem' ## rule contents
+# line = true ## affect the whole line if any match found within
+# color = "cyan" ## ansi/hex color to highlight matches (optional if any below used)
+# censor = false ## if true, replace the matched content (or whole line) with `*`
+# hide = false ## if true, remove the matched content (or whole line) entirely.
+
+# Note: hidden/censored contents are still saved to log files raw.
+
 [[regex]]
 rule = '^\[\s*\d+\]\[D\]\[[^\]:]+(?::\d+)?\]'
 color = "blue"

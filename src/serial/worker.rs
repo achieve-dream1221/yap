@@ -443,6 +443,8 @@ impl SerialWorker {
         Ok(())
     }
 
+    /// A return value of `Ok(())` only means no errors were encountered,
+    /// not that reconnection was successful.
     fn attempt_reconnect(
         &mut self,
         strictness_opt: Option<Reconnections>,

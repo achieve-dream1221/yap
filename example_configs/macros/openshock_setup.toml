@@ -1,4 +1,4 @@
-name = "OpenShock Setup"
+name = "OpenShock Setup" ## name is optional, if missing, will use file name
 
 [[macro]]
 name = "Factory Reset"
@@ -15,13 +15,13 @@ content = "keepalive false"
 
 [[macro]]
 name = "Setup Authtoken"
-content = "authtoken "
-sensitive = true
+content = 'authtoken '
+sensitive = true ## sensitive macro contents are hidden from view in-app
 
 [[macro]]
 name = "Setup Networks"
-content = "networks "
-sensitive = true
+content = 'networks []'
+sensitive = true ## sensitive macro contents are hidden from view in-app
 
 [[macro]]
 name = "CaiX Vib (ID 12345, 0.5s)"

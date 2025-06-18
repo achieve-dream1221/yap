@@ -236,7 +236,7 @@ impl Buffer {
             } else {
                 // self.buflines_iter().count()
                 //
-                // instead inlining some of its functionality instead
+                // inlining some of its functionality instead
                 // to avoid .count()-ing a potentially huge iter (100k+ items)
                 // (especially when wrapping is disabled, when its even more dead simple)
                 // when we can just read the length of a vector

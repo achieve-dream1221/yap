@@ -1,4 +1,10 @@
-name = "Examples"
+# [[macro]]
+# name = "My Cool Macro" ## name in UI and for assigning macro to keybind
+# category = "Cool Guy Macros" ## (optional) group macros in the UI
+# content = "ping 1.1.1.1" ## content to send
+# line_ending = "\n\n\n" ## (optional) if not provided, uses the configured Macro line ending in Port Settings
+
+name = "Examples" ## name is optional, if missing, will use file name
 
 [[macro]]
 name = "Backspace"

@@ -1,4 +1,4 @@
-name = "OpenShock"
+name = "OpenShock" ## name is optional, if missing, will use file name
 
 [[macro]]
 name = "Version"
