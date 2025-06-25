@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["macros","logging","espflash"]
+default = ["macros","espflash","defmt"]
 # Allow flashing ESP32 targets with binary and ELF files
 espflash = ["dep:espflash"]
 logging = []
-# defmt = [] TODO
+defmt = ["dep:defmt-decoder", "dep:defmt-parser"]
 macros = []
 portable = []
 
@@ -26,6 +26,9 @@ color-eyre = "0.6.3"
 compact_str = { version = "0.9.0", features = ["serde"] }
 crokey = { version = "1.1.2", features = ["serde"] }
 crossbeam = "0.8.4"
+# defmt-decoder = { version = "1.0.0", optional = true }
+defmt-decoder = { git = "https://github.com/knurling-rs/defmt", package = "defmt-decoder", optional = true, rev = "d52b9908c175497d46fc527f4f8dfd6278744f09" }
+defmt-parser = { git = "https://github.com/knurling-rs/defmt", package = "defmt-parser", optional = true, rev = "d52b9908c175497d46fc527f4f8dfd6278744f09" }
 # crokey = { path = "../crokey", features = ["serde"] }
 derivative = "2.2.0"
 directories = "6.0.0"
@@ -43,6 +46,7 @@ int-enum = "1.2.0"
 itertools = "0.14.0"
 libc = "0.2.169"
 memchr = "2.7.4"
+nom = "7.1"
 num-integer = "0.1.46"
 # log = "0.4.25"
 # num_enum = "0.7.3"

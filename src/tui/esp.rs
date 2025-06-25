@@ -38,6 +38,8 @@ pub struct EspBins {
     // pub partition_table: Option<PathBuf>,
     pub no_skip: bool,
     pub no_verify: bool,
+    // pub defmt: bool,
+    // reload even if watching is off!
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +53,7 @@ pub struct EspElf {
     pub no_skip: bool,
     pub no_verify: bool,
     pub ram: bool,
+    // pub defmt: bool,
 }
 
 impl<'de> serde::Deserialize<'de> for EspElf {

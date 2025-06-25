@@ -67,7 +67,7 @@ impl std::fmt::Display for ActionOption {
 
                 #[cfg(feature = "espflash")]
                 Action::EspFlashProfile(profile) => write!(f, "[ESP] {profile}"),
-                #[cfg(feature = "logging")]
+
                 Action::Pause(duration) => write!(f, "Pause: {duration:?}"),
             },
             ActionOption::Unrecognized(unk) => write!(f, "?{unk}?"),

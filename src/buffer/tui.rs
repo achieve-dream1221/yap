@@ -37,10 +37,11 @@ impl Buffer {
         } else {
             Either::Right(interleave_by(
                 self.styled_lines.rx.iter(),
-                self.styled_lines
-                    .tx
-                    .iter()
-                    .filter(|l| self.rendering.echo_user_input.filter_user_line(l)),
+                self.styled_lines.tx.iter().filter(|l| {
+                    self.rendering
+                        .echo_user_input
+                        .filter_user_line(&l.line_type)
+                }),
                 |port, user| match port.raw_buffer_index.cmp(&user.raw_buffer_index) {
                     Ordering::Equal => port.timestamp <= user.timestamp,
                     Ordering::Less => true,
@@ -249,7 +250,11 @@ impl Buffer {
                             .styled_lines
                             .tx
                             .iter()
-                            .filter(|l| self.rendering.echo_user_input.filter_user_line(l))
+                            .filter(|l| {
+                                self.rendering
+                                    .echo_user_input
+                                    .filter_user_line(&l.line_type)
+                            })
                             .count()
                 }
             }
@@ -902,5 +907,46 @@ impl Widget for &mut Buffer {
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"));
         scrollbar.render(area, buf, &mut self.state.scrollbar_state);
+    }
+}
+
+pub mod defmt {
+    use defmt_parser::Level;
+    use ratatui::prelude::*;
+
+    pub fn defmt_level_color(level: Option<Level>) -> Color {
+        match level {
+            Some(Level::Error) => Color::Red,
+            Some(Level::Warn) => Color::Yellow,
+            Some(Level::Info) => Color::Green,
+            Some(Level::Debug) => Color::Blue,
+            Some(Level::Trace) => Color::Magenta,
+            None => Color::Gray,
+        }
+    }
+
+    fn defmt_level_span(level: Option<Level>) -> Span<'static> {
+        match level {
+            Some(Level::Error) => Span::styled("ERROR", defmt_level_color(level)),
+            Some(Level::Warn) => Span::styled("WARN", defmt_level_color(level)),
+            Some(Level::Info) => Span::styled("INFO", defmt_level_color(level)),
+            Some(Level::Debug) => Span::styled("DEBUG", defmt_level_color(level)),
+            Some(Level::Trace) => Span::styled("TRACE", defmt_level_color(level)),
+            None => Span::styled("???", defmt_level_color(level)),
+        }
+    }
+
+    pub fn defmt_level_bracketed(level: Option<Level>) -> Vec<Span<'static>> {
+        let end_bracket = match level {
+            None => "]   ",
+            Some(Level::Info) | Some(Level::Warn) => "]  ",
+            Some(_) => "] ",
+        };
+        let dark_gray = Style::new().dark_gray();
+        vec![
+            Span::styled("[", dark_gray),
+            defmt_level_span(level),
+            Span::styled(end_bracket, dark_gray),
+        ]
     }
 }

@@ -11,8 +11,11 @@ use ratatui::{
 use ratatui_macros::{line, span};
 use tracing::debug;
 
+#[cfg(feature = "defmt")]
+use defmt_parser::Level;
+
 use crate::{
-    buffer::LineEnding,
+    buffer::{LineEnding, RangeSlice},
     settings::Rendering,
     traits::{ByteSuffixCheck, FirstChars, LineHelpers},
 };
@@ -32,6 +35,8 @@ pub struct BufLine {
 
     pub raw_buffer_index: usize,
     pub line_type: LineType,
+    // #[cfg(feature = "defmt")]
+    // defmt_level: Option<Level>,
 }
 
 // impl PartialEq for BufLine {
@@ -68,8 +73,36 @@ pub(super) enum LineType {
     User {
         is_bytes: bool,
         is_macro: bool,
+        escaped_line_ending: Option<CompactString>,
         reloggable_raw: Vec<u8>,
     },
+    #[cfg(feature = "defmt")]
+    PortDefmt {
+        level: Option<defmt_parser::Level>,
+        location: Option<FrameLocation>,
+        device_timestamp: Option<CompactString>,
+        // /// Includes any potential prefix or terminator
+        // total_frame_len: usize,
+    },
+}
+
+#[cfg(feature = "defmt")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameLocation {
+    // Original type is u64 but I'm not storing that.
+    line: u32,
+    module: CompactString,
+    file: CompactString,
+}
+
+impl From<&defmt_decoder::Location> for FrameLocation {
+    fn from(value: &defmt_decoder::Location) -> Self {
+        Self {
+            line: value.line.try_into().expect("line larger than u32::MAX??"),
+            module: value.module.to_compact_string(),
+            file: value.file.display().to_compact_string(),
+        }
+    }
 }
 
 impl LineType {
@@ -90,13 +123,11 @@ impl LineType {
 
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
-    pub fn new_with_line(
+    fn new(
         mut line: Line<'static>,
-        raw_value: &[u8],
-        raw_buffer_index: usize,
+        raw_fatty: RangeSlice,
         area_width: u16,
         rendering: &Rendering,
-        line_ending: &LineEnding,
         now: DateTime<Local>,
         line_type: LineType,
     ) -> Self {
@@ -104,57 +135,172 @@ impl BufLine {
 
         line.remove_unsavory_chars();
 
-        // if !line.is_styled() && !line.is_empty() {
-        //     assert!(line.spans.len() <= 1);
-        //     determine_color(&mut line, &[]);
-        // }
-
-        let index_info = make_index_info(raw_value, raw_buffer_index, &line_type);
+        let index_info = make_index_info(&raw_fatty);
 
         let mut bufline = Self {
             timestamp_str: now.format(time_format).to_compact_string(),
             timestamp: now,
             index_info,
             value: line,
-            raw_buffer_index,
+            raw_buffer_index: raw_fatty.range.start,
             rendered_line_height: 0,
             line_type,
         };
-        bufline.populate_line_ending(raw_value, line_ending);
+        // bufline.populate_line_ending(raw_value, line_ending);
         bufline.update_line_height(area_width, rendering);
         bufline
     }
-    pub fn populate_line_ending(&mut self, full_line_slice: &[u8], line_ending: &LineEnding) {
-        match &mut self.line_type {
-            LineType::Port {
-                escaped_line_ending,
-            } => {
-                if escaped_line_ending.is_some() {
-                    unreachable!();
-                }
-                if full_line_slice.has_line_ending(line_ending) {
-                    _ = escaped_line_ending
-                        .insert(line_ending.as_bytes().escape_bytes().to_compact_string());
-                }
-            }
-            // TODO?
-            LineType::User { .. } => (),
-        }
+    pub fn port_text_line(
+        line: Line<'static>,
+        raw_fatty: RangeSlice,
+        area_width: u16,
+        rendering: &Rendering,
+        line_ending: &LineEnding,
+        now: DateTime<Local>,
+    ) -> Self {
+        let line_type = LineType::Port {
+            escaped_line_ending: line_ending.escaped_from(raw_fatty.slice),
+        };
+
+        Self::new(
+            line, raw_fatty, area_width, rendering, // line_ending,
+            now, line_type,
+        )
     }
+    #[cfg(feature = "defmt")]
+    pub fn port_defmt_line(
+        line: Line<'static>,
+        raw_fatty: RangeSlice,
+        area_width: u16,
+        rendering: &Rendering,
+        level: Option<defmt_parser::Level>,
+        device_timestamp: Option<&dyn std::fmt::Display>,
+        location: Option<FrameLocation>,
+        now: DateTime<Local>,
+    ) -> Self {
+        let line_type = LineType::PortDefmt {
+            level,
+            device_timestamp: device_timestamp.map(|ts| format_compact!("[{ts}] ")),
+            location,
+        };
+
+        Self::new(
+            line, raw_fatty, area_width, rendering, // line_ending,
+            now, line_type,
+        )
+    }
+    pub fn user_line(
+        line: Line<'static>,
+        buffer_index: usize,
+        area_width: u16,
+        rendering: &Rendering,
+        line_ending: &LineEnding,
+        now: DateTime<Local>,
+        is_bytes: bool,
+        is_macro: bool,
+        reloggable_raw: &[u8],
+    ) -> Self {
+        let line_type = LineType::User {
+            is_bytes,
+            is_macro,
+            reloggable_raw: reloggable_raw.to_vec(),
+            escaped_line_ending: line_ending.escaped_from(reloggable_raw),
+        };
+
+        Self::new(
+            line,
+            RangeSlice {
+                range: buffer_index..buffer_index,
+                slice: &[],
+            },
+            area_width,
+            rendering,
+            now,
+            line_type,
+        )
+    }
+    // #[cfg(feature = "defmt")]
+    // pub fn from_defmt_frame(
+    //     mut line: Line<'static>,
+    //     raw_value: &[u8],
+    //     raw_buffer_index: usize,
+    //     area_width: u16,
+    //     rendering: &Rendering,
+    //     now: DateTime<Local>,
+    // ) -> Self {
+    //     let time_format = "[%H:%M:%S%.3f] ";
+
+    //     line.remove_unsavory_chars();
+
+    //     // if !line.is_styled() && !line.is_empty() {
+    //     //     assert!(line.spans.len() <= 1);
+    //     //     determine_color(&mut line, &[]);
+    //     // }
+
+    //     let index_info = make_index_info(raw_value, raw_buffer_index, &line_type);
+
+    //     let mut bufline = Self {
+    //         timestamp_str: now.format(time_format).to_compact_string(),
+    //         timestamp: now,
+    //         index_info,
+    //         value: line,
+    //         raw_buffer_index,
+    //         rendered_line_height: 0,
+    //         line_type,
+    //     };
+    //     bufline.update_line_height(area_width, rendering);
+    //     bufline
+    // }
+    // pub fn populate_line_ending(&mut self, full_line_slice: &[u8], line_ending: &LineEnding) {
+    //     match &mut self.line_type {
+    //         LineType::Port {
+    //             escaped_line_ending,
+    //         } => {
+    //             if escaped_line_ending.is_some() {
+    //                 unreachable!();
+    //             }
+    //             if full_line_slice.has_line_ending(line_ending) {
+    //                 _ = escaped_line_ending
+    //                     .insert(line_ending.as_bytes().escape_bytes().to_compact_string());
+    //             }
+    //         }
+    //         // TODO?
+    //         LineType::User { .. } => (),
+    //         LineType::PortDefmt { .. } => (),
+    //     }
+    // }
     pub fn update_line(
         &mut self,
         line: Line<'static>,
-        full_line_slice: &[u8],
+        fatty: RangeSlice,
         area_width: u16,
         rendering: &Rendering,
         line_ending: &LineEnding,
     ) {
-        self.index_info = make_index_info(full_line_slice, self.raw_buffer_index, &self.line_type);
+        assert_eq!(
+            self.line_type,
+            LineType::Port {
+                escaped_line_ending: None
+            }
+        );
+
+        self.index_info = make_index_info(&fatty);
 
         self.value = line;
         self.value.remove_unsavory_chars();
 
-        self.populate_line_ending(full_line_slice, line_ending);
+        let LineType::Port {
+            escaped_line_ending,
+        } = &mut self.line_type
+        else {
+            unreachable!();
+        };
+
+        if let Some(escaped) = line_ending.escaped_from(fatty.slice) {
+            _ = escaped_line_ending.insert(escaped);
+        };
+
+        // self.populate_line_ending(full_line_slice, line_ending);
 
         self.update_line_height(area_width, rendering);
     }
@@ -177,36 +323,79 @@ impl BufLine {
     pub fn as_line(&self, rendering: &Rendering) -> Line {
         let borrowed_spans = self.value.borrowed_spans_iter();
 
+        let dark_gray = Style::new().dark_gray();
+
         let indices_and_len = std::iter::once(Span::styled(
             Cow::Borrowed(self.index_info.as_ref()),
-            Style::new().dark_gray(),
+            dark_gray,
         ))
         .filter(|_| rendering.show_indices);
 
         let timestamp = std::iter::once(Span::styled(
             Cow::Borrowed(self.timestamp_str.as_ref()),
-            Style::new().dark_gray(),
+            dark_gray,
         ))
         .filter(|_| rendering.timestamps);
 
-        let line_ending = std::iter::once(&self.line_type).filter_map(|lt| match lt {
-            _ if !rendering.show_line_ending => None,
-            LineType::Port {
-                escaped_line_ending: Some(line_ending),
-            } => Some(Span::styled(
-                Cow::Borrowed(line_ending.as_str()),
-                Style::new().dark_gray(),
-            )),
-            LineType::Port {
-                escaped_line_ending: None,
-            } => None,
-            LineType::User { .. } => None,
+        #[cfg(feature = "defmt")]
+        let defmt_device_timestamp = std::iter::once(&self.line_type).filter_map(|lt| match lt {
+            LineType::PortDefmt {
+                device_timestamp: Some(device_timestamp),
+                ..
+            } => Some(Span::styled(device_timestamp, dark_gray)),
+            _ => None,
         });
 
-        let spans = timestamp
-            .chain(indices_and_len)
-            .chain(borrowed_spans)
-            .chain(line_ending);
+        #[cfg(feature = "defmt")]
+        let defmt_level = std::iter::once(&self.line_type)
+            .filter_map(|lt| match lt {
+                LineType::PortDefmt { level, .. } => {
+                    Some(super::tui::defmt::defmt_level_bracketed(*level))
+                }
+                _ => None,
+            })
+            .flatten();
+
+        #[cfg(feature = "defmt")]
+        let defmt_location = std::iter::once(&self.line_type).filter_map(|lt| match lt {
+            LineType::PortDefmt {
+                location: Some(FrameLocation { line, module, file }),
+                ..
+            } => Some(Span::styled(
+                format!(" {module} @ {file}::{line}"),
+                Style::new().dark_gray(),
+            )),
+            _ => None,
+        });
+
+        // let line_ending = std::iter::once(&self.line_type).filter_map(|lt| match lt {
+        //     _ if !rendering.show_line_ending => None,
+        //     LineType::Port {
+        //         escaped_line_ending: Some(line_ending),
+        //     } => Some(Span::styled(Cow::Borrowed(line_ending.as_str()), dark_gray)),
+        //     LineType::Port {
+        //         escaped_line_ending: None,
+        //     } => None,
+        //     LineType::User { .. } => None,
+        //     LineType::PortDefmt { .. } => None,
+        // });
+
+        let spans = timestamp;
+
+        #[cfg(feature = "defmt")]
+        let spans = spans.chain(defmt_device_timestamp);
+
+        let spans = spans.chain(indices_and_len);
+
+        #[cfg(feature = "defmt")]
+        let spans = spans.chain(defmt_level);
+
+        let spans= spans.chain(borrowed_spans)
+            // .chain(line_ending)
+        ;
+
+        #[cfg(feature = "defmt")]
+        let spans = spans.chain(defmt_location);
 
         Line::from_iter(spans)
     }
@@ -217,23 +406,21 @@ impl BufLine {
 }
 
 fn make_index_info(
-    full_line_slice: &[u8],
-    start_index: usize,
-    line_type: &LineType,
+    range: &RangeSlice,
+    // line_type: &LineType,
 ) -> CompactString {
-    if let LineType::User { .. } = line_type {
-        format_compact!(
-            "({start:06}->{end:06}, {len:3}) ",
-            start = start_index,
-            end = start_index + full_line_slice.len(),
-            len = full_line_slice.len(),
-        )
-    } else {
-        format_compact!(
-            "({start:06}..{end:06}, {len:3}) ",
-            start = start_index,
-            end = start_index + full_line_slice.len(),
-            len = full_line_slice.len(),
-        )
-    }
+    // if let LineType::User { .. } = line_type {
+    //     format_compact!(
+    //         "({start:06}->{end:06}, {len:3}) ",
+    //         start = start_index,
+    //         end = start_index + full_line_slice.len(),
+    //         len = full_line_slice.len(),
+    //     )
+    // } else {
+    let start = range.range.start;
+    let end = range.range.end;
+    let len = range.slice.len();
+    debug_assert_eq!(end - start, len);
+    format_compact!("({start:06}..{end:06}, {len:3}) ")
+    // }
 }

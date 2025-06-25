@@ -48,6 +48,7 @@ pub enum LoggingCommand {
     RequestStop,
     // RequestToggle(DateTime<Local>, SerialPortInfo),
     RequestClearFiles,
+    // InvalidateAndResetClearIndices,
     RxBytes(DateTime<Local>, Vec<u8>),
     TxBytes {
         timestamp: DateTime<Local>,

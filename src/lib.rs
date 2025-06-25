@@ -227,11 +227,20 @@ fn get_user_dir() -> Option<std::path::PathBuf> {
 }
 
 #[macro_export]
-/// Macro to check if a field has changed between two objects.
+/// Macro to check if any field has changed between two objects.
 ///
-/// Usage: `changed!(old, new, field_name)`
+/// Usage: `changed!(old, new, field_name1, field_name2, ...)`
 macro_rules! changed {
+    // I technically don't need to keep the single field version,
+    // but rust-analyzer doesn't suggest field names on the multi-field version,
+    // and I wanted to keep the ergonomics of using LSP-suggested names
+    // instead of going to the type myself.
     ($a:expr, $b:expr, $field:ident) => {
         ($a.$field != $b.$field)
+    };
+    ($a:expr, $b:expr, $($field:ident),+) => {
+        {
+            false $(|| $a.$field != $b.$field)+
+        }
     };
 }

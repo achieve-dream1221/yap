@@ -338,6 +338,7 @@ impl App {
             settings.rendering.clone(),
             #[cfg(feature = "logging")]
             settings.logging.clone(),
+            #[cfg(feature = "logging")]
             tx.clone(),
         );
         // debug!("{buffer:#?}");
@@ -391,7 +392,8 @@ impl App {
         // Get initial size of buffer.
         self.buffer.update_terminal_size(&mut terminal)?;
         let mut max_draw = Duration::default();
-        let mut max_handle = Duration::default();
+        let mut max_rx_handle = Duration::default();
+        let mut max_event_handle = Duration::default();
         while self.is_running() {
             let start = Instant::now();
             self.draw(&mut terminal)?;
@@ -421,18 +423,22 @@ impl App {
                 Err(crossbeam::channel::TryRecvError::Disconnected) => todo!(),
             }
 
+            let end2 = start2.elapsed();
+            let start3 = Instant::now();
+
             match self.rx.try_recv() {
                 Ok(event) => self.handle_event(event, &mut terminal)?,
                 Err(crossbeam::channel::TryRecvError::Empty) => (),
                 Err(crossbeam::channel::TryRecvError::Disconnected) => todo!(),
             }
 
-            let end2 = start2.elapsed();
-            max_handle = max_handle.max(end2);
-            debug!(
-                "Frame took {:?} to draw (max: {max_draw:?}), {:?} to handle (max: {max_handle:?}) ",
-                end1, end2
-            );
+            let end3 = start3.elapsed();
+            max_rx_handle = max_rx_handle.max(end2);
+            max_event_handle = max_event_handle.max(end3);
+            // debug!(
+            //     "Frame took {:?} to draw (max: {max_draw:?}), {:?} to handle RX (max: {max_rx_handle:?}), {:?} to handle event (max: {max_event_handle:?}) ",
+            //     end1, end2, end3
+            // );
             // debug!("{msg:?}");
 
             // Don't wait for another loop iteration to start shutting down workers.
@@ -461,6 +467,13 @@ impl App {
     fn handle_event(&mut self, event: Event, terminal: &mut Terminal<impl Backend>) -> Result<()> {
         match event {
             Event::Quit => self.shutdown(),
+
+            Event::RxBuffer(mut data) => {
+                self.buffer.fresh_rx_bytes(&mut data);
+                self.buffer.scroll_by(0);
+
+                self.repeating_line_flip.flip();
+            }
 
             Event::Crossterm(CrosstermEvent::Resize) => {
                 self.buffer.update_terminal_size(terminal)?;
@@ -567,12 +580,6 @@ impl App {
                         );
                     }
                 }
-            }
-            Event::RxBuffer(mut data) => {
-                self.buffer.append_rx_bytes(&mut data);
-                self.buffer.scroll_by(0);
-
-                self.repeating_line_flip.flip();
             }
             Event::Serial(SerialEvent::Ports(ports)) => {
                 self.ports = ports;
@@ -2717,7 +2724,7 @@ impl App {
                     .borders(Borders::TOP)
                     .border_style(Style::from(popup_color));
                 frame.render_widget(
-                    Line::raw("Powered by esp-rs/espflash!")
+                    Line::raw("Powered by esp-rs/espflash v3.3.0!")
                         .all_spans_styled(Color::DarkGray.into())
                         .centered(),
                     line_area,
