@@ -26,7 +26,17 @@ pub struct DefmtDecoder {
 pub mod frame_delimiting;
 
 #[derive(Debug, thiserror::Error)]
-pub enum DefmtError {
+pub enum DefmtPacketError {
+    #[error("no defmt table loaded")]
+    NoDecoder,
+    #[error("rzcobs decompress failed")]
+    RzcobsDecompress,
+    #[error("packet decode failed")]
+    DefmtDecode,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DefmtTableError {
     #[error("defmt data missing")]
     DataMissing,
     #[error("locations get failed")]
@@ -43,18 +53,18 @@ pub enum DefmtError {
 // )
 
 impl DefmtDecoder {
-    // pub fn from_elf_bytes(bytes: &[u8]) -> Result<Self, DefmtError> {
-    pub fn from_elf_bytes<P: AsRef<std::path::Path>>(path: P) -> Result<Self, DefmtError> {
+    // pub fn from_elf_bytes(bytes: &[u8]) -> Result<Self, DefmtTableError> {
+    pub fn from_elf_bytes<P: AsRef<std::path::Path>>(path: P) -> Result<Self, DefmtTableError> {
         let path = path.as_ref().to_owned();
         let bytes = fs::read(&path).unwrap();
 
         let table = Table::parse(&bytes)
-            .map_err(|e| DefmtError::ParseFail(e.to_string()))?
-            .ok_or_else(|| DefmtError::DataMissing)?;
+            .map_err(|e| DefmtTableError::ParseFail(e.to_string()))?
+            .ok_or_else(|| DefmtTableError::DataMissing)?;
 
         let locs = table
             .get_locations(&bytes)
-            .map_err(|_| DefmtError::Locations)?;
+            .map_err(|_| DefmtTableError::Locations)?;
 
         // TODO notify in UI
         let locations = if !table.is_empty() && locs.is_empty() {
@@ -90,32 +100,6 @@ impl DefmtDecoder {
 //
 // I don't intend on keeping this exactly like they have it forever, it's just a good starting-off point.
 
-#[derive(Debug, PartialEq)]
-pub enum DefmtDelimitedSlice<'a> {
-    /// Used by framed inputs, such as from esp-println.
-    DefmtRzcobs {
-        /// Complete original slice, containing prefix and terminator.
-        raw: &'a [u8],
-        /// (Supposedly) rzcobs packet, stripped of prefix and terminator.
-        inner: &'a [u8],
-    },
-    // /// (Supposedly) rzcobs packet, stripped of any prefix and terminator.
-    // DefmtRzcobs(&'a [u8]),
-    // // if ELF has raw encoding enabled
-    // // DefmtRaw(&'a [u8]),
-    /// Non defmt input, either junk data or raw ASCII/UTF-8 logs
-    Raw(&'a [u8]),
-}
-
-impl DefmtDelimitedSlice<'_> {
-    pub fn raw_len(&self) -> usize {
-        match self {
-            DefmtDelimitedSlice::DefmtRzcobs { raw, .. } => raw.len(),
-            DefmtDelimitedSlice::Raw(raw) => raw.len(),
-        }
-    }
-}
-
 // #[derive(Debug)]
 // pub struct FrameDelimiter {
 //     buffer: Vec<u8>,
@@ -123,8 +107,6 @@ impl DefmtDelimitedSlice<'_> {
 // }
 
 // Framing info added by esp-println
-pub const FRAME_START: &[u8] = &[0xFF, 0x00];
-pub const FRAME_END: &[u8] = &[0x00];
 
 // impl FrameDelimiter {
 //     pub fn new() -> Self {

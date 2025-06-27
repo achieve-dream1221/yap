@@ -130,62 +130,54 @@ impl LineType {
     }
 }
 
+pub struct BufLineKit<'a> {
+    pub full_range_slice: RangeSlice<'a>,
+    pub area_width: u16,
+    pub render: RenderSettings<'a>,
+    pub timestamp: DateTime<Local>,
+}
+
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
-    fn new(
-        mut line: Line<'static>,
-        raw_fatty: RangeSlice,
-        area_width: u16,
-        rendering: RenderSettings,
-        now: DateTime<Local>,
-        line_type: LineType,
-    ) -> Self {
+    fn new(mut line: Line<'static>, kit: BufLineKit, line_type: LineType) -> Self {
         let time_format = "[%H:%M:%S%.3f] ";
 
         line.remove_unsavory_chars();
 
-        let index_info = make_index_info(&raw_fatty);
+        let index_info = make_index_info(&kit.full_range_slice);
+
+        let timestamp = kit.timestamp;
 
         let mut bufline = Self {
-            timestamp_str: now.format(time_format).to_compact_string(),
-            timestamp: now,
+            timestamp_str: timestamp.format(time_format).to_compact_string(),
+            timestamp,
             index_info,
             value: line,
-            raw_buffer_index: raw_fatty.range.start,
+            raw_buffer_index: kit.full_range_slice.range.start,
             rendered_line_height: 0,
             line_type,
         };
         // bufline.populate_line_ending(raw_value, line_ending);
-        bufline.update_line_height(area_width, rendering);
+        bufline.update_line_height(kit.area_width, kit.render);
         bufline
     }
-    pub fn port_text_line(
-        line: Line<'static>,
-        raw_fatty: RangeSlice,
-        area_width: u16,
-        rendering: RenderSettings,
-        line_ending: &LineEnding,
-        now: DateTime<Local>,
-    ) -> Self {
+    pub fn port_text_line(line: Line<'static>, kit: BufLineKit, line_ending: &LineEnding) -> Self {
         let line_type = LineType::Port {
-            escaped_line_ending: line_ending.escaped_from(raw_fatty.slice),
+            escaped_line_ending: line_ending.escaped_from(kit.full_range_slice.slice),
         };
 
         Self::new(
-            line, raw_fatty, area_width, rendering, // line_ending,
-            now, line_type,
+            line, kit, // line_ending,
+            line_type,
         )
     }
     #[cfg(feature = "defmt")]
     pub fn port_defmt_line(
         line: Line<'static>,
-        raw_fatty: RangeSlice,
-        area_width: u16,
-        rendering: RenderSettings,
+        kit: BufLineKit,
         level: Option<defmt_parser::Level>,
         device_timestamp: Option<&dyn std::fmt::Display>,
         location: Option<FrameLocation>,
-        now: DateTime<Local>,
     ) -> Self {
         let line_type = LineType::PortDefmt {
             level,
@@ -194,17 +186,14 @@ impl BufLine {
         };
 
         Self::new(
-            line, raw_fatty, area_width, rendering, // line_ending,
-            now, line_type,
+            line, kit, // line_ending,
+            line_type,
         )
     }
     pub fn user_line(
         line: Line<'static>,
-        buffer_index: usize,
-        area_width: u16,
-        rendering: RenderSettings,
+        kit: BufLineKit,
         line_ending: &LineEnding,
-        now: DateTime<Local>,
         is_bytes: bool,
         is_macro: bool,
         reloggable_raw: &[u8],
@@ -216,76 +205,10 @@ impl BufLine {
             escaped_line_ending: line_ending.escaped_from(reloggable_raw),
         };
 
-        Self::new(
-            line,
-            RangeSlice {
-                range: buffer_index..buffer_index,
-                slice: &[],
-            },
-            area_width,
-            rendering,
-            now,
-            line_type,
-        )
+        Self::new(line, kit, line_type)
     }
-    // #[cfg(feature = "defmt")]
-    // pub fn from_defmt_frame(
-    //     mut line: Line<'static>,
-    //     raw_value: &[u8],
-    //     raw_buffer_index: usize,
-    //     area_width: u16,
-    //     rendering: &Rendering,
-    //     now: DateTime<Local>,
-    // ) -> Self {
-    //     let time_format = "[%H:%M:%S%.3f] ";
 
-    //     line.remove_unsavory_chars();
-
-    //     // if !line.is_styled() && !line.is_empty() {
-    //     //     assert!(line.spans.len() <= 1);
-    //     //     determine_color(&mut line, &[]);
-    //     // }
-
-    //     let index_info = make_index_info(raw_value, raw_buffer_index, &line_type);
-
-    //     let mut bufline = Self {
-    //         timestamp_str: now.format(time_format).to_compact_string(),
-    //         timestamp: now,
-    //         index_info,
-    //         value: line,
-    //         raw_buffer_index,
-    //         rendered_line_height: 0,
-    //         line_type,
-    //     };
-    //     bufline.update_line_height(area_width, rendering);
-    //     bufline
-    // }
-    // pub fn populate_line_ending(&mut self, full_line_slice: &[u8], line_ending: &LineEnding) {
-    //     match &mut self.line_type {
-    //         LineType::Port {
-    //             escaped_line_ending,
-    //         } => {
-    //             if escaped_line_ending.is_some() {
-    //                 unreachable!();
-    //             }
-    //             if full_line_slice.has_line_ending(line_ending) {
-    //                 _ = escaped_line_ending
-    //                     .insert(line_ending.as_bytes().escape_bytes().to_compact_string());
-    //             }
-    //         }
-    //         // TODO?
-    //         LineType::User { .. } => (),
-    //         LineType::PortDefmt { .. } => (),
-    //     }
-    // }
-    pub fn update_line(
-        &mut self,
-        line: Line<'static>,
-        fatty: RangeSlice,
-        area_width: u16,
-        rendering: RenderSettings,
-        line_ending: &LineEnding,
-    ) {
+    pub fn update_line(&mut self, line: Line<'static>, kit: BufLineKit, line_ending: &LineEnding) {
         assert_eq!(
             self.line_type,
             LineType::Port {
@@ -293,7 +216,7 @@ impl BufLine {
             }
         );
 
-        self.index_info = make_index_info(&fatty);
+        self.index_info = make_index_info(&kit.full_range_slice);
 
         self.value = line;
         self.value.remove_unsavory_chars();
@@ -305,13 +228,13 @@ impl BufLine {
             unreachable!();
         };
 
-        if let Some(escaped) = line_ending.escaped_from(fatty.slice) {
+        if let Some(escaped) = line_ending.escaped_from(&kit.full_range_slice.slice) {
             _ = escaped_line_ending.insert(escaped);
         };
 
         // self.populate_line_ending(full_line_slice, line_ending);
 
-        self.update_line_height(area_width, rendering);
+        self.update_line_height(kit.area_width, kit.render);
     }
 
     pub fn update_line_height(&mut self, area_width: u16, rendering: RenderSettings) -> usize {
