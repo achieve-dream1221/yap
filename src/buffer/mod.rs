@@ -23,10 +23,12 @@ use tracing::{debug, error, info, warn};
 #[cfg(feature = "defmt")]
 use crate::buffer::defmt::DefmtDecoder;
 
+#[cfg(feature = "defmt")]
+use crate::settings::Defmt;
 use crate::{
     app::Event,
     buffer::{
-        buf_line::FrameLocation,
+        buf_line::{FrameLocation, RenderSettings},
         defmt::{frame_delimiting::esp_defmt_delimit, rzcobs_decode},
         tui::COLOR_RULES_PATH,
     },
@@ -387,17 +389,6 @@ impl RawBuffer {
 
         // self.raw.consumed_up_to != self.raw.inner.len()
     }
-    fn visible_tx_at(&self, index: usize, styled_lines: &StyledLines, user_echo: UserEcho) -> bool {
-        let tx = &styled_lines.tx;
-
-        if let Some(range) = equal_range(&tx, &index, |b| b.raw_buffer_index) {
-            tx[range]
-                .iter()
-                .any(|b| user_echo.filter_user_line(&b.line_type))
-        } else {
-            false
-        }
-    }
 }
 
 struct StyledLines {
@@ -570,7 +561,9 @@ pub struct Buffer {
     #[cfg(feature = "logging")]
     log_settings: Logging,
     #[cfg(feature = "defmt")]
-    defmt_decoder: Option<DefmtDecoder>,
+    pub defmt_decoder: Option<DefmtDecoder>,
+    #[cfg(feature = "defmt")]
+    defmt_settings: Defmt,
     // #[cfg(feature = "defmt")]
     // frame_delimiter: FrameDelimiter,
 }
@@ -627,6 +620,7 @@ impl Buffer {
         rendering: Rendering,
         #[cfg(feature = "logging")] logging: Logging,
         #[cfg(feature = "logging")] event_tx: Sender<Event>,
+        #[cfg(feature = "defmt")] defmt: Defmt,
     ) -> Self {
         let line_ending: LineEnding = line_ending.into();
         #[cfg(feature = "logging")]
@@ -663,14 +657,9 @@ impl Buffer {
             #[cfg(feature = "logging")]
             log_settings: logging,
             #[cfg(feature = "defmt")]
-            defmt_decoder: Some(
-                DefmtDecoder::from_elf_bytes(include_bytes!(
-                    "/home/tony/git/yap/defmt-meow-no-wire-debug"
-                ))
-                .unwrap(),
-            ),
-            // #[cfg(feature = "defmt")]
-            // frame_delimiter: FrameDelimiter::new(),
+            defmt_decoder: None,
+            #[cfg(feature = "defmt")]
+            defmt_settings: defmt,
         }
     }
     // pub fn append_str(&mut self, str: &str) {
@@ -725,7 +714,7 @@ impl Buffer {
             line,
             self.raw.inner.len(),
             self.last_terminal_size.width,
-            &self.rendering,
+            self.line_render_settings(),
             &line_ending,
             now,
             true,
@@ -812,7 +801,7 @@ impl Buffer {
                 line,
                 self.raw.inner.len(),
                 self.last_terminal_size.width,
-                &self.rendering,
+                self.line_render_settings(),
                 &line_ending,
                 now,
                 false,
@@ -881,15 +870,28 @@ impl Buffer {
                     //     continue;
                     // }
 
-                    let mut failed_decode = || {
-                        let mut text = String::from("Couldn't decode defmt rzcobs packet: ");
+                    #[derive(Debug)]
+                    enum DecodeFailReason {
+                        NoDecoder,
+                        RzcobsDecompress,
+                        DefmtDecode,
+                    }
+
+                    let mut failed_decode = |reason: DecodeFailReason| {
+                        let mut text =
+                            format!("Couldn't decode defmt rzcobs packet ({reason:?}): ");
                         text.extend(inner.iter().map(|b| format!("{b:02X}")));
+
+                        let render_settings = RenderSettings {
+                            rendering: &self.rendering,
+                            defmt: &self.defmt_settings,
+                        };
 
                         self.styled_lines.rx.push(BufLine::port_text_line(
                             Line::raw(text),
                             unsafe { RangeSlice::from_parent_and_child(&self.raw.inner, raw) },
                             self.last_terminal_size.width,
-                            &self.rendering,
+                            render_settings,
                             &self.line_ending,
                             timestamp,
                         ));
@@ -901,6 +903,22 @@ impl Buffer {
                     if let Some(decoder) = &self.defmt_decoder {
                         if let Ok(uncompressed) = rzcobs_decode(inner) {
                             if let Ok((frame, consumed)) = decoder.table.decode(&uncompressed) {
+                                // choosing to skip pushing instead of filtering
+                                // to keep consistent with other logic that expects
+                                // invisible lines to not be pushed,
+                                // and to skip further handling for those lines.
+                                let commit_frame = match frame.level() {
+                                    None => true,
+                                    Some(level) => {
+                                        self.defmt_settings.max_log_level
+                                            <= crate::settings::Level::from(level)
+                                    }
+                                };
+                                if !commit_frame {
+                                    self.raw.consumed(meow.raw_len());
+                                    continue;
+                                }
+
                                 // let meow = std::time::Instant::now();
                                 // error!("{:?}", meow.elapsed());
                                 // debug!("{frame:#?}");
@@ -910,38 +928,67 @@ impl Buffer {
                                     .and_then(|locs| locs.get(&frame.index()))
                                     .map(FrameLocation::from);
 
-                                let message = frame.display_message().to_compact_string();
-
-                                // let message_lines = message.lines();
+                                let message = frame.display_message().to_string();
+                                let message_lines = message.lines();
 
                                 let device_timestamp = frame.display_timestamp();
-
                                 let device_timestamp_ref = device_timestamp
                                     .as_ref()
                                     .map(|ts| ts as &dyn std::fmt::Display);
 
-                                // for line in message_lines {
-                                self.styled_lines.rx.push(BufLine::port_defmt_line(
-                                    Line::raw(message),
-                                    unsafe {
-                                        RangeSlice::from_parent_and_child(&self.raw.inner, raw)
-                                    },
-                                    self.last_terminal_size.width,
-                                    &self.rendering,
-                                    frame.level(),
-                                    device_timestamp_ref,
-                                    loc_opt.clone(),
-                                    timestamp,
-                                ));
-                                // }
+                                for line in message_lines {
+                                    let mut message_line = Line::default();
+                                    message_line.push_span(Span::raw(line));
+
+                                    if let Some(line) =
+                                        self.color_rules.apply_onto(line.as_bytes(), message_line)
+                                    {
+                                        let owned_spans: Vec<Span<'static>> = line
+                                            .into_iter()
+                                            .map(|s| match s.content {
+                                                std::borrow::Cow::Owned(owned) => Span {
+                                                    content: std::borrow::Cow::Owned(owned),
+                                                    ..s
+                                                },
+                                                std::borrow::Cow::Borrowed(borrowed) => Span {
+                                                    content: std::borrow::Cow::Owned(
+                                                        borrowed.to_string(),
+                                                    ),
+                                                    ..s
+                                                },
+                                            })
+                                            .collect();
+
+                                        let owned_line = Line {
+                                            spans: owned_spans,
+                                            ..Default::default()
+                                        };
+
+                                        self.styled_lines.rx.push(BufLine::port_defmt_line(
+                                            owned_line,
+                                            unsafe {
+                                                RangeSlice::from_parent_and_child(
+                                                    &self.raw.inner,
+                                                    raw,
+                                                )
+                                            },
+                                            self.last_terminal_size.width,
+                                            self.line_render_settings(),
+                                            frame.level(),
+                                            device_timestamp_ref,
+                                            loc_opt.clone(),
+                                            timestamp,
+                                        ));
+                                    }
+                                }
                             } else {
-                                failed_decode();
+                                failed_decode(DecodeFailReason::DefmtDecode);
                             }
                         } else {
-                            failed_decode();
+                            failed_decode(DecodeFailReason::RzcobsDecompress);
                         }
                     } else {
-                        failed_decode();
+                        failed_decode(DecodeFailReason::NoDecoder);
                     }
                     self.last_rx_was_complete = true;
                     self.raw.consumed(meow.raw_len());
@@ -1000,12 +1047,17 @@ impl Buffer {
 
                     let line_opt = self.color_rules.apply_onto(trunc, line);
 
+                    let render_settings = RenderSettings {
+                        rendering: &self.rendering,
+                        defmt: &self.defmt_settings,
+                    };
+
                     if let Some(line) = line_opt {
                         last_line.update_line(
                             line,
                             unsafe { RangeSlice::from_parent_and_child(&self.raw.inner, orig) },
                             self.last_terminal_size.width,
-                            &self.rendering,
+                            render_settings,
                             &self.line_ending,
                         );
                     } else {
@@ -1230,6 +1282,29 @@ impl Buffer {
 
         self.scroll_by(0);
     }
+    #[cfg(feature = "defmt")]
+    pub fn update_defmt_settings(&mut self, defmt: Defmt) {
+        let old = std::mem::replace(&mut self.defmt_settings, defmt);
+        let new = &self.defmt_settings;
+        let should_reconsume = changed!(old, new, defmt_parsing, max_log_level);
+
+        let should_rewrap_lines = changed!(
+            old,
+            new,
+            device_timestamp,
+            show_file,
+            show_module,
+            show_line_number
+        );
+
+        if should_reconsume {
+            self.reconsume_raw_buffer();
+        } else if should_rewrap_lines {
+            self.update_wrapped_line_heights();
+        }
+
+        self.scroll_by(0);
+    }
     #[cfg(feature = "logging")]
     fn clear_and_relog_buffers(&mut self, with_user_input: bool) {
         self.log_handle.clear_current_logs().unwrap();
@@ -1375,7 +1450,7 @@ impl Buffer {
                 line,
                 full_slice,
                 self.last_terminal_size.width,
-                &self.rendering,
+                self.line_render_settings(),
                 &self.line_ending,
                 known_time,
             ))

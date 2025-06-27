@@ -231,7 +231,8 @@ pub trait LineMutator {
 impl LineMutator for Line<'_> {
     /// ## Panics if range intersects char boundaries or goes out of bounds!
     fn style_slice(&mut self, range: Range<usize>, style: Style) {
-        debug!("Styling {range:?} with {style:?}");
+        // #[cfg(debug_assertions)]
+        // debug!("Styling {range:?} with {style:?}");
         let spans = &mut self.spans;
         let mut current = 0;
         for (index, span) in spans.iter_mut().enumerate() {
@@ -282,7 +283,8 @@ impl LineMutator for Line<'_> {
         }
     }
     fn censor_slice(&mut self, range: Range<usize>, style: Option<Style>) {
-        debug!("Censoring {range:?} with style {style:?}");
+        // #[cfg(debug_assertions)]
+        // debug!("Censoring {range:?} with style {style:?}");
         let spans = &mut self.spans;
         let mut current = 0;
         for (index, span) in spans.iter_mut().enumerate() {
@@ -333,7 +335,8 @@ impl LineMutator for Line<'_> {
         }
     }
     fn remove_slice(&mut self, range: Range<usize>) {
-        debug!("Removing slice {:?}", range);
+        // #[cfg(debug_assertions)]
+        // debug!("Removing slice {:?}", range);
         let spans = &mut self.spans;
         let mut current = 0;
         for (index, span) in spans.iter_mut().enumerate() {

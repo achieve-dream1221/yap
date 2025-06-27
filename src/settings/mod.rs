@@ -51,6 +51,9 @@ pub struct Settings {
     pub misc: Misc,
     #[serde(default)]
     pub last_port_settings: PortSettings,
+    #[cfg(feature = "defmt")]
+    #[serde(default)]
+    pub defmt: Defmt,
     #[cfg(feature = "logging")]
     #[serde(default)]
     pub logging: Logging,
@@ -317,6 +320,132 @@ pub struct Behavior {
     #[derivative(Default(value = "true"))]
     /// Fall back to macros with same name if category missing.
     pub fuzzy_macro_match: bool,
+}
+
+#[cfg(feature = "defmt")]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum::VariantArray,
+    strum::EnumString,
+    strum::Display,
+)]
+pub enum DefmtSupport {
+    FramedRzcobs,
+    UnframedRzcobs,
+    Raw,
+    #[default]
+    Disabled,
+}
+
+#[cfg(feature = "defmt")]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum::VariantArray,
+    strum::EnumString,
+    strum::Display,
+    strum::EnumIs,
+)]
+pub enum DefmtLocation {
+    #[default]
+    Full,
+    Shortened,
+    Hidden,
+}
+
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    strum::VariantArray,
+    strum::EnumString,
+    strum::Display,
+)]
+#[strum(serialize_all = "title_case")]
+#[strum(ascii_case_insensitive)]
+pub enum Level {
+    #[default]
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[cfg(feature = "defmt")]
+impl From<Level> for defmt_parser::Level {
+    fn from(value: Level) -> Self {
+        match value {
+            Level::Trace => defmt_parser::Level::Trace,
+            Level::Debug => defmt_parser::Level::Debug,
+            Level::Info => defmt_parser::Level::Info,
+            Level::Warn => defmt_parser::Level::Warn,
+            Level::Error => defmt_parser::Level::Error,
+        }
+    }
+}
+#[cfg(feature = "defmt")]
+impl From<defmt_parser::Level> for Level {
+    fn from(value: defmt_parser::Level) -> Self {
+        match value {
+            defmt_parser::Level::Trace => Level::Trace,
+            defmt_parser::Level::Debug => Level::Debug,
+            defmt_parser::Level::Info => Level::Info,
+            defmt_parser::Level::Warn => Level::Warn,
+            defmt_parser::Level::Error => Level::Error,
+        }
+    }
+}
+
+#[cfg(feature = "defmt")]
+#[serde_inline_default]
+#[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
+#[derivative(Default)]
+pub struct Defmt {
+    #[serde(default)]
+    #[table(values = DefmtSupport::VARIANTS)]
+    /// Enable parsing RX'd serial data as defmt packets.
+    pub defmt_parsing: DefmtSupport,
+
+    #[serde_inline_default(Level::Trace)]
+    #[derivative(Default(value = "Level::Trace"))]
+    #[table(display = Debug)]
+    #[table(values = Level::VARIANTS)]
+    /// Maximum log level to display. Items without a level are always shown.
+    pub max_log_level: Level,
+
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// Show device-derived timestamps, if available.
+    pub device_timestamp: bool,
+
+    #[serde(default)]
+    #[table(values = DefmtLocation::VARIANTS)]
+    /// Show module where log originated from, if available.
+    pub show_module: DefmtLocation,
+
+    #[serde(default)]
+    #[table(values = DefmtLocation::VARIANTS)]
+    /// Show file where log originated from, if available.
+    pub show_file: DefmtLocation,
+
+    #[serde_inline_default(true)]
+    #[derivative(Default(value = "true"))]
+    /// Show line number in file where log originated from, if available.
+    pub show_line_number: bool,
 }
 
 #[serde_inline_default]

@@ -8,6 +8,7 @@ use ratatui::{
 use ratatui_macros::{horizontal, vertical};
 
 use crate::{
+    buffer::buf_line::RenderSettings,
     errors::YapResult,
     settings::HexHighlightStyle,
     traits::{ToggleBool, interleave_by},
@@ -22,15 +23,36 @@ impl Buffer {
     /// Updates each BufLine's render height with the new terminal width, returning the sum total at the end
     pub fn update_wrapped_line_heights(&mut self) -> usize {
         self.styled_lines.rx.iter_mut().fold(0, |total, l| {
-            let new_height = l.update_line_height(self.last_terminal_size.width, &self.rendering);
+            let render_settings = RenderSettings {
+                rendering: &self.rendering,
+                defmt: &self.defmt_settings,
+            };
+            let new_height = l.update_line_height(self.last_terminal_size.width, render_settings);
 
             total + new_height
         }) + self.styled_lines.tx.iter_mut().fold(0, |total, l| {
-            let new_height = l.update_line_height(self.last_terminal_size.width, &self.rendering);
+            let render_settings = RenderSettings {
+                rendering: &self.rendering,
+                defmt: &self.defmt_settings,
+            };
+            let new_height = l.update_line_height(self.last_terminal_size.width, render_settings);
 
             total + new_height
         })
     }
+    // #[cfg(feature = "defmt")]
+    // fn rx_lines_iter(&self) -> impl Iterator<Item = &BufLine> {
+    //     self.styled_lines.rx.iter().filter(|b| match b.line_type {
+    //         super::LineType::PortDefmt {
+    //             level: Some(level), ..
+    //         } => self.defmt_settings.max_log_level <= crate::settings::Level::from(level),
+    //         _ => true,
+    //     })
+    // }
+    // #[cfg(not(feature = "defmt"))]
+    // fn rx_lines_iter(&self) -> impl Iterator<Item = &BufLine> {
+    //     self.styled_lines.rx.iter()
+    // }
     fn buflines_iter(&self) -> impl Iterator<Item = &BufLine> {
         if self.rendering.echo_user_input == UserEcho::None {
             Either::Left(self.styled_lines.rx.iter())
@@ -52,7 +74,10 @@ impl Buffer {
     }
     pub fn lines_iter(&self) -> (impl Iterator<Item = Line>, u16) {
         let (buflines, wrapped_scroll) = self.visible_buflines_iter();
-        (buflines.map(|l| l.as_line(&self.rendering)), wrapped_scroll)
+        (
+            buflines.map(|l| l.as_line(self.line_render_settings())),
+            wrapped_scroll,
+        )
     }
 
     fn visible_buflines_iter(&self) -> (impl Iterator<Item = &BufLine>, u16) {
@@ -338,6 +363,13 @@ impl Buffer {
                     // .saturating_sub(self.last_terminal_size.height as usize)
                 ;
             }
+        }
+    }
+    pub fn line_render_settings(&self) -> RenderSettings {
+        RenderSettings {
+            rendering: &self.rendering,
+            #[cfg(feature = "defmt")]
+            defmt: &self.defmt_settings,
         }
     }
 }

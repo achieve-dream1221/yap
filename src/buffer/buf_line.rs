@@ -14,6 +14,8 @@ use tracing::debug;
 #[cfg(feature = "defmt")]
 use defmt_parser::Level;
 
+#[cfg(feature = "defmt")]
+use crate::settings::Defmt;
 use crate::{
     buffer::{LineEnding, RangeSlice},
     settings::Rendering,
@@ -37,6 +39,13 @@ pub struct BufLine {
     pub line_type: LineType,
     // #[cfg(feature = "defmt")]
     // defmt_level: Option<Level>,
+}
+
+#[derive(Clone, Copy)]
+pub struct RenderSettings<'a> {
+    pub rendering: &'a Rendering,
+    #[cfg(feature = "defmt")]
+    pub defmt: &'a Defmt,
 }
 
 // impl PartialEq for BufLine {
@@ -127,7 +136,7 @@ impl BufLine {
         mut line: Line<'static>,
         raw_fatty: RangeSlice,
         area_width: u16,
-        rendering: &Rendering,
+        rendering: RenderSettings,
         now: DateTime<Local>,
         line_type: LineType,
     ) -> Self {
@@ -154,7 +163,7 @@ impl BufLine {
         line: Line<'static>,
         raw_fatty: RangeSlice,
         area_width: u16,
-        rendering: &Rendering,
+        rendering: RenderSettings,
         line_ending: &LineEnding,
         now: DateTime<Local>,
     ) -> Self {
@@ -172,7 +181,7 @@ impl BufLine {
         line: Line<'static>,
         raw_fatty: RangeSlice,
         area_width: u16,
-        rendering: &Rendering,
+        rendering: RenderSettings,
         level: Option<defmt_parser::Level>,
         device_timestamp: Option<&dyn std::fmt::Display>,
         location: Option<FrameLocation>,
@@ -193,7 +202,7 @@ impl BufLine {
         line: Line<'static>,
         buffer_index: usize,
         area_width: u16,
-        rendering: &Rendering,
+        rendering: RenderSettings,
         line_ending: &LineEnding,
         now: DateTime<Local>,
         is_bytes: bool,
@@ -274,7 +283,7 @@ impl BufLine {
         line: Line<'static>,
         fatty: RangeSlice,
         area_width: u16,
-        rendering: &Rendering,
+        rendering: RenderSettings,
         line_ending: &LineEnding,
     ) {
         assert_eq!(
@@ -305,7 +314,7 @@ impl BufLine {
         self.update_line_height(area_width, rendering);
     }
 
-    pub fn update_line_height(&mut self, area_width: u16, rendering: &Rendering) -> usize {
+    pub fn update_line_height(&mut self, area_width: u16, rendering: RenderSettings) -> usize {
         let para = Paragraph::new(self.as_line(rendering)).wrap(Wrap { trim: false });
         // TODO make the sub 1 for margin/scrollbar more sane/clear
         // Paragraph::line_count comes from an unstable ratatui feature (unstable-rendered-line-info)
@@ -320,7 +329,7 @@ impl BufLine {
     }
 
     /// Returns an owned `Line` that borrows from the current line's spans.
-    pub fn as_line(&self, rendering: &Rendering) -> Line {
+    pub fn as_line(&self, rendering: RenderSettings) -> Line {
         let borrowed_spans = self.value.borrowed_spans_iter();
 
         let dark_gray = Style::new().dark_gray();
@@ -329,16 +338,17 @@ impl BufLine {
             Cow::Borrowed(self.index_info.as_ref()),
             dark_gray,
         ))
-        .filter(|_| rendering.show_indices);
+        .filter(|_| rendering.rendering.show_indices);
 
         let timestamp = std::iter::once(Span::styled(
             Cow::Borrowed(self.timestamp_str.as_ref()),
             dark_gray,
         ))
-        .filter(|_| rendering.timestamps);
+        .filter(|_| rendering.rendering.timestamps);
 
         #[cfg(feature = "defmt")]
         let defmt_device_timestamp = std::iter::once(&self.line_type).filter_map(|lt| match lt {
+            _ if !rendering.defmt.device_timestamp => None,
             LineType::PortDefmt {
                 device_timestamp: Some(device_timestamp),
                 ..
@@ -356,15 +366,92 @@ impl BufLine {
             })
             .flatten();
 
+        // #[cfg(feature = "defmt")]
+        // let defmt_location = std::iter::once(&self.line_type).filter_map(|lt| match lt {
+        //     LineType::PortDefmt {
+        //         location: Some(FrameLocation { line, module, file }),
+        //         ..
+        //     } => Some(Span::styled(
+        //         format!(" {module} @ {file}:{line}"),
+        //         Style::new().dark_gray(),
+        //     )),
+        //     _ => None,
+        // });
+
+        fn shorten_module_path(full_module_path: &str) -> &str {
+            full_module_path
+                .split("::")
+                .last()
+                .unwrap_or(full_module_path)
+        }
+
+        fn shorten_file_path(full_file_path: &str) -> &str {
+            full_file_path
+                .split(&['/', '\\'])
+                .last()
+                .unwrap_or(full_file_path)
+        }
+
         #[cfg(feature = "defmt")]
         let defmt_location = std::iter::once(&self.line_type).filter_map(|lt| match lt {
             LineType::PortDefmt {
-                location: Some(FrameLocation { line, module, file }),
+                location:
+                    Some(FrameLocation {
+                        line: defmt_line_num,
+                        module: defmt_module,
+                        file: defmt_file,
+                    }),
                 ..
-            } => Some(Span::styled(
-                format!(" {module} @ {file}::{line}"),
-                Style::new().dark_gray(),
-            )),
+            } => {
+                use crate::settings::DefmtLocation;
+
+                let RenderSettings { rendering, defmt } = rendering;
+
+                let module = &defmt.show_module;
+                let file = &defmt.show_file;
+                let line_num = defmt.show_line_number;
+
+                match (module, file, line_num) {
+                    (DefmtLocation::Hidden, DefmtLocation::Hidden, false) => return None,
+                    _ => (),
+                };
+
+                let module_file_seperator =
+                    if !module.is_hidden() && (!file.is_hidden() || line_num) {
+                        " @ "
+                    } else {
+                        ""
+                    };
+                let file_line_seperator = if !file.is_hidden() && line_num {
+                    ":"
+                } else {
+                    ""
+                };
+
+                let module = match module {
+                    DefmtLocation::Hidden => "",
+                    DefmtLocation::Shortened => shorten_module_path(defmt_module),
+                    DefmtLocation::Full => defmt_module,
+                };
+                let file = match file {
+                    DefmtLocation::Hidden => "",
+                    DefmtLocation::Shortened => shorten_file_path(defmt_file),
+                    DefmtLocation::Full => defmt_file,
+                };
+                let line_num = if line_num {
+                    Cow::Owned(defmt_line_num.to_string())
+                } else {
+                    Cow::Borrowed("")
+                };
+
+                Some(Span::styled(
+                    format!(
+                        " {module}{module_file_seperator}{file}{file_line_seperator}{line_num}"
+                    ),
+                    Style::new().dark_gray(),
+                ))
+                // todo!()
+            }
             _ => None,
         });
 

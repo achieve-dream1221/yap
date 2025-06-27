@@ -1,6 +1,8 @@
+use camino::{Utf8Path, Utf8PathBuf};
 use chrono::{DateTime, Local};
 use defmt_decoder::{DecodeError, Frame, Location, Locations, StreamDecoder, Table};
 use defmt_parser::Level;
+use fs_err as fs;
 use ratatui::{
     style::{Color, Style},
     text::Span,
@@ -12,6 +14,8 @@ use crate::buffer::{buf_line::BufLine, tui::defmt::defmt_level_bracketed};
 // #[ouroboros::self_referencing]
 pub struct DefmtDecoder {
     elf: Vec<u8>,
+    pub elf_md5: String,
+    pub elf_path: Utf8PathBuf,
     pub table: Table,
     // #[borrows(table)]
     // #[covariant]
@@ -34,8 +38,16 @@ pub enum DefmtError {
 // Much taken from defmt-print
 // https://github.com/knurling-rs/defmt/blob/d52b9908c175497d46fc527f4f8dfd6278744f09/print/src/main.rs#L183
 
+// include_bytes!(
+//     "/home/tony/git/yap/defmt-meow-no-wire-debug"
+// )
+
 impl DefmtDecoder {
-    pub fn from_elf_bytes(bytes: &[u8]) -> Result<Self, DefmtError> {
+    // pub fn from_elf_bytes(bytes: &[u8]) -> Result<Self, DefmtError> {
+    pub fn from_elf_bytes<P: AsRef<std::path::Path>>(path: P) -> Result<Self, DefmtError> {
+        let path = path.as_ref().to_owned();
+        let bytes = fs::read(&path).unwrap();
+
         let table = Table::parse(&bytes)
             .map_err(|e| DefmtError::ParseFail(e.to_string()))?
             .ok_or_else(|| DefmtError::DataMissing)?;
@@ -62,9 +74,11 @@ impl DefmtDecoder {
         // let decoder = DefmtDecoder::new(elf, table, Table::new_stream_decoder, locations);
 
         let decoder = DefmtDecoder {
+            elf_md5: format!("{:X}", md5::compute(&elf)),
             elf,
             locations,
             table,
+            elf_path: Utf8PathBuf::from_path_buf(path).unwrap(),
         };
 
         Ok(decoder)
