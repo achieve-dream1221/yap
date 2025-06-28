@@ -296,13 +296,6 @@ impl From<&[u8]> for LineEnding {
 // TODO tests for buffer behavior with new lines
 // (i broke it once before with tests passing, so, bleh)
 
-enum BufferSlice<'a> {
-    PotentialText {
-        slice: &'a [u8],
-        continuing_last_text: bool,
-    },
-}
-
 struct RawBuffer {
     inner: Vec<u8>,
     /// Time-tagged indexes into `raw_buffer`, from each input from the port.
@@ -341,11 +334,20 @@ impl RawBuffer {
             None
         }
     }
-    fn next_slice(&self, defmt_support: DefmtSupport) -> Option<(usize, DelimitedSlice)> {
+    fn next_slice(
+        &self,
+        defmt_support: DefmtSupport,
+        defmt_raw_consume_fail_raw_buffer_len: &Option<usize>,
+    ) -> Option<(usize, DelimitedSlice)> {
         match defmt_support {
             DefmtSupport::FramedRzcobs => self.next_slice_defmt_rzcobs(true),
             DefmtSupport::UnframedRzcobs => self.next_slice_defmt_rzcobs(false),
-            DefmtSupport::Raw => self.next_slice_defmt_raw(),
+            DefmtSupport::Raw => match defmt_raw_consume_fail_raw_buffer_len {
+                None => self.next_slice_defmt_raw(),
+                Some(raw_len_on_fail) if *raw_len_on_fail == self.inner.len() => None,
+                Some(raw_len_on_fail) if *raw_len_on_fail == usize::MAX => None,
+                Some(_) => self.next_slice_defmt_raw(),
+            },
             DefmtSupport::Disabled => self.next_slice_raw(),
         }
     }
@@ -636,6 +638,8 @@ pub struct Buffer {
     pub defmt_decoder: Option<DefmtDecoder>,
     #[cfg(feature = "defmt")]
     defmt_settings: Defmt,
+    #[cfg(feature = "defmt")]
+    defmt_raw_consume_fail_raw_buffer_len: Option<usize>,
     // #[cfg(feature = "defmt")]
     // frame_delimiter: FrameDelimiter,
 }
@@ -732,6 +736,8 @@ impl Buffer {
             defmt_decoder: None,
             #[cfg(feature = "defmt")]
             defmt_settings: defmt,
+            #[cfg(feature = "defmt")]
+            defmt_raw_consume_fail_raw_buffer_len: None,
         }
     }
     // pub fn append_str(&mut self, str: &str) {
@@ -920,10 +926,39 @@ impl Buffer {
     }
 
     fn consume_latest_bytes(&mut self, timestamp: DateTime<Local>) {
-        while let Some((index_in_buffer, delimited_slice)) = self
-            .raw
-            .next_slice(self.defmt_settings.defmt_parsing.clone())
-        {
+        #[cfg(not(feature = "defmt"))]
+        while let Some((index_in_buffer, delimited_slice)) = self.raw.next_slice_raw() {
+            let DelimitedSlice::Raw(slice) = delimited_slice else {
+                unreachable!();
+            };
+            let kit = BufLineKit {
+                timestamp,
+                area_width: self.last_terminal_size.width,
+                render: RenderSettings {
+                    rendering: &self.rendering,
+                    defmt: &self.defmt_settings,
+                },
+                full_range_slice: unsafe {
+                    RangeSlice::from_parent_and_child(&self.raw.inner, slice)
+                },
+            };
+
+            self.styled_lines.consume_as_text(
+                &self.raw,
+                &self.color_rules,
+                index_in_buffer,
+                delimited_slice,
+                kit,
+                &self.line_ending,
+            );
+            self.raw.consumed(slice.len());
+        }
+
+        #[cfg(feature = "defmt")]
+        while let Some((index_in_buffer, delimited_slice)) = self.raw.next_slice(
+            self.defmt_settings.defmt_parsing.clone(),
+            &self.defmt_raw_consume_fail_raw_buffer_len,
+        ) {
             match delimited_slice {
                 DelimitedSlice::Raw(slice) => {
                     let kit = BufLineKit {
@@ -949,9 +984,7 @@ impl Buffer {
                     self.raw.consumed(slice.len());
                 }
                 DelimitedSlice::DefmtRaw(raw_uncompressed) => {
-                    if let Some(decoder) = &self.defmt_decoder
-                        && let Ok((frame, consumed)) = decoder.table.decode(&raw_uncompressed)
-                    {
+                    if let Some(decoder) = &self.defmt_decoder {
                         let kit = BufLineKit {
                             timestamp,
                             area_width: self.last_terminal_size.width,
@@ -963,11 +996,35 @@ impl Buffer {
                                 RangeSlice::from_parent_and_child(&self.raw.inner, raw_uncompressed)
                             },
                         };
-                        self.styled_lines
-                            .consume_frame(kit, decoder, &frame, &self.color_rules);
-                        self.styled_lines.last_rx_was_complete = true;
 
-                        self.raw.consumed(delimited_slice.raw_len());
+                        match decoder.table.decode(&raw_uncompressed) {
+                            Ok((frame, consumed)) => {
+                                self.defmt_raw_consume_fail_raw_buffer_len = None;
+                                self.styled_lines.consume_frame(
+                                    kit,
+                                    decoder,
+                                    &frame,
+                                    &self.color_rules,
+                                );
+                                self.styled_lines.last_rx_was_complete = true;
+
+                                self.raw.consumed(consumed);
+                            }
+                            Err(defmt_decoder::DecodeError::UnexpectedEof) => {
+                                self.defmt_raw_consume_fail_raw_buffer_len =
+                                    Some(self.raw.inner.len());
+                            }
+                            Err(defmt_decoder::DecodeError::Malformed) => {
+                                self.defmt_raw_consume_fail_raw_buffer_len = Some(usize::MAX);
+                                let line =
+                                    Line::raw("defmt raw parse error, ceasing further attempts.");
+                                self.styled_lines.rx.push(BufLine::port_text_line(
+                                    line,
+                                    kit,
+                                    &LineEnding::None,
+                                ));
+                            }
+                        }
                     }
                 }
                 DelimitedSlice::DefmtRzcobs { raw, inner } => {
@@ -1073,6 +1130,11 @@ impl Buffer {
 
         // No lines to append to.
         self.styled_lines.last_rx_was_complete = true;
+
+        #[cfg(feature = "defmt")]
+        {
+            self.defmt_raw_consume_fail_raw_buffer_len = None;
+        }
 
         // Getting all time-tagged indices in the buffer where either
         // 1. Data came in through the port
