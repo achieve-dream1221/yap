@@ -41,8 +41,13 @@ use tui_big_text::{BigText, PixelSize};
 use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 use unicode_width::UnicodeWidthStr;
 
+#[cfg(feature = "defmt")]
 use crate::{
-    buffer::Buffer,
+    buffer::defmt::elf_watcher::ElfWatchEvent, keybinds::ShowDefmtSelect, settings::Defmt,
+    tui::defmt::DefmtMeow,
+};
+use crate::{
+    buffer::{Buffer, defmt::DefmtTableError},
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
@@ -65,8 +70,6 @@ use crate::{
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
 };
-#[cfg(feature = "defmt")]
-use crate::{keybinds::ShowDefmtSelect, settings::Defmt, tui::defmt::DefmtMeow};
 
 #[cfg(feature = "macros")]
 use crate::macros::{MacroNameTag, Macros};
@@ -109,9 +112,11 @@ pub enum Event {
     Crossterm(CrosstermEvent),
     Serial(SerialEvent),
     RxBuffer(Vec<u8>),
+    Tick(Tick),
     #[cfg(feature = "logging")]
     Logging(LoggingEvent),
-    Tick(Tick),
+    #[cfg(feature = "defmt_watch")]
+    DefmtElfWatch(ElfWatchEvent),
     Quit,
 }
 
@@ -351,7 +356,11 @@ impl App {
         let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
 
         #[cfg(feature = "defmt")]
-        let defmt_meow = DefmtMeow::load().unwrap();
+        let mut defmt_meow = DefmtMeow::build(
+            #[cfg(feature = "defmt_watch")]
+            tx.clone(),
+        )
+        .unwrap();
 
         let mut buffer = Buffer::new(
             line_ending,
@@ -362,6 +371,25 @@ impl App {
             tx.clone(),
             settings.defmt.clone(),
         );
+
+        if let Some(last_elf) = defmt_meow.recent_elfs.last()
+            && last_elf.is_file()
+        {
+            match try_load_defmt_elf(
+                &last_elf.to_owned(),
+                &mut buffer.defmt_decoder,
+                &mut defmt_meow.recent_elfs,
+                #[cfg(feature = "defmt_watch")]
+                &mut defmt_meow.watcher_handle,
+            ) {
+                Ok(()) => (),
+                Err(e) => {
+                    let text = format!("defmt ELF reload failed! {e}");
+                    error!("{text}");
+                    // self.notifs.notify_str(text, Color::Green);
+                }
+            }
+        }
 
         if let Some(last_path) = defmt_meow.recent_elfs.last()
             && last_path.exists()
@@ -725,6 +753,34 @@ impl App {
             Event::Tick(Tick::Tx) => {
                 self.repeating_line_flip.flip();
             }
+            #[cfg(feature = "defmt_watch")]
+            Event::DefmtElfWatch(ElfWatchEvent::ElfUpdated(elf_path)) => {
+                if self.settings.defmt.watch_elf_for_changes {
+                    info!("ELF File Watch triggered, reloading ELF at {elf_path}");
+
+                    match try_load_defmt_elf(
+                        &elf_path,
+                        &mut self.buffer.defmt_decoder,
+                        &mut self.defmt_meow.recent_elfs,
+                        #[cfg(feature = "defmt_watch")]
+                        &mut self.defmt_meow.watcher_handle,
+                    ) {
+                        Ok(()) => {
+                            self.notifs
+                                .notify_str("defmt ELF reloaded due to file update!", Color::Green);
+                        }
+                        Err(e) => {
+                            let text = format!("defmt ELF reload failed! {e}");
+                            error!("{text}");
+                            self.notifs.notify_str(text, Color::Red);
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "defmt")]
+            Event::DefmtElfWatch(ElfWatchEvent::Error(err)) => {
+                self.notifs.notify_str(err, Color::Red);
+            }
         }
         Ok(())
     }
@@ -889,9 +945,25 @@ impl App {
                     if is_file {
                         use camino::Utf8PathBuf;
 
-                        let path: Utf8PathBuf = current.path().to_owned().try_into().unwrap();
+                        let elf_path: Utf8PathBuf = current.path().to_owned().try_into().unwrap();
 
-                        self.try_load_defmt_elf(&path).unwrap();
+                        match try_load_defmt_elf(
+                            &elf_path,
+                            &mut self.buffer.defmt_decoder,
+                            &mut self.defmt_meow.recent_elfs,
+                            #[cfg(feature = "defmt_watch")]
+                            &mut self.defmt_meow.watcher_handle,
+                        ) {
+                            Ok(()) => {
+                                self.notifs
+                                    .notify_str("defmt ELF loaded successfully!", Color::Green);
+                            }
+                            Err(e) => {
+                                let text = format!("defmt ELF load failed! {e}");
+                                error!("{text}");
+                                self.notifs.notify_str(text, Color::Red);
+                            }
+                        }
 
                         self.dismiss_popup();
                     }
@@ -1204,11 +1276,40 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             // TODO show name of flashing profile
-            Action::EspFlashProfile(profile) => self
-                .serial
-                .esp_flash_profile(self.espflash.profile_from_name(&profile).unwrap())?,
+            Action::EspFlashProfile(profile) => {
+                let profile = self.espflash.profile_from_name(&profile).unwrap();
+                self.esp_flash_profile(profile)?;
+            }
         }
         Ok(None)
+    }
+    #[cfg(feature = "espflash")]
+    fn esp_flash_profile(&mut self, profile: esp::EspProfile) -> Result<()> {
+        #[cfg(feature = "defmt")]
+        let profile_defmt_path = profile.defmt_elf_path();
+
+        self.serial.esp_flash_profile(profile)?;
+
+        #[cfg(feature = "defmt")]
+        if let Some(elf_path) = profile_defmt_path {
+            match try_load_defmt_elf(
+                &elf_path,
+                &mut self.buffer.defmt_decoder,
+                &mut self.defmt_meow.recent_elfs,
+                #[cfg(feature = "defmt_watch")]
+                &mut self.defmt_meow.watcher_handle,
+            ) {
+                Ok(()) => {
+                    self.notifs.notify_str("defmt ELF loaded!", Color::Green);
+                }
+                Err(e) => {
+                    let text = format!("defmt ELF load failed! {e}");
+                    error!("{text}");
+                    self.notifs.notify_str(text, Color::Red);
+                }
+            }
+        }
+        Ok(())
     }
     fn run_method_from_action(&mut self, action: AppAction) -> Result<()> {
         let pretty_bool = |b: bool| {
@@ -1838,8 +1939,7 @@ impl App {
                         "shouldn't have selected a non-existant flash profile"
                     );
 
-                    self.serial
-                        .esp_flash_profile(self.espflash.profile_from_index(selected).unwrap())
+                    self.esp_flash_profile(self.espflash.profile_from_index(selected).unwrap())
                         .unwrap();
                 } else {
                     match selected {
@@ -1940,13 +2040,29 @@ impl App {
             Some(Popup::DefmtNewElf(_)) => (),
             Some(Popup::DefmtRecentElf) => {
                 if let Some(selected) = self.popup_table_state.selected() {
-                    let path = self
+                    let elf_path = self
                         .defmt_meow
                         .recent_elfs
                         .nth_path(selected)
                         .unwrap()
                         .to_owned();
-                    self.try_load_defmt_elf(&path).unwrap();
+                    match try_load_defmt_elf(
+                        &elf_path,
+                        &mut self.buffer.defmt_decoder,
+                        &mut self.defmt_meow.recent_elfs,
+                        #[cfg(feature = "defmt_watch")]
+                        &mut self.defmt_meow.watcher_handle,
+                    ) {
+                        Ok(()) => {
+                            self.notifs
+                                .notify_str("defmt ELF loaded successfully!", Color::Green);
+                        }
+                        Err(e) => {
+                            let text = format!("defmt ELF load failed! {e}");
+                            error!("{text}");
+                            self.notifs.notify_str(text, Color::Red);
+                        }
+                    }
                     self.dismiss_popup();
                 }
             }
@@ -3695,28 +3811,47 @@ impl App {
         #[cfg(feature = "macros")]
         self.macros.search_input.reset();
     }
-    #[cfg(feature = "defmt")]
-    fn try_load_defmt_elf(&mut self, path: &Utf8Path) -> Result<(), toml::ser::Error> {
-        use camino::Utf8PathBuf;
+}
 
-        use crate::buffer::defmt::DefmtDecoder;
+#[derive(Debug, thiserror::Error)]
+enum TryLoadDefmtError {
+    #[error("failed serializing recents: {0}")]
+    RecentSer(#[from] toml::ser::Error),
+    #[error("failed saving recent elfs: {0}")]
+    RecentSave(#[from] std::io::Error),
+    #[error("failed parsing defmt from elf: {0}")]
+    DefmtParse(#[from] DefmtTableError),
+}
 
-        let new_decoder = DefmtDecoder::from_elf_bytes(path);
-        match new_decoder {
-            Ok(new_decoder) => {
-                let _ = self.buffer.defmt_decoder.insert(new_decoder);
-                self.notifs
-                    .notify_str("defmt data parsed from ELF!", Color::Green);
-                self.defmt_meow.recent_elfs.elf_loaded(path)?;
-            }
-            Err(e) => {
-                self.notifs
-                    .notify_str(format!("defmt Error: {e}"), Color::Red);
-            }
+#[cfg(feature = "defmt")]
+fn try_load_defmt_elf(
+    path: &Utf8Path,
+    decoder_opt: &mut Option<crate::buffer::defmt::DefmtDecoder>,
+    recent_elfs: &mut crate::tui::defmt::DefmtRecentElfs,
+    #[cfg(feature = "defmt_watch")]
+    watcher_handle: &mut crate::buffer::defmt::elf_watcher::ElfWatchHandle,
+) -> Result<(), TryLoadDefmtError> {
+    use camino::Utf8PathBuf;
+
+    use crate::buffer::defmt::DefmtDecoder;
+
+    let new_decoder = DefmtDecoder::from_elf_bytes(path);
+    match new_decoder {
+        Ok(new_decoder) => {
+            let _ = decoder_opt.insert(new_decoder);
+            // self.notifs
+            //     .notify_str("defmt data parsed from ELF!", Color::Green);
+            recent_elfs.elf_loaded(path)?;
+            #[cfg(feature = "defmt_watch")]
+            watcher_handle.begin_watch(path);
         }
-
-        Ok(())
+        Err(e) => {
+            // self.notifs
+            //     .notify_str(format!("defmt Error: {e}"), Color::Red);
+        }
     }
+
+    Ok(())
 }
 
 pub fn repeating_pattern_widget(

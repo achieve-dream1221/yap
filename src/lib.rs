@@ -151,7 +151,7 @@ pub fn initialize_logging(max_level: Level) -> color_eyre::Result<WorkerGuard> {
 
     // let (fmt_layer, reload_handle) = tracing_subscriber::reload::Layer::new(fmt_layer);
     // Allow everything through but limit lnk to just info, since it spits out a bit too much when reading shortcuts
-    let env_filter = tracing_subscriber::EnvFilter::new("trace,espflash=info");
+    let env_filter = tracing_subscriber::EnvFilter::new("trace,espflash=info,notify=debug");
     let registry = tracing_subscriber::registry()
         // .with(console)
         .with(env_filter)

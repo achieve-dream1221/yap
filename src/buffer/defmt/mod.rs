@@ -23,6 +23,9 @@ pub struct DefmtDecoder {
     pub locations: Option<Locations>,
 }
 
+#[cfg(feature = "defmt_watch")]
+pub mod elf_watcher;
+
 pub mod frame_delimiting;
 
 #[derive(Debug, thiserror::Error)]

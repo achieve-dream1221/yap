@@ -4,9 +4,10 @@
 // ---
 // SETTINGS
 
-use std::path::PathBuf;
+use std::{path::PathBuf, thread::JoinHandle};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use crossbeam::channel::Sender;
 use ratatui::{
     prelude::*,
     widgets::{Cell, HighlightSpacing, Row, Table},
@@ -15,8 +16,12 @@ use ratatui_explorer::FileExplorer;
 use serde::{Deserialize, Serialize};
 
 use fs_err as fs;
+#[cfg(feature = "defmt_watch")]
+use takeable::Takeable;
 
-use crate::buffer::defmt::DefmtDecoder;
+#[cfg(feature = "defmt_watch")]
+use crate::buffer::defmt::elf_watcher::ElfWatchHandle;
+use crate::{app::Event, buffer::defmt::DefmtDecoder};
 
 const DEFMT_RECENT_PATH: &str = "yap_defmt_recent.toml";
 
@@ -39,17 +44,45 @@ impl From<usize> for DefmtPopupSelection {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct DefmtMeow {
-    // #[serde(skip)]
-    // pub file_explorer: Option<FileExplorer>,
     pub recent_elfs: DefmtRecentElfs,
+    #[cfg(feature = "defmt_watch")]
+    pub watcher_handle: ElfWatchHandle,
+    #[cfg(feature = "defmt_watch")]
+    watcher_join_handle: Takeable<JoinHandle<()>>,
+}
+
+#[cfg(feature = "defmt_watch")]
+impl Drop for DefmtMeow {
+    fn drop(&mut self) {
+        use tracing::debug;
+        use tracing::error;
+
+        debug!("Shutting down file watcher");
+        if self.watcher_handle.shutdown().is_ok() {
+            let watcher = self.watcher_join_handle.take();
+            if let Err(_) = watcher.join() {
+                error!("File watcher thread closed with an error!");
+            }
+        }
+    }
 }
 
 impl DefmtMeow {
-    pub fn load() -> Result<Self, toml::de::Error> {
+    pub fn build(event_tx: Sender<Event>) -> Result<Self, toml::de::Error> {
+        #[cfg(feature = "defmt_watch")]
+        {
+            let (watcher_handle, watcher_join_handle) = ElfWatchHandle::build(event_tx).unwrap();
+            let watcher_join_handle = Takeable::new(watcher_join_handle);
+            Ok(Self {
+                recent_elfs: DefmtRecentElfs::load()?,
+                watcher_handle,
+                watcher_join_handle,
+            })
+        }
+
+        #[cfg(not(feature = "defmt_watch"))]
         Ok(Self {
-            // file_explorer: None,
             recent_elfs: DefmtRecentElfs::load()?,
         })
     }

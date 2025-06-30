@@ -420,6 +420,11 @@ pub struct Defmt {
     /// Enable parsing RX'd serial data as defmt packets.
     pub defmt_parsing: DefmtSupport,
 
+    #[cfg(feature = "defmt_watch")]
+    #[table(rename = "Watch ELF for Changes")]
+    /// Reload defmt data from ELF when file is updated.
+    pub watch_elf_for_changes: bool,
+
     #[serde_inline_default(Level::Trace)]
     #[derivative(Default(value = "Level::Trace"))]
     #[table(display = Debug)]
@@ -456,6 +461,7 @@ pub struct PortSettings {
     #[table(immutable)]
     #[serde_inline_default(DEFAULT_BAUD)]
     pub baud_rate: u32,
+
     /// Number of bits per character.
     #[table(values = [DataBits::Five, DataBits::Six, DataBits::Seven, DataBits::Eight])]
     #[serde_inline_default(DataBits::Eight)]
@@ -464,14 +470,17 @@ pub struct PortSettings {
         deserialize_with = "deserialize_from_u8"
     )]
     pub data_bits: DataBits,
+
     /// Flow control modes.
     #[table(values = [FlowControl::None, FlowControl::Software, FlowControl::Hardware])]
     #[serde_inline_default(FlowControl::None)]
     pub flow_control: FlowControl,
+
     /// Parity bit modes.
     #[table(values = [Parity::None, Parity::Odd, Parity::Even])]
     #[serde_inline_default(Parity::None)]
     pub parity_bits: Parity,
+
     /// Number of stop bits.
     #[table(values = [StopBits::One, StopBits::Two])]
     #[serde_inline_default(StopBits::One)]
@@ -480,10 +489,12 @@ pub struct PortSettings {
         deserialize_with = "deserialize_from_u8"
     )]
     pub stop_bits: StopBits,
+
     /// Assert DTR to this state on port connect (and reconnect).
     #[table(rename = "DTR on Connect")]
     #[serde_inline_default(true)]
     pub dtr_on_connect: bool,
+
     /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB device/COM port.
     #[table(values = Reconnections::VARIANTS)]
     #[serde_inline_default(Reconnections::LooseChecks)]
@@ -500,6 +511,7 @@ pub struct PortSettings {
     )]
     #[serde_inline_default(RxLineEnding::Preset("\\n", &[b'\n']))]
     pub rx_line_ending: RxLineEnding,
+
     /// Line endings for TX'd data.
     #[table(display = ["Inherit RX", "\\n", "\\r", "\\r\\n", "None"])]
     #[table(rename = "TX Line Ending")]
