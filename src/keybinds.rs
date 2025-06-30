@@ -5,6 +5,7 @@ use std::{collections::HashMap, time::Duration};
 
 use compact_str::{CompactString, ToCompactString};
 use crokey::KeyCombination;
+use fs_err as fs;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
@@ -297,40 +298,7 @@ ctrl-h = "show-keybinds"
 'ctrl-/' = "show-keybinds"
 "#;
 
-static CONFIG_TOML: &str = r#"
-[keybindings]
-ctrl-w = "toggle-textwrap"
-ctrl-o = "toggle-dtr"
-ctrl-p = "toggle-rts"
-ctrl-e = "show-espflash"
-# ctrl-e = "reload-macros"
-# ctrl-e = "esp-bootloader"
-ctrl-t = "toggle-timestamps"
-ctrl-m = "show-macros"
-ctrl-b = "show-behavior"
-'ctrl-.' = "show-portsettings"
-# ctrl-d = "toggle-indices"
-ctrl-d = "show-defmt"
-ctrl-f = "reload-colors"
-F20 = "esp-hard-reset"
-F21 = "esp-bootloader"
-shift-F21 = "esp-bootloader-unchecked"
-ctrl-z = "esp-bootloader-unchecked"
-ctrl-r = "show-rendering"
-ctrl-h = "toggle-hex"
-ctrl-l = "show-losgging"
-ctrl-k = "show-keybinds"
-
-# macros
-F19 = "Restart"
-ctrl-s = "CaiX Vib (ID 12345, 0.5s)"
-ctrl-g = "OpenShock Setup|Echo Off"
-ctrl-j = ["PAUSE_MS:2000", "OpenShock Setup|Factory Reset", "PAUSE_MS:2000", "OpenShock Setup|Factory Reset"]
-
-# espflash profiles
-F18 = ["Core v2 1.4.0", "pause_ms:1000", "CaiX Vib (ID 12345, 1s)", "Echo Off", "Setup Authtoken and Networks"]
-shift-F18 = ["esp-erase-flash", "Core v2 1.4.0"]
-"#;
+const CONFIG_TOML_PATH: &str = "yap_keybinds.toml";
 
 #[derive(Deserialize)]
 pub struct Keybinds {
@@ -449,7 +417,8 @@ impl Keybinds {
     pub fn new() -> Self {
         let mut overridable = Self::overridable_default();
 
-        let user_settings: Self = toml::from_str(CONFIG_TOML).unwrap();
+        let user_settings: Self =
+            toml::from_str(&fs::read_to_string(CONFIG_TOML_PATH).unwrap()).unwrap();
 
         overridable
             .keybindings

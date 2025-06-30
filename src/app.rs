@@ -457,6 +457,7 @@ impl App {
         let mut max_event_handle = Duration::default();
         while self.is_running() {
             let start = Instant::now();
+            // TODO performance widget?
             self.draw(&mut terminal)?;
             let end = Instant::now();
             let end1 = end.saturating_duration_since(start);
@@ -2072,8 +2073,11 @@ impl App {
         }
         match self.menu {
             Menu::PortSelection(Pse::Ports) => {
-                let selected = self.ports.get(self.table_state.selected().unwrap());
-                if let Some(info) = selected {
+                if let Some(info) = self
+                    .table_state
+                    .selected()
+                    .and_then(|index| self.ports.get(index))
+                {
                     info!("Port {}", info.port_name);
 
                     let baud_rate =

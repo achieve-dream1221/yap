@@ -38,6 +38,10 @@ pub struct LoggingHandle {
 
 pub const DEFAULT_TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.9f";
 
+// TODO have a toggle in settings for
+// Log to file: true/false
+// Log to socket: true/false (later)
+
 pub enum LoggingCommand {
     PortConnected(DateTime<Local>, SerialPortInfo, Option<ReconnectType>),
     PortDisconnect {

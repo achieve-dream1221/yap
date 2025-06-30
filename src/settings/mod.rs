@@ -115,6 +115,11 @@ pub struct Rendering {
 
     #[serde(default)]
     /// Show invalid byte sequences in \xFF notation.
+    // TODO figure out if I want to make this show things like \r \n as well?
+    // maybe rename to "Escape Invisible/Unprintable bytes?"
+    // or "Show" instead of Escape?
+    // need to make sure bstr escape-bytes still allows unicode, if so, that might be ez?
+    // and also need to check on things like the remove_unsavory_chars and such
     pub escape_invalid_bytes: bool,
 
     #[serde(default)]

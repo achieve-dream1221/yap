@@ -6,6 +6,7 @@ fn main() {
     let items_to_copy = [
         "example_configs/yap_colors.toml",
         "example_configs/yap_espflash_profiles.toml",
+        "example_configs/yap_keybinds.toml",
         "example_configs/macros",
     ];
 
