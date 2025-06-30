@@ -150,6 +150,9 @@ impl SerialWorker {
             // TODO Fuzz testing with this + buffer
             match self.command_rx.recv_timeout(sleep_time) {
                 Ok(SerialWorkerCommand::Shutdown(shutdown_tx)) => {
+                    if let Some(port) = self.port.as_mut_port() {
+                        _ = port.flush();
+                    }
                     self.port.drop();
                     self.shared_status
                         .store(Arc::new(PortStatus::new_idle(&PortSettings::default())));
@@ -621,7 +624,7 @@ impl SerialWorker {
             .port
             .as_mut_port()
             .expect("port just populated, should be present");
-
+        port.set_timeout(Duration::from_millis(100))?;
         port.write_request_to_send(port_status.signals.rts)?;
 
         // let port = serialport::new(port, 115200).open()?;

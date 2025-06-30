@@ -13,7 +13,6 @@ use crate::app::PopupMenu;
 #[cfg(feature = "macros")]
 use crate::macros::MacroNameTag;
 
-// Maybe combine with app::PopupMenu instead of being its own type?
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
 )]
@@ -34,6 +33,8 @@ pub enum ShowPopupAction {
     ShowEspFlash,
     #[cfg(feature = "logging")]
     ShowLogging,
+    #[cfg(feature = "defmt")]
+    ShowDefmt,
 }
 
 impl From<ShowPopupAction> for PopupMenu {
@@ -48,6 +49,8 @@ impl From<ShowPopupAction> for PopupMenu {
             ShowPopupAction::ShowEspFlash => Self::EspFlash,
             #[cfg(feature = "macros")]
             ShowPopupAction::ShowMacros => Self::Macros,
+            #[cfg(feature = "macros")]
+            ShowPopupAction::ShowDefmt => Self::Defmt,
         }
     }
 }
@@ -126,7 +129,22 @@ pub enum LoggingAction {
     Toggle,
 }
 
-// TODO make logging-file-start, etc
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+)]
+#[strum(serialize_all = "kebab-case")]
+#[strum(ascii_case_insensitive)]
+#[repr(u8)]
+// #[strum(prefix = "show-")]
+// nevermind, doesn't work with FromStr :(
+pub enum ShowDefmtSelect {
+    #[strum(serialize = "defmt-select-tui")]
+    SelectTui,
+    #[strum(serialize = "defmt-select-system")]
+    SelectSystem,
+    #[strum(serialize = "defmt-select-recent")]
+    SelectRecent,
+}
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, strum::AsRefStr)]
 pub enum AppAction {
@@ -139,6 +157,8 @@ pub enum AppAction {
     Esp(EspAction),
     #[cfg(feature = "logging")]
     Logging(LoggingAction),
+    #[cfg(feature = "defmt")]
+    ShowDefmtSelect(ShowDefmtSelect),
 }
 
 // // TODO replace this
@@ -170,6 +190,8 @@ impl fmt::Display for AppAction {
             AppAction::Esp(action) => write!(f, "{action}"),
             #[cfg(feature = "logging")]
             AppAction::Logging(action) => write!(f, "{action}"),
+            #[cfg(feature = "defmt")]
+            AppAction::ShowDefmtSelect(action) => write!(f, "{action}"),
         }
     }
 }
@@ -207,6 +229,13 @@ impl From<LoggingAction> for AppAction {
     }
 }
 
+#[cfg(feature = "defmt")]
+impl From<ShowDefmtSelect> for AppAction {
+    fn from(action: ShowDefmtSelect) -> Self {
+        AppAction::ShowDefmtSelect(action)
+    }
+}
+
 impl FromStr for AppAction {
     type Err = String;
 
@@ -232,6 +261,10 @@ impl FromStr for AppAction {
         #[cfg(feature = "espflash")]
         if let Ok(esp) = s.parse::<EspAction>() {
             return Ok(AppAction::Esp(esp));
+        }
+        #[cfg(feature = "defmt")]
+        if let Ok(defmt_select) = s.parse::<ShowDefmtSelect>() {
+            return Ok(AppAction::ShowDefmtSelect(defmt_select));
         }
 
         Err(format!("Unrecognized AppAction variant for string: {}", s))

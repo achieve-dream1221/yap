@@ -1,5 +1,6 @@
 use std::{borrow::Cow, f32::consts::PI, path::PathBuf};
 
+use camino::Utf8PathBuf;
 use compact_str::CompactString;
 use espflash::{flasher::DeviceInfo, targets::Chip};
 use fs_err as fs;
@@ -29,28 +30,50 @@ pub enum EspProfile {
     Elf(EspElf),
 }
 
+#[cfg(feature = "defmt")]
+impl EspProfile {
+    pub fn defmt_elf_path(&self) -> Option<Utf8PathBuf> {
+        match self {
+            EspProfile::Bins(EspBins {
+                defmt_elf_path: Some(path),
+                ..
+            }) => Some(path.to_owned()),
+
+            EspProfile::Elf(EspElf {
+                path, defmt: true, ..
+            }) => Some(path.to_owned()),
+
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EspBins {
     pub name: CompactString,
-    pub bins: Vec<(u32, PathBuf)>,
+    pub bins: Vec<(u32, Utf8PathBuf)>,
     pub upload_baud: Option<u32>,
     pub expected_chip: Option<Chip>,
     // pub partition_table: Option<PathBuf>,
     pub no_skip: bool,
     pub no_verify: bool,
+    #[cfg(feature = "defmt")]
+    pub defmt_elf_path: Option<Utf8PathBuf>,
 }
 
 #[derive(Debug, Clone)]
 pub struct EspElf {
     pub name: CompactString,
-    pub path: PathBuf,
+    pub path: Utf8PathBuf,
     pub upload_baud: Option<u32>,
     pub expected_chip: Option<Chip>,
-    pub partition_table: Option<PathBuf>,
-    pub bootloader: Option<PathBuf>,
+    pub partition_table: Option<Utf8PathBuf>,
+    pub bootloader: Option<Utf8PathBuf>,
     pub no_skip: bool,
     pub no_verify: bool,
     pub ram: bool,
+    #[cfg(feature = "defmt")]
+    pub defmt: bool,
 }
 
 impl<'de> serde::Deserialize<'de> for EspElf {
@@ -83,6 +106,8 @@ impl<'de> serde::Deserialize<'de> for EspElf {
                 let mut no_skip = false;
                 let mut no_verify = false;
                 let mut ram = false;
+                #[cfg(feature = "defmt")]
+                let mut defmt = false;
                 let mut any_chip = false;
 
                 while let Some(key) = map.next_key::<String>()? {
@@ -92,7 +117,7 @@ impl<'de> serde::Deserialize<'de> for EspElf {
                             name = Some(value);
                         }
                         "path" => {
-                            let value: PathBuf = map.next_value()?;
+                            let value: Utf8PathBuf = map.next_value()?;
                             path = Some(value);
                         }
                         "upload_baud" => {
@@ -124,6 +149,10 @@ impl<'de> serde::Deserialize<'de> for EspElf {
                         "ram" => {
                             ram = map.next_value()?;
                         }
+                        #[cfg(feature = "defmt")]
+                        "defmt" => {
+                            defmt = map.next_value()?;
+                        }
                         _ => {
                             let _: serde::de::IgnoredAny = map.next_value()?;
                         }
@@ -147,6 +176,8 @@ impl<'de> serde::Deserialize<'de> for EspElf {
                     no_skip,
                     no_verify,
                     ram,
+                    #[cfg(feature = "defmt")]
+                    defmt,
                 })
             }
         }
@@ -200,6 +231,8 @@ impl<'de> Deserialize<'de> for EspBins {
                 let mut no_skip = false;
                 let mut no_verify = false;
                 let mut any_chip = false;
+                #[cfg(feature = "defmt")]
+                let mut defmt_elf_path = None;
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -227,15 +260,19 @@ impl<'de> Deserialize<'de> for EspBins {
                         "no_skip" => {
                             no_skip = map.next_value()?;
                         }
+                        #[cfg(feature = "defmt")]
+                        "defmt_elf_path" => {
+                            defmt_elf_path = map.next_value()?;
+                        }
                         other if other.starts_with("0x") => {
                             let offset_num =
                                 u32::from_str_radix(other.trim_start_matches("0x"), 16).map_err(
                                     |_| {
-                                        A::Error::custom(format!("Invalid bin offset key: {other}"))
+                                        A::Error::custom(format!("invalid bin offset key: {other}"))
                                     },
                                 )?;
                             let path_val: String = map.next_value()?;
-                            bins.push((offset_num, PathBuf::from(path_val)));
+                            bins.push((offset_num, Utf8PathBuf::from(path_val)));
                         }
                         _ => {
                             let _: serde::de::IgnoredAny = map.next_value()?;
@@ -263,6 +300,8 @@ impl<'de> Deserialize<'de> for EspBins {
                     expected_chip,
                     no_skip,
                     no_verify,
+                    #[cfg(feature = "defmt")]
+                    defmt_elf_path,
                 })
             }
         }

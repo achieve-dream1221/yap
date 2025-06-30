@@ -1,5 +1,7 @@
 use ratatui::layout::{Rect, Size};
 
+#[cfg(feature = "defmt")]
+pub mod defmt;
 #[cfg(feature = "espflash")]
 pub mod esp;
 #[cfg(feature = "logging")]

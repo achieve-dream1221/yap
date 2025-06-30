@@ -273,8 +273,8 @@ impl ColorRules {
                 if char_start < char_end {
                     Some(char_start..char_end)
                 } else {
-                    debug!("AGH1 {char_start}..{char_end} {byte_start}..{byte_end}");
-                    debug!("{byte_to_char:#?}");
+                    // debug!("AGH1 {char_start}..{char_end} {byte_start}..{byte_end}");
+                    // debug!("{byte_to_char:#?}");
                     None
                 }
             });
@@ -342,7 +342,7 @@ impl ColorRules {
                 if char_start < char_end {
                     Some(char_start..char_end)
                 } else {
-                    debug!("AGH2 {char_start}..{char_end} {byte_start}..{byte_end}");
+                    // debug!("AGH2 {char_start}..{char_end} {byte_start}..{byte_end}");
                     None
                 }
             });

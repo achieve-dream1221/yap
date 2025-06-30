@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, thread::JoinHandle};
+use std::{cmp::Ordering, ops::Range, thread::JoinHandle};
 
 use ansi_to_tui::{IntoText, LossyFlavor};
 use bstr::{ByteSlice, ByteVec};
@@ -20,12 +20,21 @@ use serialport::SerialPortInfo;
 use takeable::Takeable;
 use tracing::{debug, error, info, warn};
 
+#[cfg(feature = "defmt")]
+use crate::buffer::defmt::DefmtDecoder;
+
+#[cfg(feature = "defmt")]
+use crate::settings::Defmt;
 use crate::{
     app::Event,
-    buffer::tui::COLOR_RULES_PATH,
+    buffer::{
+        buf_line::{BufLineKit, FrameLocation, RenderSettings},
+        defmt::{DefmtPacketError, rzcobs_decode},
+        tui::COLOR_RULES_PATH,
+    },
     changed,
     errors::YapResult,
-    settings::{LoggingType, Rendering},
+    settings::{DefmtSupport, LoggingType, Rendering},
     traits::{ByteSuffixCheck, LineHelpers, interleave_by},
     tui::color_rules::ColorRules,
 };
@@ -43,6 +52,10 @@ mod logging;
 use logging::LoggingHandle;
 #[cfg(feature = "logging")]
 pub use logging::{DEFAULT_TIMESTAMP_FORMAT, LoggingEvent};
+#[cfg(feature = "defmt")]
+pub mod defmt;
+// #[cfg(feature = "defmt")]
+// pub mod ;
 
 #[cfg(test)]
 mod tests;
@@ -59,6 +72,71 @@ pub struct BufferState {
     hex_section_width: u16,
 }
 
+#[derive(Debug, Clone)]
+struct RangeSlice<'a> {
+    range: Range<usize>,
+    slice: &'a [u8],
+}
+
+impl<'a> AsRef<[u8]> for RangeSlice<'a> {
+    fn as_ref(&self) -> &[u8] {
+        self.slice
+    }
+}
+
+impl<'a> RangeSlice<'a> {
+    /// Create a [RangeSlice] from a parent buffer (likely a `Vec<u8>`)
+    /// and a child slice (`&[u8]`) from within the parent buffer,
+    /// populating the `range` field with the child slice's start and end indices.
+    ///
+    /// # Safety
+    /// `child` **must** be a subslice of `parent`, i.e. both slices come from the same
+    /// allocation and `child` lies **entirely** within `parent`.
+    ///
+    /// # Panics
+    ///
+    /// Debug Builds: Panics if the child slice is empty, larger than the parent,
+    /// or if the child's pointers do not lie within the parent's pointer bounds.
+    ///
+    /// Release Builds: Assertions skipped.
+    pub unsafe fn from_parent_and_child(parent: &'a [u8], child: &'a [u8]) -> Self {
+        // Fail-fast checks
+        debug_assert!(!parent.is_empty());
+        debug_assert!(!child.is_empty());
+        // TODO make debug_assert?
+        debug_assert!(
+            child.len() <= parent.len(),
+            "child can't be larger than parent"
+        );
+        let parent_range = parent.as_ptr_range();
+        let child_range = child.as_ptr_range();
+
+        // Ensure child pointers lies within parent pointer bounds
+        // TODO make debug_assert?
+        debug_assert!(
+            child_range.start >= parent_range.start,
+            "child_range.start must be >= parent_range.start",
+        );
+        debug_assert!(
+            child_range.end <= parent_range.end,
+            "child_range.end must be <= parent_range.end",
+        );
+
+        // Getting difference between pointers in T-sized chunks.
+        //
+        // SAFETY:
+        //      Trivial to ensure safety, as long as documented
+        //      precondition of ensuring `child` is always a
+        //      subslice of `parent`.
+        let offset = unsafe { child_range.start.offset_from(parent_range.start) } as usize;
+
+        Self {
+            range: offset..offset + child.len(),
+            slice: child,
+        }
+    }
+}
+
 impl UserEcho {
     /// Determines whether a given `BufLine` should be displayed based on the current `UserEcho` setting.
     ///
@@ -70,15 +148,21 @@ impl UserEcho {
     /// - `NoBytes`: Display all user lines except those marked as bytes (if they have any unprintable bytes when escaped).
     /// - `NoMacros`: Display all user lines except those marked as macros.
     /// - `NoMacrosOrBytes`: Display only user lines that are neither bytes nor macros.
-    fn filter_user_line(&self, buf_line: &BufLine) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics if line_type isn't a user line.
+    fn filter_user_line(&self, line_type: &LineType) -> bool {
+        assert!(
+            matches!(line_type, LineType::User { .. }),
+            "port lines not allowed"
+        );
         match self {
             UserEcho::None => false,
             UserEcho::All => true,
-            UserEcho::NoBytes => !buf_line.line_type.is_bytes(),
-            UserEcho::NoMacros => !buf_line.line_type.is_macro(),
-            UserEcho::NoMacrosOrBytes => {
-                !buf_line.line_type.is_bytes() && !buf_line.line_type.is_macro()
-            }
+            UserEcho::NoBytes => !line_type.is_bytes(),
+            UserEcho::NoMacros => !line_type.is_macro(),
+            UserEcho::NoMacrosOrBytes => !line_type.is_bytes() && !line_type.is_macro(),
         }
     }
 }
@@ -96,6 +180,14 @@ impl LineEnding {
             LineEnding::None => &[],
             LineEnding::Byte(byte) => std::slice::from_ref(byte),
             LineEnding::MultiByte(finder) => finder.needle(),
+        }
+    }
+
+    fn escaped_from(&self, buffer: &[u8]) -> Option<CompactString> {
+        if buffer.has_line_ending(self) {
+            Some(self.as_bytes().escape_bytes().to_compact_string())
+        } else {
+            None
         }
     }
 }
@@ -208,12 +300,317 @@ struct RawBuffer {
     inner: Vec<u8>,
     /// Time-tagged indexes into `raw_buffer`, from each input from the port.
     buffer_timestamps: Vec<(usize, DateTime<Local>)>,
+    consumed_up_to: usize,
+}
+
+impl RawBuffer {
+    fn with_capacities(raw: usize, timestamps: usize) -> Self {
+        Self {
+            buffer_timestamps: Vec::with_capacity(timestamps),
+            inner: Vec::with_capacity(raw),
+            consumed_up_to: 0,
+        }
+    }
+    fn reset(&mut self) {
+        self.inner.clear();
+        self.inner.shrink_to(1024);
+        self.buffer_timestamps.clear();
+        self.buffer_timestamps.shrink_to(1024);
+        self.consumed_up_to = 0;
+    }
+    fn feed(&mut self, new: &[u8], timestamp: DateTime<Local>) {
+        // warn!("fed {} bytes", new.len());
+        self.buffer_timestamps.push((self.inner.len(), timestamp));
+        self.inner.extend(new);
+    }
+    fn consumed(&mut self, amount: usize) {
+        self.consumed_up_to += amount;
+    }
+    fn range(&self, range: Range<usize>) -> Option<&[u8]> {
+        let len = self.inner.len();
+        if range.end <= len {
+            Some(&self.inner[range])
+        } else {
+            None
+        }
+    }
+    fn next_slice(
+        &self,
+        defmt_support: DefmtSupport,
+        defmt_raw_consume_fail_raw_buffer_len: &Option<usize>,
+    ) -> Option<(usize, DelimitedSlice)> {
+        match defmt_support {
+            DefmtSupport::FramedRzcobs => self.next_slice_defmt_rzcobs(true),
+            DefmtSupport::UnframedRzcobs => self.next_slice_defmt_rzcobs(false),
+            DefmtSupport::Raw => match defmt_raw_consume_fail_raw_buffer_len {
+                None => self.next_slice_defmt_raw(),
+                Some(raw_len_on_fail) if *raw_len_on_fail == self.inner.len() => None,
+                Some(raw_len_on_fail) if *raw_len_on_fail == usize::MAX => None,
+                Some(_) => self.next_slice_defmt_raw(),
+            },
+            DefmtSupport::Disabled => self.next_slice_raw(),
+        }
+    }
+    fn next_slice_raw(&self) -> Option<(usize, DelimitedSlice)> {
+        let start_index = self.consumed_up_to;
+        let newest = &self.inner[start_index..];
+        if newest.is_empty() {
+            None
+        } else {
+            Some((start_index, DelimitedSlice::Raw(newest)))
+        }
+    }
+    fn next_slice_defmt_raw(&self) -> Option<(usize, DelimitedSlice)> {
+        let start_index = self.consumed_up_to;
+        let newest = &self.inner[start_index..];
+        if newest.is_empty() {
+            None
+        } else {
+            Some((start_index, DelimitedSlice::DefmtRaw(newest)))
+        }
+    }
+    /// Returns (index_in_buffer, raw/defmt slice)
+    ///
+    /// Returns None if either a defmt frame is incomplete, or there is no new data to give.
+    fn next_slice_defmt_rzcobs(&self, esp_println_framed: bool) -> Option<(usize, DelimitedSlice)> {
+        let start_index = self.consumed_up_to;
+        let newest = &self.inner[start_index..];
+        if newest.is_empty() {
+            return None;
+        }
+
+        let slice_fn = if esp_println_framed {
+            defmt::frame_delimiting::esp_println_delimited
+        } else {
+            defmt::frame_delimiting::zero_delimited
+        };
+
+        let slice = match slice_fn(newest) {
+            // `rest` unused, up to caller to call Self::consumed() with,
+            // the length of `slice` to avoid reconsumption.
+            Ok((_rest, slice)) => slice,
+            // Only returned if there's an incomplete frame.
+            Err(_) => {
+                return None;
+            }
+        };
+
+        Some((start_index, slice))
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum DelimitedSlice<'a> {
+    #[cfg(feature = "defmt")]
+    /// Used by framed inputs, such as from esp-println.
+    DefmtRzcobs {
+        /// Complete original slice, containing prefix and terminator.
+        raw: &'a [u8],
+        /// (Supposedly) rzCOBS packet, stripped of prefix and terminator.
+        inner: &'a [u8],
+    },
+    #[cfg(feature = "defmt")]
+    /// Use if ELF has raw encoding enabled (no rzCOBS compression).
+    DefmtRaw(&'a [u8]),
+    /// Non-defmt input, either junk data or plain ASCII/UTF-8 logs.
+    Raw(&'a [u8]),
+}
+
+impl DelimitedSlice<'_> {
+    pub fn raw_len(&self) -> usize {
+        match self {
+            #[cfg(feature = "defmt")]
+            DelimitedSlice::DefmtRzcobs { raw, .. } => raw.len(),
+            #[cfg(feature = "defmt")]
+            DelimitedSlice::DefmtRaw(raw) => raw.len(),
+            DelimitedSlice::Raw(raw) => raw.len(),
+        }
+    }
 }
 
 struct StyledLines {
     rx: Vec<BufLine>,
-    last_rx_completed: bool,
+    last_rx_was_complete: bool,
     tx: Vec<BufLine>,
+}
+
+impl StyledLines {
+    fn failed_decode(
+        &mut self,
+        delimited_slice: DelimitedSlice,
+        reason: DefmtPacketError,
+        kit: BufLineKit,
+        line_ending: &LineEnding,
+    ) {
+        let DelimitedSlice::DefmtRzcobs { raw, inner } = delimited_slice else {
+            unreachable!()
+        };
+
+        let mut text = format!("Couldn't decode defmt rzcobs packet ({reason}): ");
+        text.extend(inner.iter().map(|b| format!("{b:02X}")));
+
+        self.rx
+            .push(BufLine::port_text_line(Line::raw(text), kit, line_ending));
+    }
+    fn consume_as_text(
+        &mut self,
+        raw_buffer: &RawBuffer,
+        color_rules: &ColorRules,
+        index_in_buffer: usize,
+        delimited_slice: DelimitedSlice,
+        kit: BufLineKit,
+        line_ending: &LineEnding,
+    ) {
+        let mut can_append_to_line = !self.last_rx_was_complete;
+
+        let DelimitedSlice::Raw(slice) = delimited_slice else {
+            unreachable!()
+        };
+
+        for (trunc, orig, indices) in line_ending_iter(slice, &line_ending) {
+            // index = self.raw.inner.len();
+
+            // if let Some(index) = self.index_of_incomplete_line.take() {
+            if can_append_to_line {
+                can_append_to_line = false;
+                let last_line = self.rx.last_mut().expect("can't append to nothing");
+                let last_index = last_line.index_in_buffer();
+                // assert_eq!(last_index, index);
+
+                // let start = range_slice.range.start;
+                let trunc = last_index..index_in_buffer + trunc.len();
+                let trunc = raw_buffer.range(trunc).unwrap();
+                let orig = last_index..index_in_buffer + orig.len();
+                let orig = raw_buffer.range(orig).unwrap();
+                // debug!("Appendo from {last_index}! trunc: {trunc:#?} orig: {orig:#?}");
+
+                // info!("AAAFG: {:?}", slice);
+                let lossy_flavor = if kit.render.rendering.escape_invalid_bytes {
+                    LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
+                } else {
+                    LossyFlavor::replacement_char()
+                };
+                let mut line = match trunc.into_line_lossy(Style::new(), lossy_flavor) {
+                    Ok(line) => line,
+                    Err(_) => {
+                        error!("ansi-to-tui failed to parse input! Using unstyled text.");
+                        Line::from(String::from_utf8_lossy(trunc).to_string())
+                    }
+                };
+
+                let line_opt = color_rules.apply_onto(trunc, line);
+
+                // let render_settings = RenderSettings {
+                //     rendering: &self.rendering,
+                //     defmt: &self.defmt_settings,
+                // };
+
+                if let Some(line) = line_opt {
+                    let kit = BufLineKit {
+                        full_range_slice: unsafe {
+                            RangeSlice::from_parent_and_child(&raw_buffer.inner, orig)
+                        },
+                        ..kit
+                    };
+
+                    last_line.update_line(line, kit, &line_ending);
+                } else {
+                    _ = self.rx.pop();
+                    self.last_rx_was_complete = true;
+                    // last_line.clear_line();
+                }
+                self.last_rx_was_complete = orig.has_line_ending(&line_ending);
+                continue;
+            }
+
+            let kit = BufLineKit {
+                full_range_slice: unsafe {
+                    RangeSlice::from_parent_and_child(&raw_buffer.inner, orig)
+                },
+                ..kit
+            };
+
+            if let Some(new_bufline) = slice_as_port_text(kit, color_rules, line_ending) {
+                self.rx.push(new_bufline);
+            }
+            self.last_rx_was_complete = orig.has_line_ending(&line_ending);
+        }
+    }
+    fn consume_frame(
+        &mut self,
+        kit: BufLineKit,
+        decoder: &DefmtDecoder,
+        frame: &defmt_decoder::Frame<'_>,
+        color_rules: &ColorRules,
+    ) {
+        // choosing to skip pushing instead of filtering
+        // to keep consistent with other logic that expects
+        // invisible lines to not be pushed,
+        // and to skip further handling for those lines.
+        let commit_frame = match frame.level() {
+            None => true,
+            Some(level) => kit.render.defmt.max_log_level <= crate::settings::Level::from(level),
+        };
+        if !commit_frame {
+            return;
+        }
+
+        // let meow = std::time::Instant::now();
+        // error!("{:?}", meow.elapsed());
+        // debug!("{frame:#?}");
+        let loc_opt = decoder
+            .locations
+            .as_ref()
+            .and_then(|locs| locs.get(&frame.index()))
+            .map(FrameLocation::from);
+
+        let message = frame.display_message().to_string();
+        let message_lines = message.lines();
+
+        let device_timestamp = frame.display_timestamp();
+        let device_timestamp_ref = device_timestamp
+            .as_ref()
+            .map(|ts| ts as &dyn std::fmt::Display);
+
+        for line in message_lines {
+            let mut message_line = Line::default();
+            message_line.push_span(Span::raw(line));
+
+            if let Some(line) = color_rules.apply_onto(line.as_bytes(), message_line) {
+                let owned_spans: Vec<Span<'static>> = line
+                    .into_iter()
+                    .map(|s| match s.content {
+                        std::borrow::Cow::Owned(owned) => Span {
+                            content: std::borrow::Cow::Owned(owned),
+                            ..s
+                        },
+                        std::borrow::Cow::Borrowed(borrowed) => Span {
+                            content: std::borrow::Cow::Owned(borrowed.to_string()),
+                            ..s
+                        },
+                    })
+                    .collect();
+
+                let owned_line = Line {
+                    spans: owned_spans,
+                    ..Default::default()
+                };
+
+                let kit = BufLineKit {
+                    full_range_slice: kit.full_range_slice.clone(),
+                    ..kit
+                };
+
+                self.rx.push(BufLine::port_defmt_line(
+                    owned_line,
+                    kit,
+                    frame.level(),
+                    device_timestamp_ref,
+                    loc_opt.clone(),
+                ));
+            }
+        }
+    }
 }
 
 pub struct Buffer {
@@ -237,6 +634,14 @@ pub struct Buffer {
     log_thread: Takeable<JoinHandle<()>>,
     #[cfg(feature = "logging")]
     log_settings: Logging,
+    #[cfg(feature = "defmt")]
+    pub defmt_decoder: Option<DefmtDecoder>,
+    #[cfg(feature = "defmt")]
+    defmt_settings: Defmt,
+    #[cfg(feature = "defmt")]
+    defmt_raw_consume_fail_raw_buffer_len: Option<usize>,
+    // #[cfg(feature = "defmt")]
+    // frame_delimiter: FrameDelimiter,
 }
 
 #[cfg(feature = "logging")]
@@ -290,7 +695,8 @@ impl Buffer {
         line_ending: &[u8],
         rendering: Rendering,
         #[cfg(feature = "logging")] logging: Logging,
-        event_tx: Sender<Event>,
+        #[cfg(feature = "logging")] event_tx: Sender<Event>,
+        #[cfg(feature = "defmt")] defmt: Defmt,
     ) -> Self {
         let line_ending: LineEnding = line_ending.into();
         #[cfg(feature = "logging")]
@@ -300,14 +706,15 @@ impl Buffer {
         Self {
             raw: RawBuffer {
                 inner: Vec::with_capacity(1024),
-
                 buffer_timestamps: Vec::with_capacity(1024),
+                consumed_up_to: 0,
             },
             styled_lines: StyledLines {
                 rx: Vec::with_capacity(1024),
-                last_rx_completed: true,
+                last_rx_was_complete: true,
                 tx: Vec::with_capacity(1024),
             },
+
             last_terminal_size: Size::default(),
             state: BufferState {
                 vert_scroll: 0,
@@ -325,6 +732,12 @@ impl Buffer {
             log_thread: Takeable::new(log_thread),
             #[cfg(feature = "logging")]
             log_settings: logging,
+            #[cfg(feature = "defmt")]
+            defmt_decoder: None,
+            #[cfg(feature = "defmt")]
+            defmt_settings: defmt,
+            #[cfg(feature = "defmt")]
+            defmt_raw_consume_fail_raw_buffer_len: None,
         }
     }
     // pub fn append_str(&mut self, str: &str) {
@@ -338,7 +751,6 @@ impl Buffer {
         sensitive: bool,
     ) {
         let now = Local::now();
-
         let user_span = span!(Color::DarkGray; "BYTE> ");
 
         let text = if !sensitive {
@@ -357,30 +769,42 @@ impl Buffer {
 
         let line = Line::from(vec![user_span, text]);
 
-        let combined = bytes.iter().chain(line_ending.iter()).map(|b| *b).collect();
+        let combined: Vec<_> = bytes.iter().chain(line_ending.iter()).map(|b| *b).collect();
+        let line_ending: LineEnding = line_ending.into();
 
         // line.spans.insert(0, user_span.clone());
         // line.style_all_spans(Color::DarkGray.into());
-        let user_buf_line = BufLine::new_with_line(
-            line,
-            bytes,
-            self.raw.inner.len(), // .max(1)
-            self.last_terminal_size.width,
-            &self.rendering,
-            &self.line_ending,
-            now,
-            LineType::User {
-                is_bytes: true,
-                is_macro,
-                reloggable_raw: combined,
+        // let user_buf_line = BufLine::new_with_line(
+        //     line,
+        //     bytes,
+        //     self.raw.inner.len(), // .max(1)
+        //     self.last_terminal_size.width,
+        //     &self.rendering,
+        //     &self.line_ending,
+        //     now,
+        //     LineType::User {
+        //         is_bytes: true,
+        //         is_macro,
+        //         reloggable_raw: combined,
+        //     },
+        // );
+        let kit = BufLineKit {
+            timestamp: now,
+            area_width: self.last_terminal_size.width,
+            render: self.line_render_settings(),
+            full_range_slice: RangeSlice {
+                range: self.raw.inner.len()..self.raw.inner.len(),
+                slice: &[],
             },
-        );
+        };
+        let user_buf_line = BufLine::user_line(line, kit, &line_ending, true, is_macro, &combined);
 
-        self.styled_lines.last_rx_completed = self
+        self.styled_lines.last_rx_was_complete = self
             .rendering
             .echo_user_input
-            .filter_user_line(&user_buf_line)
+            .filter_user_line(&user_buf_line.line_type)
             || (self.raw.inner.is_empty() || self.raw.inner.has_line_ending(&self.line_ending));
+
         #[cfg(feature = "logging")]
         if self.log_handle.logging_active() {
             match self.log_settings.log_file_type {
@@ -402,18 +826,20 @@ impl Buffer {
         sensitive: bool,
     ) {
         let now = Local::now();
-        let escaped_line_ending = line_ending.escape_bytes().to_string();
-        let escaped_chained: Vec<u8> = text
-            .as_bytes()
-            .iter()
-            .chain(escaped_line_ending.as_bytes().iter())
-            .map(|i| *i)
-            .collect();
+        // let escaped_line_ending = line_ending.escape_bytes().to_string();
+        // let escaped_chained: Vec<u8> = text
+        //     .as_bytes()
+        //     .iter()
+        //     .chain(escaped_line_ending.as_bytes().iter())
+        //     .map(|i| *i)
+        //     .collect();
+
+        let line_ending: LineEnding = line_ending.into();
 
         let user_span = span!(Color::DarkGray;"USER> ");
         // let Text { lines, .. } = text;
         // TODO HANDLE MULTI-LINE USER INPUT AAAA
-        for (trunc, orig, _indices) in line_ending_iter(&escaped_chained, &self.line_ending) {
+        for (trunc, orig, _indices) in line_ending_iter(text.as_bytes(), &line_ending) {
             // not sure if i want to ansi-style user text?
             // let mut line = match trunc.into_line_lossy(Style::new()) {
             //     Ok(line) => line,
@@ -434,26 +860,37 @@ impl Buffer {
                 line
             };
 
-            let user_buf_line = BufLine::new_with_line(
-                line,
-                orig,
-                self.raw.inner.len(), // .max(1)
-                self.last_terminal_size.width,
-                &self.rendering,
-                &self.line_ending,
-                now,
-                LineType::User {
-                    is_bytes: false,
-                    is_macro,
-                    reloggable_raw: orig.to_owned(),
+            // let user_buf_line = BufLine::new_with_line(
+            //     line,
+            //     orig,
+            //     self.raw.inner.len(), // .max(1)
+            //     self.last_terminal_size.width,
+            //     &self.rendering,
+            //     &self.line_ending,
+            //     now,
+            //     LineType::User {
+            //         is_bytes: false,
+            //         is_macro,
+            //         reloggable_raw: orig.to_owned(),
+            //     },
+            // );
+            let kit = BufLineKit {
+                timestamp: now,
+                area_width: self.last_terminal_size.width,
+                render: self.line_render_settings(),
+                full_range_slice: RangeSlice {
+                    range: self.raw.inner.len()..self.raw.inner.len(),
+                    slice: &[],
                 },
-            );
+            };
+            let user_buf_line = BufLine::user_line(line, kit, &line_ending, false, is_macro, orig);
             // Used to be out of the for loop.
-            self.styled_lines.last_rx_completed = self
+            self.styled_lines.last_rx_was_complete = self
                 .rendering
                 .echo_user_input
-                .filter_user_line(&user_buf_line)
+                .filter_user_line(&user_buf_line.line_type)
                 || (self.raw.inner.is_empty() || self.raw.inner.has_line_ending(&self.line_ending));
+
             #[cfg(feature = "logging")]
             if self.log_handle.logging_active() {
                 match self.log_settings.log_file_type {
@@ -468,127 +905,180 @@ impl Buffer {
         }
     }
 
-    /// Consumes **post**-split by line endings slices,
-    /// either creating a new line or appending to the last one.
-    fn consume_port_bytes<'a>(
-        &mut self,
-        trunc: &'a [u8],
-        orig: &'a [u8],
-        start_index: usize,
-        known_time: Option<DateTime<Local>>,
-    ) {
-        // debug!("{trunc:?}, {orig:?}");
-        assert!(
-            trunc.len() <= orig.len(),
-            "truncated buffer can't be larger than original"
-        );
-        let append_to_last = !self.styled_lines.last_rx_completed;
-        if orig.is_empty() {
-            return;
-        }
-
-        let this_rx_completed = self.raw.inner.has_line_ending(&self.line_ending);
-
-        if append_to_last {
-            let last_line = self
-                .styled_lines
-                .rx
-                .last_mut()
-                .expect("can't append to nothing");
-            let last_index = last_line.index_in_buffer();
-
-            let trunc = &self.raw.inner[last_index..start_index + trunc.len()];
-            let orig = &self.raw.inner[last_index..start_index + orig.len()];
-            // info!("AAAFG: {:?}", slice);
-            let lossy_flavor = if self.rendering.escape_invalid_bytes {
-                LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
-            } else {
-                LossyFlavor::replacement_char()
-            };
-            let mut line = match trunc.into_line_lossy(Style::new(), lossy_flavor) {
-                Ok(line) => line,
-                Err(_) => {
-                    error!("ansi-to-tui failed to parse input! Using unstyled text.");
-                    Line::from(String::from_utf8_lossy(trunc).to_string())
-                }
-            };
-            // debug!(
-            //     "buf_index: {last_index}, update: {line}",
-            //     line = line
-            //         .spans
-            //         .iter()
-            //         .map(|s| s.content.as_ref())
-            //         .join("")
-            //         .escape_default()
-            // );
-
-            // if line.width() >= 5 {
-            //     line.style_slice(1..3, Style::new().red().italic());
-            // }
-
-            let line_opt = self.color_rules.apply_onto(trunc, line);
-
-            if let Some(line) = line_opt {
-                last_line.update_line(
-                    line,
-                    orig,
-                    self.last_terminal_size.width,
-                    &self.rendering,
-                    &self.line_ending,
-                );
-            } else {
-                _ = self.styled_lines.rx.pop();
-                self.styled_lines.last_rx_completed = true;
-                // last_line.clear_line();
-            }
-        } else {
-            let lossy_flavor = if self.rendering.escape_invalid_bytes {
-                LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
-            } else {
-                LossyFlavor::replacement_char()
-            };
-            let mut line = match trunc.into_line_lossy(Style::new(), lossy_flavor) {
-                Ok(line) => line,
-                Err(_) => {
-                    error!("ansi-to-tui failed to parse input! Using unstyled text.");
-                    Line::from(String::from_utf8_lossy(trunc).to_string())
-                }
-            };
-
-            let line_opt = self.color_rules.apply_onto(trunc, line);
-
-            if let Some(line) = line_opt {
-                self.styled_lines.rx.push(BufLine::new_with_line(
-                    line,
-                    orig,
-                    start_index,
-                    self.last_terminal_size.width,
-                    &self.rendering,
-                    &self.line_ending,
-                    known_time.unwrap_or_else(Local::now),
-                    LineType::Port {
-                        escaped_line_ending: None,
-                    },
-                ));
-            }
-        };
-
-        self.styled_lines.last_rx_completed = this_rx_completed;
-    }
-
     // Forced to use Vec<u8> for now
-    pub fn append_rx_bytes(&mut self, bytes: &mut Vec<u8>) {
+    pub fn fresh_rx_bytes(&mut self, bytes: &mut Vec<u8>) {
         let now = Local::now();
-        let mut index = self.raw.inner.len();
-        self.raw.buffer_timestamps.push((index, now));
         // debug!("{lines:?}");
         // debug!("{:#?}", self.lines);
         #[cfg(feature = "logging")]
         self.log_handle.log_rx_bytes(now, bytes.clone()).unwrap();
-        for (trunc, orig, indices) in line_ending_iter(bytes, &self.line_ending.clone()) {
-            index = self.raw.inner.len();
-            self.raw.inner.extend(orig);
-            self.consume_port_bytes(trunc, orig, index, Some(now));
+
+        self.raw.feed(&bytes, now);
+
+        // let meow = std::time::Instant::now();
+        self.consume_latest_bytes(now);
+        // error!("{:?}", meow.elapsed());
+
+        // self.raw.inner.extend(bytes.iter());
+        // while self.consume_latest_bytes(Some(now)) {
+        //     ();
+        // }
+    }
+
+    fn consume_latest_bytes(&mut self, timestamp: DateTime<Local>) {
+        #[cfg(not(feature = "defmt"))]
+        while let Some((index_in_buffer, delimited_slice)) = self.raw.next_slice_raw() {
+            let DelimitedSlice::Raw(slice) = delimited_slice else {
+                unreachable!();
+            };
+            let kit = BufLineKit {
+                timestamp,
+                area_width: self.last_terminal_size.width,
+                render: RenderSettings {
+                    rendering: &self.rendering,
+                    defmt: &self.defmt_settings,
+                },
+                full_range_slice: unsafe {
+                    RangeSlice::from_parent_and_child(&self.raw.inner, slice)
+                },
+            };
+
+            self.styled_lines.consume_as_text(
+                &self.raw,
+                &self.color_rules,
+                index_in_buffer,
+                delimited_slice,
+                kit,
+                &self.line_ending,
+            );
+            self.raw.consumed(slice.len());
+        }
+
+        #[cfg(feature = "defmt")]
+        while let Some((index_in_buffer, delimited_slice)) = self.raw.next_slice(
+            self.defmt_settings.defmt_parsing.clone(),
+            &self.defmt_raw_consume_fail_raw_buffer_len,
+        ) {
+            match delimited_slice {
+                DelimitedSlice::Raw(slice) => {
+                    let kit = BufLineKit {
+                        timestamp,
+                        area_width: self.last_terminal_size.width,
+                        render: RenderSettings {
+                            rendering: &self.rendering,
+                            defmt: &self.defmt_settings,
+                        },
+                        full_range_slice: unsafe {
+                            RangeSlice::from_parent_and_child(&self.raw.inner, slice)
+                        },
+                    };
+
+                    self.styled_lines.consume_as_text(
+                        &self.raw,
+                        &self.color_rules,
+                        index_in_buffer,
+                        delimited_slice,
+                        kit,
+                        &self.line_ending,
+                    );
+                    self.raw.consumed(slice.len());
+                }
+                DelimitedSlice::DefmtRaw(raw_uncompressed) => {
+                    if let Some(decoder) = &self.defmt_decoder {
+                        let kit = BufLineKit {
+                            timestamp,
+                            area_width: self.last_terminal_size.width,
+                            render: RenderSettings {
+                                rendering: &self.rendering,
+                                defmt: &self.defmt_settings,
+                            },
+                            full_range_slice: unsafe {
+                                RangeSlice::from_parent_and_child(&self.raw.inner, raw_uncompressed)
+                            },
+                        };
+
+                        match decoder.table.decode(&raw_uncompressed) {
+                            Ok((frame, consumed)) => {
+                                self.defmt_raw_consume_fail_raw_buffer_len = None;
+                                self.styled_lines.consume_frame(
+                                    kit,
+                                    decoder,
+                                    &frame,
+                                    &self.color_rules,
+                                );
+                                self.styled_lines.last_rx_was_complete = true;
+
+                                self.raw.consumed(consumed);
+                            }
+                            Err(defmt_decoder::DecodeError::UnexpectedEof) => {
+                                self.defmt_raw_consume_fail_raw_buffer_len =
+                                    Some(self.raw.inner.len());
+                            }
+                            Err(defmt_decoder::DecodeError::Malformed) => {
+                                self.defmt_raw_consume_fail_raw_buffer_len = Some(usize::MAX);
+                                let line =
+                                    Line::raw("defmt raw parse error, ceasing further attempts.");
+                                self.styled_lines.rx.push(BufLine::port_text_line(
+                                    line,
+                                    kit,
+                                    &LineEnding::None,
+                                ));
+                            }
+                        }
+                    }
+                }
+                DelimitedSlice::DefmtRzcobs { raw, inner } => {
+                    let kit = BufLineKit {
+                        timestamp,
+                        area_width: self.last_terminal_size.width,
+                        render: RenderSettings {
+                            rendering: &self.rendering,
+                            defmt: &self.defmt_settings,
+                        },
+                        full_range_slice: unsafe {
+                            RangeSlice::from_parent_and_child(&self.raw.inner, raw)
+                        },
+                    };
+                    let raw_slice_len = raw.len();
+
+                    if let Some(decoder) = &self.defmt_decoder {
+                        if let Ok(uncompressed) = rzcobs_decode(inner) {
+                            if let Ok((frame, _consumed)) = decoder.table.decode(&uncompressed) {
+                                self.styled_lines.consume_frame(
+                                    kit,
+                                    decoder,
+                                    &frame,
+                                    &self.color_rules,
+                                );
+                            } else {
+                                self.styled_lines.failed_decode(
+                                    delimited_slice,
+                                    DefmtPacketError::DefmtDecode,
+                                    kit,
+                                    &self.line_ending,
+                                );
+                            }
+                        } else {
+                            self.styled_lines.failed_decode(
+                                delimited_slice,
+                                DefmtPacketError::RzcobsDecompress,
+                                kit,
+                                &self.line_ending,
+                            );
+                        }
+                    } else {
+                        self.styled_lines.failed_decode(
+                            delimited_slice,
+                            DefmtPacketError::NoDecoder,
+                            kit,
+                            &self.line_ending,
+                        );
+                    }
+
+                    self.styled_lines.last_rx_was_complete = true;
+                    self.raw.consumed(raw_slice_len);
+                }
+            }
         }
     }
 
@@ -606,30 +1096,61 @@ impl Buffer {
 
         // Taking these variables out of `self` temporarily to allow running &mut self methods while holding
         // references to these.
-        let timestamps = std::mem::take(&mut self.raw.buffer_timestamps);
-        let user_lines = std::mem::take(&mut self.styled_lines.tx);
+        let user_timestamps: Vec<_> = self
+            .styled_lines
+            .tx
+            .iter()
+            .map(|b| {
+                let LineType::User {
+                    is_bytes, is_macro, ..
+                } = &b.line_type
+                else {
+                    unreachable!();
+                };
+
+                (
+                    LineType::User {
+                        is_bytes: *is_bytes,
+                        is_macro: *is_macro,
+                        reloggable_raw: Vec::new(),
+                        escaped_line_ending: None,
+                    },
+                    b.raw_buffer_index,
+                    b.timestamp,
+                )
+            })
+            .collect();
         let orig_buf_len = self.raw.inner.len();
-        let buffer = std::mem::replace(&mut self.raw.inner, Vec::with_capacity(orig_buf_len));
-        let line_ending = self.line_ending.clone();
+        let timestamps_len = self.raw.buffer_timestamps.len();
+        let rx_buffer = std::mem::replace(
+            &mut self.raw,
+            RawBuffer::with_capacities(orig_buf_len, timestamps_len),
+        );
         let user_echo = self.rendering.echo_user_input.clone();
 
         // No lines to append to.
-        self.styled_lines.last_rx_completed = true;
+        self.styled_lines.last_rx_was_complete = true;
+
+        #[cfg(feature = "defmt")]
+        {
+            self.defmt_raw_consume_fail_raw_buffer_len = None;
+        }
 
         // Getting all time-tagged indices in the buffer where either
         // 1. Data came in through the port
         // 2. The user sent data
         let interleaved_points = interleave_by(
-            timestamps
+            rx_buffer
+                .buffer_timestamps
                 .iter()
                 .map(|(index, timestamp)| (*index, *timestamp, false))
                 // Add a "finale" element to capture any remaining buffer, always placed at the end.
                 .chain(std::iter::once((orig_buf_len, Local::now(), false))),
-            user_lines
-                .iter()
+            user_timestamps
+                .into_iter()
                 // If a user line isn't visible, ignore it when taking external new-lines into account.
-                .filter(|b| user_echo.filter_user_line(b))
-                .map(|b| (b.raw_buffer_index, b.timestamp, true)),
+                .filter(|(line_type, _, _)| user_echo.filter_user_line(line_type))
+                .map(|(_, index, timestamp)| (index, timestamp, true)),
             // Interleaving by sorting in order of raw_buffer_index, if they're equal, then whichever has a sooner timestamp.
             |port, user| match port.0.cmp(&user.0) {
                 Ordering::Equal => port.1 <= user.1,
@@ -638,7 +1159,7 @@ impl Buffer {
             },
         );
 
-        let mut new_index = 0;
+        let mut new_length = 0;
         debug!("total len: {orig_buf_len}");
 
         let buffer_slices = interleaved_points
@@ -651,7 +1172,7 @@ impl Buffer {
             .map(
                 |((start_index, timestamp, was_user_line), (end_index, _, _))| {
                     (
-                        &buffer[start_index..end_index],
+                        &rx_buffer.inner[start_index..end_index],
                         timestamp,
                         was_user_line,
                         (start_index, end_index),
@@ -668,27 +1189,30 @@ impl Buffer {
             // If this was where a user line we allow to render is,
             // then we'll finish this line early if it's not already finished.
             if was_user_line {
-                self.styled_lines.last_rx_completed = true;
+                self.styled_lines.last_rx_was_complete = true;
                 continue;
             }
-
+            self.raw.feed(slice, timestamp);
+            self.consume_latest_bytes(timestamp);
             // info!(
             //     "Getting {le} slices from [{slice_start}..{slice_end}], {timestamp}, {was_user_line}",
             //     le = line_ending.escape_debug()
             // );
-            for (trunc, orig, (orig_start, orig_end)) in line_ending_iter(slice, &line_ending) {
-                // info!(
-                //     "trunc: {trunc_len}, orig: {orig_len}. [{start}..{end}]",
-                //     trunc_len = trunc.len(),
-                //     orig_len = orig.len(),
-                //     start = orig_start + slice_start,
-                //     end = orig_end + slice_start,
-                // );
-                self.raw.inner.extend(orig);
-                self.consume_port_bytes(trunc, orig, new_index, Some(timestamp));
-                new_index += orig.len();
-            }
+            // for (trunc, orig, (orig_start, orig_end)) in line_ending_iter(slice, &line_ending) {
+            // info!(
+            //     "trunc: {trunc_len}, orig: {orig_len}. [{start}..{end}]",
+            //     trunc_len = trunc.len(),
+            //     orig_len = orig.len(),
+            //     start = orig_start + slice_start,
+            //     end = orig_end + slice_start,
+            // );
+
+            // while self.consume_latest_bytes(Some(timestamp)) {}
+            new_length += slice.len();
+            // }
         }
+
+        // defmt_delimit(meow);
 
         // Asserting that our work seems correct.
         assert_eq!(
@@ -697,8 +1221,12 @@ impl Buffer {
             "Buffer size should not have changed during reconsumption."
         );
         assert_eq!(
-            new_index, orig_buf_len,
+            new_length, orig_buf_len,
             "Iterator's slices should have same total length as raw buffer."
+        );
+        assert_eq!(
+            self.raw.buffer_timestamps, rx_buffer.buffer_timestamps,
+            "RawBuffers should have identical buffer_timestamps."
         );
         self.styled_lines.rx.windows(2).for_each(|lines| {
             assert!(
@@ -709,8 +1237,8 @@ impl Buffer {
 
         // Returning variables we stole back to self.
         // (excluding the raw buffer since that got reconsumed gradually back into self)
-        self.raw.buffer_timestamps = timestamps;
-        self.styled_lines.tx = user_lines;
+        // self.raw.buffer_timestamps = rx_timestamps;
+        // self.styled_lines.tx = user_lines;
         self.scroll_by(0);
     }
 
@@ -730,12 +1258,9 @@ impl Buffer {
     pub fn update_render_settings(&mut self, rendering: Rendering) {
         let old = std::mem::replace(&mut self.rendering, rendering);
         let new = &self.rendering;
-        let should_reconsume =
-            changed!(old, new, echo_user_input) || changed!(old, new, escape_invalid_bytes);
+        let should_reconsume = changed!(old, new, echo_user_input, escape_invalid_bytes);
 
-        let should_rewrap_lines = changed!(old, new, timestamps)
-            || changed!(old, new, show_indices)
-            || changed!(old, new, show_line_ending);
+        let should_rewrap_lines = changed!(old, new, timestamps, show_indices, show_line_ending);
 
         if changed!(old, new, bytes_per_line) {
             self.determine_bytes_per_line(new.bytes_per_line.into());
@@ -743,6 +1268,29 @@ impl Buffer {
         } else if changed!(old, new, hex_view) {
             self.correct_hex_view_scroll();
         }
+
+        if should_reconsume {
+            self.reconsume_raw_buffer();
+        } else if should_rewrap_lines {
+            self.update_wrapped_line_heights();
+        }
+
+        self.scroll_by(0);
+    }
+    #[cfg(feature = "defmt")]
+    pub fn update_defmt_settings(&mut self, defmt: Defmt) {
+        let old = std::mem::replace(&mut self.defmt_settings, defmt);
+        let new = &self.defmt_settings;
+        let should_reconsume = changed!(old, new, defmt_parsing, max_log_level);
+
+        let should_rewrap_lines = changed!(
+            old,
+            new,
+            device_timestamp,
+            show_file,
+            show_module,
+            show_line_number
+        );
 
         if should_reconsume {
             self.reconsume_raw_buffer();
@@ -852,16 +1400,51 @@ impl Buffer {
         self.styled_lines.rx.clear();
         self.styled_lines.rx.shrink_to(1024);
 
-        self.raw.buffer_timestamps.clear();
-        self.raw.buffer_timestamps.shrink_to(1024);
-
         self.styled_lines.tx.clear();
         self.styled_lines.tx.shrink_to(1024);
 
-        self.raw.inner.clear();
-        self.raw.inner.shrink_to(1024);
+        self.styled_lines.last_rx_was_complete = true;
 
-        self.styled_lines.last_rx_completed = true;
+        self.raw.reset();
+    }
+}
+// Returns None if the slice would be fully hidden by the color rules.
+fn slice_as_port_text(
+    kit: BufLineKit,
+    color_rules: &ColorRules,
+    line_ending: &LineEnding,
+) -> Option<BufLine> {
+    let lossy_flavor = if kit.render.rendering.escape_invalid_bytes {
+        LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
+    } else {
+        LossyFlavor::replacement_char()
+    };
+
+    let RangeSlice {
+        range,
+        slice: original,
+    } = &kit.full_range_slice;
+
+    let truncated = if original.has_line_ending(&line_ending) {
+        &original[..original.len() - line_ending.as_bytes().len()]
+    } else {
+        original
+    };
+
+    let line = match truncated.into_line_lossy(Style::new(), lossy_flavor) {
+        Ok(line) => line,
+        Err(_) => {
+            error!("ansi-to-tui failed to parse input! Using unstyled text.");
+            Line::from(String::from_utf8_lossy(truncated).to_string())
+        }
+    };
+
+    let line_opt = color_rules.apply_onto(truncated, line);
+
+    if let Some(line) = line_opt {
+        Some(BufLine::port_text_line(line, kit, &line_ending))
+    } else {
+        None
     }
 }
 
@@ -872,6 +1455,7 @@ impl Buffer {
 /// `usize` tuple has the inclusive indices into the given slice.
 ///
 /// If no line ending was found, emits the whole slice once.
+#[inline(always)]
 pub fn line_ending_iter<'a>(
     bytes: &'a [u8],
     line_ending: &'a LineEnding,

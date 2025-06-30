@@ -8,6 +8,8 @@ use std::{
 
 use arboard::Clipboard;
 use bstr::ByteVec;
+#[cfg(feature = "defmt")]
+use camino::Utf8Path;
 use color_eyre::{eyre::Result, owo_colors::OwoColorize};
 use compact_str::{CompactString, ToCompactString};
 use crokey::{KeyCombination, key};
@@ -26,6 +28,8 @@ use ratatui::{
         ScrollbarState, Table, TableState, Widget, Wrap,
     },
 };
+#[cfg(feature = "defmt")]
+use ratatui_explorer::FileExplorer;
 use ratatui_macros::{horizontal, line, span, vertical};
 use serialport::{SerialPortInfo, SerialPortType};
 use struct_table::{ArrowKey, StructTable};
@@ -37,8 +41,13 @@ use tui_big_text::{BigText, PixelSize};
 use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 use unicode_width::UnicodeWidthStr;
 
+#[cfg(feature = "defmt")]
 use crate::{
-    buffer::Buffer,
+    buffer::defmt::elf_watcher::ElfWatchEvent, keybinds::ShowDefmtSelect, settings::Defmt,
+    tui::defmt::DefmtMeow,
+};
+use crate::{
+    buffer::{Buffer, defmt::DefmtTableError},
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
@@ -103,9 +112,11 @@ pub enum Event {
     Crossterm(CrosstermEvent),
     Serial(SerialEvent),
     RxBuffer(Vec<u8>),
+    Tick(Tick),
     #[cfg(feature = "logging")]
     Logging(LoggingEvent),
-    Tick(Tick),
+    #[cfg(feature = "defmt_watch")]
+    DefmtElfWatch(ElfWatchEvent),
     Quit,
 }
 
@@ -189,6 +200,9 @@ pub enum PopupMenu {
     EspFlash,
     #[cfg(feature = "macros")]
     Macros,
+    #[cfg(feature = "defmt")]
+    #[strum(serialize = "defmt")]
+    Defmt,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -196,6 +210,10 @@ enum Popup {
     PopupMenu(PopupMenu),
     CurrentKeybinds,
     ErrorMessage(String),
+    #[cfg(feature = "defmt")]
+    DefmtNewElf(FileExplorer),
+    #[cfg(feature = "defmt")]
+    DefmtRecentElf,
 }
 
 impl From<PopupMenu> for Popup {
@@ -268,6 +286,9 @@ pub struct App {
 
     #[cfg(feature = "espflash")]
     espflash: EspFlashState,
+
+    #[cfg(feature = "defmt")]
+    defmt_meow: DefmtMeow,
     // TODO
     // error_message: Option<String>,
 }
@@ -333,13 +354,51 @@ impl App {
             Duration::from_secs(1),
         );
         let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
-        let buffer = Buffer::new(
+
+        #[cfg(feature = "defmt")]
+        let mut defmt_meow = DefmtMeow::build(
+            #[cfg(feature = "defmt_watch")]
+            tx.clone(),
+        )
+        .unwrap();
+
+        let mut buffer = Buffer::new(
             line_ending,
             settings.rendering.clone(),
             #[cfg(feature = "logging")]
             settings.logging.clone(),
+            #[cfg(feature = "logging")]
             tx.clone(),
+            settings.defmt.clone(),
         );
+
+        if let Some(last_elf) = defmt_meow.recent_elfs.last()
+            && last_elf.is_file()
+        {
+            match try_load_defmt_elf(
+                &last_elf.to_owned(),
+                &mut buffer.defmt_decoder,
+                &mut defmt_meow.recent_elfs,
+                #[cfg(feature = "defmt_watch")]
+                &mut defmt_meow.watcher_handle,
+            ) {
+                Ok(()) => (),
+                Err(e) => {
+                    let text = format!("defmt ELF reload failed! {e}");
+                    error!("{text}");
+                    // self.notifs.notify_str(text, Color::Green);
+                }
+            }
+        }
+
+        if let Some(last_path) = defmt_meow.recent_elfs.last()
+            && last_path.exists()
+            && last_path.is_file()
+            && let Ok(decoder) = crate::buffer::defmt::DefmtDecoder::from_elf_bytes(last_path)
+        {
+            let _ = buffer.defmt_decoder.insert(decoder);
+        }
+
         // debug!("{buffer:#?}");
         Self {
             state: RunningState::Running,
@@ -381,6 +440,9 @@ impl App {
             #[cfg(feature = "espflash")]
             espflash: EspFlashState::new(),
 
+            #[cfg(feature = "defmt")]
+            defmt_meow,
+
             user_broke_connection: false,
         }
     }
@@ -391,7 +453,8 @@ impl App {
         // Get initial size of buffer.
         self.buffer.update_terminal_size(&mut terminal)?;
         let mut max_draw = Duration::default();
-        let mut max_handle = Duration::default();
+        let mut max_rx_handle = Duration::default();
+        let mut max_event_handle = Duration::default();
         while self.is_running() {
             let start = Instant::now();
             // TODO performance widget?
@@ -422,17 +485,21 @@ impl App {
                 Err(crossbeam::channel::TryRecvError::Disconnected) => todo!(),
             }
 
+            let end2 = start2.elapsed();
+            let start3 = Instant::now();
+
             match self.rx.try_recv() {
                 Ok(event) => self.handle_event(event, &mut terminal)?,
                 Err(crossbeam::channel::TryRecvError::Empty) => (),
                 Err(crossbeam::channel::TryRecvError::Disconnected) => todo!(),
             }
 
-            let end2 = start2.elapsed();
-            max_handle = max_handle.max(end2);
+            let end3 = start3.elapsed();
+            max_rx_handle = max_rx_handle.max(end2);
+            max_event_handle = max_event_handle.max(end3);
             debug!(
-                "Frame took {:?} to draw (max: {max_draw:?}), {:?} to handle (max: {max_handle:?}) ",
-                end1, end2
+                "Frame took {:?} to draw (max: {max_draw:?}), {:?} to handle RX (max: {max_rx_handle:?}), {:?} to handle event (max: {max_event_handle:?}) ",
+                end1, end2, end3
             );
             // debug!("{msg:?}");
 
@@ -463,7 +530,16 @@ impl App {
         match event {
             Event::Quit => self.shutdown(),
 
+            Event::RxBuffer(mut data) => {
+                self.buffer.fresh_rx_bytes(&mut data);
+                self.buffer.scroll_by(0);
+
+                self.repeating_line_flip.flip();
+            }
+
+            // TODO force re-draw every minute or so?
             Event::Crossterm(CrosstermEvent::Resize) => {
+                terminal.autoresize()?;
                 self.buffer.update_terminal_size(terminal)?;
             }
             Event::Crossterm(CrosstermEvent::KeyPress(key)) => self.handle_key_press(key),
@@ -568,12 +644,6 @@ impl App {
                         );
                     }
                 }
-            }
-            Event::RxBuffer(mut data) => {
-                self.buffer.append_rx_bytes(&mut data);
-                self.buffer.scroll_by(0);
-
-                self.repeating_line_flip.flip();
             }
             Event::Serial(SerialEvent::Ports(ports)) => {
                 self.ports = ports;
@@ -683,6 +753,34 @@ impl App {
             }
             Event::Tick(Tick::Tx) => {
                 self.repeating_line_flip.flip();
+            }
+            #[cfg(feature = "defmt_watch")]
+            Event::DefmtElfWatch(ElfWatchEvent::ElfUpdated(elf_path)) => {
+                if self.settings.defmt.watch_elf_for_changes {
+                    info!("ELF File Watch triggered, reloading ELF at {elf_path}");
+
+                    match try_load_defmt_elf(
+                        &elf_path,
+                        &mut self.buffer.defmt_decoder,
+                        &mut self.defmt_meow.recent_elfs,
+                        #[cfg(feature = "defmt_watch")]
+                        &mut self.defmt_meow.watcher_handle,
+                    ) {
+                        Ok(()) => {
+                            self.notifs
+                                .notify_str("defmt ELF reloaded due to file update!", Color::Green);
+                        }
+                        Err(e) => {
+                            let text = format!("defmt ELF reload failed! {e}");
+                            error!("{text}");
+                            self.notifs.notify_str(text, Color::Red);
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "defmt")]
+            Event::DefmtElfWatch(ElfWatchEvent::Error(err)) => {
+                self.notifs.notify_str(err, Color::Red);
             }
         }
         Ok(())
@@ -816,6 +914,66 @@ impl App {
             }
             _ => (),
         }
+
+        #[cfg(feature = "defmt")]
+        if let Some(Popup::DefmtNewElf(file_explorer)) = &mut self.popup {
+            let input = match key.code {
+                KeyCode::Left | KeyCode::Char('h') => ratatui_explorer::Input::Left,
+                KeyCode::Down | KeyCode::Char('j') => ratatui_explorer::Input::Down,
+                KeyCode::Up | KeyCode::Char('k') => ratatui_explorer::Input::Up,
+                KeyCode::Right | KeyCode::Char('l') => ratatui_explorer::Input::Right,
+                KeyCode::Enter => ratatui_explorer::Input::Right,
+                KeyCode::Backspace | KeyCode::BackTab => ratatui_explorer::Input::Left,
+                KeyCode::PageUp => ratatui_explorer::Input::PageUp,
+                KeyCode::PageDown => ratatui_explorer::Input::PageDown,
+                KeyCode::Home => ratatui_explorer::Input::Home,
+                KeyCode::End => ratatui_explorer::Input::End,
+
+                _ => ratatui_explorer::Input::None,
+            };
+            if let Err(e) = file_explorer.handle(input) {
+                error!("File Explorer Error: {e}");
+                self.notifs
+                    .notify_str(format!("Explorer Error: {e}"), Color::Red);
+                self.dismiss_popup();
+                return;
+            };
+            match input {
+                ratatui_explorer::Input::None => (),
+                ratatui_explorer::Input::Right => {
+                    let current = file_explorer.current();
+                    let is_file = current.is_file();
+                    if is_file {
+                        use camino::Utf8PathBuf;
+
+                        let elf_path: Utf8PathBuf = current.path().to_owned().try_into().unwrap();
+
+                        match try_load_defmt_elf(
+                            &elf_path,
+                            &mut self.buffer.defmt_decoder,
+                            &mut self.defmt_meow.recent_elfs,
+                            #[cfg(feature = "defmt_watch")]
+                            &mut self.defmt_meow.watcher_handle,
+                        ) {
+                            Ok(()) => {
+                                self.notifs
+                                    .notify_str("defmt ELF loaded successfully!", Color::Green);
+                            }
+                            Err(e) => {
+                                let text = format!("defmt ELF load failed! {e}");
+                                error!("{text}");
+                                self.notifs.notify_str(text, Color::Red);
+                            }
+                        }
+
+                        self.dismiss_popup();
+                    }
+                    return;
+                }
+                _ => return,
+            }
+        }
+
         match self.menu {
             Menu::Terminal(TerminalPrompt::None) if self.popup.is_none() => {
                 at_terminal = true;
@@ -1119,11 +1277,40 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             // TODO show name of flashing profile
-            Action::EspFlashProfile(profile) => self
-                .serial
-                .esp_flash_profile(self.espflash.profile_from_name(&profile).unwrap())?,
+            Action::EspFlashProfile(profile) => {
+                let profile = self.espflash.profile_from_name(&profile).unwrap();
+                self.esp_flash_profile(profile)?;
+            }
         }
         Ok(None)
+    }
+    #[cfg(feature = "espflash")]
+    fn esp_flash_profile(&mut self, profile: esp::EspProfile) -> Result<()> {
+        #[cfg(feature = "defmt")]
+        let profile_defmt_path = profile.defmt_elf_path();
+
+        self.serial.esp_flash_profile(profile)?;
+
+        #[cfg(feature = "defmt")]
+        if let Some(elf_path) = profile_defmt_path {
+            match try_load_defmt_elf(
+                &elf_path,
+                &mut self.buffer.defmt_decoder,
+                &mut self.defmt_meow.recent_elfs,
+                #[cfg(feature = "defmt_watch")]
+                &mut self.defmt_meow.watcher_handle,
+            ) {
+                Ok(()) => {
+                    self.notifs.notify_str("defmt ELF loaded!", Color::Green);
+                }
+                Err(e) => {
+                    let text = format!("defmt ELF load failed! {e}");
+                    error!("{text}");
+                    self.notifs.notify_str(text, Color::Red);
+                }
+            }
+        }
+        Ok(())
     }
     fn run_method_from_action(&mut self, action: AppAction) -> Result<()> {
         let pretty_bool = |b: bool| {
@@ -1290,6 +1477,16 @@ impl App {
                 self.notifs
                     .notify_str("Reloaded espflash profiles!", Color::Green);
                 self.espflash.reload().unwrap();
+            }
+            #[cfg(feature = "defmt")]
+            A::ShowDefmtSelect(ShowDefmtSelect::SelectRecent) => {
+                self.show_popup(Popup::DefmtRecentElf)
+            }
+            A::ShowDefmtSelect(ShowDefmtSelect::SelectTui) => {
+                self.show_popup(Popup::DefmtNewElf(create_file_explorer()?))
+            }
+            A::ShowDefmtSelect(ShowDefmtSelect::SelectSystem) => {
+                todo!("need a system file picker");
             } // unknown => {
               //     warn!("Unknown keybind action: {unknown}");
               //     self.notifs.notify_str(
@@ -1302,6 +1499,7 @@ impl App {
     }
     // fn tab_pressed(&mut self) {}
     fn esc_pressed(&mut self) {
+        #[cfg(feature = "defmt")]
         match self.popup {
             None => (),
             Some(_) => {
@@ -1349,9 +1547,19 @@ impl App {
                 self.popup_hint_scroll = -2;
                 match self.popup_menu_scroll {
                     0 => self.popup_menu_scroll = self.current_popup_item_count(),
-                    _ => self.popup_menu_scroll = self.popup_menu_scroll - 1,
+                    _ => self.popup_menu_scroll -= 1,
                 }
             }
+            #[cfg(feature = "defmt")]
+            Some(Popup::DefmtNewElf(_)) => (),
+            #[cfg(feature = "defmt")]
+            Some(Popup::DefmtRecentElf) => match self.popup_menu_scroll {
+                0 => {
+                    self.popup_menu_scroll =
+                        self.defmt_meow.recent_elfs.recents_len().saturating_sub(1)
+                }
+                _ => self.popup_menu_scroll -= 1,
+            },
         }
 
         if self.popup.is_some() {
@@ -1394,9 +1602,20 @@ impl App {
                     _ if self.popup_menu_scroll == self.current_popup_item_count() => {
                         self.popup_menu_scroll = 0
                     }
-                    _ => self.popup_menu_scroll = self.popup_menu_scroll + 1,
+                    _ => self.popup_menu_scroll += 1,
                 }
             }
+            #[cfg(feature = "defmt")]
+            Some(Popup::DefmtNewElf(_)) => (),
+            #[cfg(feature = "defmt")]
+            Some(Popup::DefmtRecentElf) => match self.popup_menu_scroll {
+                _ if self.popup_menu_scroll
+                    == self.defmt_meow.recent_elfs.recents_len().saturating_sub(1) =>
+                {
+                    self.popup_menu_scroll = 0
+                }
+                _ => self.popup_menu_scroll += 1,
+            },
         }
 
         if self.popup.is_some() {
@@ -1497,6 +1716,22 @@ impl App {
                     .handle_input(ArrowKey::Left, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
+            #[cfg(feature = "defmt")]
+            Some(Popup::PopupMenu(PopupMenu::Defmt)) => {
+                if self.popup_menu_scroll <= 2 {
+                    return;
+                }
+
+                let result = self
+                    .scratch
+                    .defmt
+                    .handle_input(ArrowKey::Left, self.get_corrected_popup_item().unwrap())
+                    .unwrap();
+            }
+            #[cfg(feature = "defmt")]
+            Some(Popup::DefmtNewElf(_)) => (),
+            #[cfg(feature = "defmt")]
+            Some(Popup::DefmtRecentElf) => (),
         }
         if self.popup.is_some() {
             return;
@@ -1569,6 +1804,22 @@ impl App {
                     .handle_input(ArrowKey::Right, self.get_corrected_popup_item().unwrap())
                     .unwrap();
             }
+            #[cfg(feature = "defmt")]
+            Some(Popup::PopupMenu(PopupMenu::Defmt)) => {
+                if self.popup_menu_scroll <= 2 {
+                    return;
+                }
+
+                let result = self
+                    .scratch
+                    .defmt
+                    .handle_input(ArrowKey::Right, self.get_corrected_popup_item().unwrap())
+                    .unwrap();
+            }
+            #[cfg(feature = "defmt")]
+            Some(Popup::DefmtNewElf(_)) => (),
+            #[cfg(feature = "defmt")]
+            Some(Popup::DefmtRecentElf) => (),
         }
         if self.popup.is_some() {
             return;
@@ -1689,8 +1940,7 @@ impl App {
                         "shouldn't have selected a non-existant flash profile"
                     );
 
-                    self.serial
-                        .esp_flash_profile(self.espflash.profile_from_index(selected).unwrap())
+                    self.esp_flash_profile(self.espflash.profile_from_index(selected).unwrap())
                         .unwrap();
                 } else {
                     match selected {
@@ -1758,6 +2008,64 @@ impl App {
                 self.dismiss_popup();
                 self.notifs
                     .notify_str("Logging settings saved!", Color::Green);
+            }
+            #[cfg(feature = "defmt")]
+            Some(Popup::PopupMenu(PopupMenu::Defmt)) => {
+                if self.popup_menu_scroll == 0 {
+                    return;
+                } else if self.popup_menu_scroll == 1 {
+                    // open file selector
+
+                    let file_explorer = create_file_explorer().unwrap();
+
+                    self.show_popup(Popup::DefmtNewElf(file_explorer));
+
+                    return;
+                } else if self.popup_menu_scroll == 2 {
+                    // open recent selector
+                    self.show_popup(Popup::DefmtRecentElf);
+                    return;
+                }
+                // Otherwise, save settings.
+
+                self.settings.defmt = self.scratch.defmt.clone();
+
+                self.buffer
+                    .update_defmt_settings(self.settings.defmt.clone());
+
+                self.settings.save().unwrap();
+                self.dismiss_popup();
+                self.notifs
+                    .notify_str("defmt settings saved!", Color::Green);
+            }
+            Some(Popup::DefmtNewElf(_)) => (),
+            Some(Popup::DefmtRecentElf) => {
+                if let Some(selected) = self.popup_table_state.selected() {
+                    let elf_path = self
+                        .defmt_meow
+                        .recent_elfs
+                        .nth_path(selected)
+                        .unwrap()
+                        .to_owned();
+                    match try_load_defmt_elf(
+                        &elf_path,
+                        &mut self.buffer.defmt_decoder,
+                        &mut self.defmt_meow.recent_elfs,
+                        #[cfg(feature = "defmt_watch")]
+                        &mut self.defmt_meow.watcher_handle,
+                    ) {
+                        Ok(()) => {
+                            self.notifs
+                                .notify_str("defmt ELF loaded successfully!", Color::Green);
+                        }
+                        Err(e) => {
+                            let text = format!("defmt ELF load failed! {e}");
+                            error!("{text}");
+                            self.notifs.notify_str(text, Color::Red);
+                        }
+                    }
+                    self.dismiss_popup();
+                }
             }
         }
         if self.popup.is_some() || popup_was_some {
@@ -2023,6 +2331,12 @@ impl App {
                 1 + // Start/Stop Logging button
                 Logging::VISIBLE_FIELDS
             }
+
+            #[cfg(feature = "defmt")]
+            PopupMenu::Defmt => {
+                2 + // Select New/Recent ELF buttons
+                Defmt::VISIBLE_FIELDS
+            }
         }
     }
     /// Gets corrected index of selected element.
@@ -2064,13 +2378,20 @@ impl App {
             (PopupMenu::Logging, _) => Some(raw_scroll - 2),
 
             #[cfg(feature = "espflash")]
-            // espflash pre-set action buttons
+            // espflash user profiles
             (PopupMenu::EspFlash, _) if raw_scroll >= esp::ESPFLASH_BUTTON_COUNT + 1 => {
                 Some(raw_scroll - (esp::ESPFLASH_BUTTON_COUNT + 1))
             }
             #[cfg(feature = "espflash")]
-            // espflash user profiles
+            // espflash pre-set action buttons
             (PopupMenu::EspFlash, _) => Some(raw_scroll - 1),
+
+            #[cfg(feature = "defmt")]
+            // espflash user profiles
+            (PopupMenu::Defmt, _) if raw_scroll >= 2 + 1 => Some(raw_scroll - (2 + 1)),
+            #[cfg(feature = "defmt")]
+            // espflash pre-set action buttons
+            (PopupMenu::Defmt, _) => Some(raw_scroll - 1),
         }
     }
     pub fn draw(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
@@ -2138,6 +2459,49 @@ impl App {
                 self.popup_menu_scroll = scroll as usize;
             }
             Some(Popup::ErrorMessage(_)) => todo!(),
+            #[cfg(feature = "defmt")]
+            Some(Popup::DefmtNewElf(file_explorer)) => {
+                let area = centered_rect_size(
+                    Size {
+                        width: 70,
+                        height: 20,
+                    },
+                    area,
+                );
+                frame.render_widget(Clear, area);
+                frame.render_widget(&file_explorer.widget(), area);
+            }
+            Some(Popup::DefmtRecentElf) => {
+                let area = centered_rect_size(
+                    Size {
+                        width: 80,
+                        height: 15,
+                    },
+                    area,
+                );
+
+                let title = Line::raw(" Select from recently used ELFs: ")
+                    .centered()
+                    .reset();
+
+                let block = Block::bordered()
+                    .border_style(Style::new().light_red())
+                    .title_top(title);
+
+                let inner = block.inner(area);
+
+                self.popup_table_state.select(Some(self.popup_menu_scroll));
+
+                debug!("{:?}, {:?}", self.popup_menu_scroll, self.popup_table_state);
+
+                frame.render_widget(Clear, area);
+                frame.render_widget(block, area);
+                frame.render_stateful_widget(
+                    self.defmt_meow.recent_elfs.as_table(),
+                    inner,
+                    &mut self.popup_table_state,
+                );
+            }
         }
     }
     fn render_popup_menus(&mut self, frame: &mut Frame, area: Rect) {
@@ -2155,6 +2519,8 @@ impl App {
             PopupMenu::EspFlash => Color::Magenta,
             #[cfg(feature = "logging")]
             PopupMenu::Logging => Color::Yellow,
+            #[cfg(feature = "defmt")]
+            PopupMenu::Defmt => Color::LightRed,
         };
 
         let mut menu_selector_state = SingleLineSelectorState::new();
@@ -2721,7 +3087,7 @@ impl App {
                     .borders(Borders::TOP)
                     .border_style(Style::from(popup_color));
                 frame.render_widget(
-                    Line::raw("Powered by esp-rs/espflash!")
+                    Line::raw("Powered by esp-rs/espflash v3.3.0!")
                         .all_spans_styled(Color::DarkGray.into())
                         .centered(),
                     line_area,
@@ -2820,6 +3186,154 @@ impl App {
                 }
                 frame.render_widget(
                     Line::raw("Flash Profiles | Ctrl+R: Reload")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(),
+                    new_seperator,
+                );
+            }
+            #[cfg(feature = "defmt")]
+            PopupMenu::Defmt => {
+                let new_seperator = {
+                    let mut area = center_inner.clone();
+                    area.y = area.top().saturating_add(4);
+                    area.height = 1;
+                    area
+                };
+                let defmt_settings_area = {
+                    let mut area = center_inner.clone();
+                    area.y = area.top().saturating_add(5);
+                    area.height = area.height.saturating_sub(7);
+                    area
+                };
+                let line_block = Block::new()
+                    .borders(Borders::TOP)
+                    .border_style(Style::from(popup_color));
+                frame.render_widget(
+                    Line::raw("Powered by knurling-rs/defmt v1.0.0!")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(),
+                    line_area,
+                );
+
+                let [
+                    elf_title,
+                    current_elf,
+                    select_new_elf,
+                    select_recent_elf,
+                    _rest,
+                ] = vertical![==1,==1,==1,==1,*=1].areas(settings_area);
+
+                frame.render_widget(
+                    Line::raw("Esc: Close | Enter: Select/Save")
+                        .all_spans_styled(Color::DarkGray.into())
+                        .centered(),
+                    hint_text_area,
+                );
+
+                let settings_selected = self.popup_menu_scroll >= 2 + 1;
+
+                // frame.render_widget(esp::espflash_buttons(), settings_area);
+                frame.render_widget(&line_block, new_seperator);
+
+                let current_elf_str = if let Some(decoder) = &self.buffer.defmt_decoder {
+                    decoder.elf_path.as_str()
+                } else {
+                    "None"
+                };
+
+                let select_style = if self.popup_menu_scroll == 1 {
+                    Style::new().reversed()
+                } else {
+                    Style::new()
+                };
+                let recent_style = if self.popup_menu_scroll == 2 {
+                    Style::new().reversed()
+                } else {
+                    Style::new()
+                };
+
+                let current_elf_text = if let Some(decoder) = &self.buffer.defmt_decoder {
+                    Cow::Owned(format!(
+                        "Current ELF MD5: {}",
+                        &decoder.elf_md5.as_str()[..8]
+                    ))
+                } else {
+                    Cow::Borrowed("Current ELF:")
+                };
+
+                frame.render_widget(
+                    Line::raw(current_elf_text).centered().dark_gray(),
+                    elf_title,
+                );
+                frame.render_widget(Line::raw(current_elf_str).centered(), current_elf);
+                frame.render_widget(
+                    Line::raw("[Select ELF File]")
+                        .centered()
+                        .all_spans_styled(select_style),
+                    select_new_elf,
+                );
+                frame.render_widget(
+                    Line::raw("[Select Recent ELF]")
+                        .centered()
+                        .all_spans_styled(recent_style),
+                    select_recent_elf,
+                );
+
+                // if self.popup_menu_item ==
+                if settings_selected {
+                    let selected = self.get_corrected_popup_item();
+                    self.popup_table_state.select(selected);
+                    self.popup_table_state.select_first_column();
+
+                    use crate::settings::Defmt;
+
+                    frame.render_stateful_widget(
+                        self.scratch.defmt.as_table(),
+                        defmt_settings_area,
+                        &mut self.popup_table_state,
+                    );
+                    let text: &str = self
+                        .popup_table_state
+                        .selected()
+                        .map(|i| Defmt::DOCSTRINGS[i])
+                        .unwrap_or(&"");
+                    render_scrolling_line(
+                        text,
+                        frame,
+                        scrolling_text_area,
+                        &mut self.popup_hint_scroll,
+                    );
+                } else {
+                    self.popup_table_state.select(Some(0));
+                    self.popup_table_state.select_first_column();
+                    let corrected_index = self.get_corrected_popup_item();
+
+                    // frame.render_stateful_widget(
+                    //     esp::espflash_buttons(),
+                    //     settings_area,
+                    //     &mut TableState::new()
+                    //         .with_selected_column(0)
+                    //         .with_selected(corrected_index),
+                    // );
+                    frame.render_widget(self.settings.defmt.as_table(), defmt_settings_area);
+
+                    let hints = [
+                        "Select an ELF file to decode defmt packets with. Shift/Ctrl to use native system file picker.",
+                        "Select from a list of recently used ELFs.",
+                    ];
+                    if let Some(idx) = corrected_index {
+                        if let Some(&hint_text) = hints.get(idx) {
+                            render_scrolling_line(
+                                hint_text,
+                                frame,
+                                scrolling_text_area,
+                                &mut self.popup_hint_scroll,
+                            );
+                        }
+                    }
+                }
+                frame.render_widget(
+                    Line::raw("Settings:")
                         .all_spans_styled(Color::DarkGray.into())
                         .centered(),
                     new_seperator,
@@ -3303,6 +3817,47 @@ impl App {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum TryLoadDefmtError {
+    #[error("failed serializing recents: {0}")]
+    RecentSer(#[from] toml::ser::Error),
+    #[error("failed saving recent elfs: {0}")]
+    RecentSave(#[from] std::io::Error),
+    #[error("failed parsing defmt from elf: {0}")]
+    DefmtParse(#[from] DefmtTableError),
+}
+
+#[cfg(feature = "defmt")]
+fn try_load_defmt_elf(
+    path: &Utf8Path,
+    decoder_opt: &mut Option<crate::buffer::defmt::DefmtDecoder>,
+    recent_elfs: &mut crate::tui::defmt::DefmtRecentElfs,
+    #[cfg(feature = "defmt_watch")]
+    watcher_handle: &mut crate::buffer::defmt::elf_watcher::ElfWatchHandle,
+) -> Result<(), TryLoadDefmtError> {
+    use camino::Utf8PathBuf;
+
+    use crate::buffer::defmt::DefmtDecoder;
+
+    let new_decoder = DefmtDecoder::from_elf_bytes(path);
+    match new_decoder {
+        Ok(new_decoder) => {
+            let _ = decoder_opt.insert(new_decoder);
+            // self.notifs
+            //     .notify_str("defmt data parsed from ELF!", Color::Green);
+            recent_elfs.elf_loaded(path)?;
+            #[cfg(feature = "defmt_watch")]
+            watcher_handle.begin_watch(path);
+        }
+        Err(e) => {
+            // self.notifs
+            //     .notify_str(format!("defmt Error: {e}"), Color::Red);
+        }
+    }
+
+    Ok(())
+}
+
 pub fn repeating_pattern_widget(
     frame: &mut Frame,
     area: Rect,
@@ -3427,4 +3982,23 @@ pub fn render_scrolling_line<'a, T: Into<Line<'a>>>(
             y: 0,
         }),
     );
+}
+
+fn create_file_explorer() -> Result<FileExplorer, std::io::Error> {
+    use ratatui_explorer::FileExplorer;
+
+    let explorer_theme = ratatui_explorer::Theme::default()
+        .with_scroll_padding(1)
+        .add_default_title();
+
+    let root_path = std::path::PathBuf::from("/");
+
+    let base_dirs_opt = directories::BaseDirs::new();
+
+    let starting_dir = base_dirs_opt
+        .as_ref()
+        .map(|base_dirs| base_dirs.home_dir())
+        .unwrap_or(&root_path);
+
+    FileExplorer::with_theme(explorer_theme).and_then(|mut e| e.set_cwd(starting_dir).map(|_| e))
 }

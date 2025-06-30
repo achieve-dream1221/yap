@@ -8,6 +8,7 @@ use ratatui::{
 use ratatui_macros::{horizontal, vertical};
 
 use crate::{
+    buffer::buf_line::RenderSettings,
     errors::YapResult,
     settings::HexHighlightStyle,
     traits::{ToggleBool, interleave_by},
@@ -22,25 +23,47 @@ impl Buffer {
     /// Updates each BufLine's render height with the new terminal width, returning the sum total at the end
     pub fn update_wrapped_line_heights(&mut self) -> usize {
         self.styled_lines.rx.iter_mut().fold(0, |total, l| {
-            let new_height = l.update_line_height(self.last_terminal_size.width, &self.rendering);
+            let render_settings = RenderSettings {
+                rendering: &self.rendering,
+                defmt: &self.defmt_settings,
+            };
+            let new_height = l.update_line_height(self.last_terminal_size.width, render_settings);
 
             total + new_height
         }) + self.styled_lines.tx.iter_mut().fold(0, |total, l| {
-            let new_height = l.update_line_height(self.last_terminal_size.width, &self.rendering);
+            let render_settings = RenderSettings {
+                rendering: &self.rendering,
+                defmt: &self.defmt_settings,
+            };
+            let new_height = l.update_line_height(self.last_terminal_size.width, render_settings);
 
             total + new_height
         })
     }
+    // #[cfg(feature = "defmt")]
+    // fn rx_lines_iter(&self) -> impl Iterator<Item = &BufLine> {
+    //     self.styled_lines.rx.iter().filter(|b| match b.line_type {
+    //         super::LineType::PortDefmt {
+    //             level: Some(level), ..
+    //         } => self.defmt_settings.max_log_level <= crate::settings::Level::from(level),
+    //         _ => true,
+    //     })
+    // }
+    // #[cfg(not(feature = "defmt"))]
+    // fn rx_lines_iter(&self) -> impl Iterator<Item = &BufLine> {
+    //     self.styled_lines.rx.iter()
+    // }
     fn buflines_iter(&self) -> impl Iterator<Item = &BufLine> {
         if self.rendering.echo_user_input == UserEcho::None {
             Either::Left(self.styled_lines.rx.iter())
         } else {
             Either::Right(interleave_by(
                 self.styled_lines.rx.iter(),
-                self.styled_lines
-                    .tx
-                    .iter()
-                    .filter(|l| self.rendering.echo_user_input.filter_user_line(l)),
+                self.styled_lines.tx.iter().filter(|l| {
+                    self.rendering
+                        .echo_user_input
+                        .filter_user_line(&l.line_type)
+                }),
                 |port, user| match port.raw_buffer_index.cmp(&user.raw_buffer_index) {
                     Ordering::Equal => port.timestamp <= user.timestamp,
                     Ordering::Less => true,
@@ -51,7 +74,10 @@ impl Buffer {
     }
     pub fn lines_iter(&self) -> (impl Iterator<Item = Line>, u16) {
         let (buflines, wrapped_scroll) = self.visible_buflines_iter();
-        (buflines.map(|l| l.as_line(&self.rendering)), wrapped_scroll)
+        (
+            buflines.map(|l| l.as_line(self.line_render_settings())),
+            wrapped_scroll,
+        )
     }
 
     fn visible_buflines_iter(&self) -> (impl Iterator<Item = &BufLine>, u16) {
@@ -249,7 +275,11 @@ impl Buffer {
                             .styled_lines
                             .tx
                             .iter()
-                            .filter(|l| self.rendering.echo_user_input.filter_user_line(l))
+                            .filter(|l| {
+                                self.rendering
+                                    .echo_user_input
+                                    .filter_user_line(&l.line_type)
+                            })
                             .count()
                 }
             }
@@ -333,6 +363,13 @@ impl Buffer {
                     // .saturating_sub(self.last_terminal_size.height as usize)
                 ;
             }
+        }
+    }
+    pub fn line_render_settings(&self) -> RenderSettings {
+        RenderSettings {
+            rendering: &self.rendering,
+            #[cfg(feature = "defmt")]
+            defmt: &self.defmt_settings,
         }
     }
 }
@@ -902,5 +939,46 @@ impl Widget for &mut Buffer {
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"));
         scrollbar.render(area, buf, &mut self.state.scrollbar_state);
+    }
+}
+
+pub mod defmt {
+    use defmt_parser::Level;
+    use ratatui::prelude::*;
+
+    pub fn defmt_level_color(level: Option<Level>) -> Color {
+        match level {
+            Some(Level::Error) => Color::Red,
+            Some(Level::Warn) => Color::Yellow,
+            Some(Level::Info) => Color::Green,
+            Some(Level::Debug) => Color::Blue,
+            Some(Level::Trace) => Color::Magenta,
+            None => Color::Gray,
+        }
+    }
+
+    fn defmt_level_span(level: Option<Level>) -> Span<'static> {
+        match level {
+            Some(Level::Error) => Span::styled("ERROR", defmt_level_color(level)),
+            Some(Level::Warn) => Span::styled("WARN", defmt_level_color(level)),
+            Some(Level::Info) => Span::styled("INFO", defmt_level_color(level)),
+            Some(Level::Debug) => Span::styled("DEBUG", defmt_level_color(level)),
+            Some(Level::Trace) => Span::styled("TRACE", defmt_level_color(level)),
+            None => Span::styled("???", defmt_level_color(level)),
+        }
+    }
+
+    pub fn defmt_level_bracketed(level: Option<Level>) -> Vec<Span<'static>> {
+        let end_bracket = match level {
+            None => "]   ",
+            Some(Level::Info) | Some(Level::Warn) => "]  ",
+            Some(_) => "] ",
+        };
+        let dark_gray = Style::new().dark_gray();
+        vec![
+            Span::styled("[", dark_gray),
+            defmt_level_span(level),
+            Span::styled(end_bracket, dark_gray),
+        ]
     }
 }

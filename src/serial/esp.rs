@@ -125,12 +125,6 @@ impl ProgressPropagator {
 }
 impl ProgressCallbacks for ProgressPropagator {
     fn init(&mut self, addr: u32, total: usize) {
-        // assert!(
-        //     self.filenames.len() <= u8::MAX as usize,
-        //     "Not supporting more than 255 files per profile."
-        // );
-        // self.current_index += 1;
-
         _ = self.tx.send(
             FlashProgress::Init {
                 chip: self.chip.clone(),
