@@ -298,7 +298,7 @@ ctrl-h = "show-keybinds"
 'ctrl-/' = "show-keybinds"
 "#;
 
-const CONFIG_TOML_PATH: &str = "yap_keybinds.toml";
+pub const CONFIG_TOML_PATH: &str = "yap_keybinds.toml";
 
 #[derive(Deserialize)]
 pub struct Keybinds {
@@ -407,18 +407,17 @@ impl Keybinds {
             })
             .map(|(kc, _)| kc.to_compact_string());
     }
-    pub fn overridable_default() -> Self {
+    pub fn overridable_defaults() -> Self {
         let mut deserialized: Self = toml::from_str(OVERRIDABLE_DEFAULTS).unwrap();
 
         deserialized.fill_port_settings_hint();
 
         deserialized
     }
-    pub fn new() -> Self {
-        let mut overridable = Self::overridable_default();
+    pub fn load(input: &str) -> Result<Self, toml::de::Error> {
+        let mut overridable = Self::overridable_defaults();
 
-        let user_settings: Self =
-            toml::from_str(&fs::read_to_string(CONFIG_TOML_PATH).unwrap()).unwrap();
+        let user_settings: Self = toml::from_str(input)?;
 
         overridable
             .keybindings
@@ -426,7 +425,7 @@ impl Keybinds {
 
         overridable.fill_port_settings_hint();
 
-        overridable
+        Ok(overridable)
     }
     pub fn action_set_from_key_combo(&self, key_combo: KeyCombination) -> Option<&Vec<String>> {
         self.keybindings
@@ -442,7 +441,8 @@ mod test {
 
     #[test]
     fn test_default_config_deser() {
-        let keybinds = Keybinds::new();
+        let keybinds =
+            Keybinds::load(include_str!("../example_configs/yap_keybinds.toml")).unwrap();
         assert!(keybinds.keybindings.len() > 0);
 
         let port_settings_bind = keybinds.keybindings.get(&crokey::key!(ctrl - '.')).unwrap();

@@ -17,6 +17,7 @@ use compact_str::{CompactString, ToCompactString};
 use crokey::{KeyCombination, key};
 use crossbeam::channel::{Receiver, Select, Sender};
 use enum_rotate::EnumRotate;
+use fs_err as fs;
 use itertools::Itertools;
 use ratatui::{
     Frame, Terminal,
@@ -326,7 +327,19 @@ impl App {
             }
         };
 
-        let keybinds = Keybinds::new();
+        let keybinds = match fs::read_to_string(crate::keybinds::CONFIG_TOML_PATH) {
+            Ok(keybinds_input) => match Keybinds::load(&keybinds_input) {
+                Ok(kb) => kb,
+                Err(e) => {
+                    error!("Failed parsing keybinds config! {e}");
+                    Keybinds::overridable_defaults()
+                }
+            },
+            Err(e) => {
+                error!("Failed reading keybinds config! {e}");
+                Keybinds::overridable_defaults()
+            }
+        };
 
         let mut user_input = UserInput::default();
 
@@ -1125,7 +1138,19 @@ impl App {
             // KeyCode::Tab => self.tab_pressed(),
             key!(ctrl - r) if self.popup == Some(Popup::CurrentKeybinds) => {
                 // TODO make into an action?
-                self.keybinds = Keybinds::new();
+                self.keybinds = match fs::read_to_string(crate::keybinds::CONFIG_TOML_PATH) {
+                    Ok(keybinds_input) => match Keybinds::load(&keybinds_input) {
+                        Ok(kb) => kb,
+                        Err(e) => {
+                            error!("Failed parsing keybinds config! {e}");
+                            Keybinds::overridable_defaults()
+                        }
+                    },
+                    Err(e) => {
+                        error!("Failed reading keybinds config! {e}");
+                        Keybinds::overridable_defaults()
+                    }
+                };
                 self.notifs.notify_str("Reloaded Keybinds!", Color::Green);
             }
             #[cfg(feature = "macros")]
