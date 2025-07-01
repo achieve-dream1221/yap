@@ -25,6 +25,7 @@ impl Buffer {
         self.styled_lines.rx.iter_mut().fold(0, |total, l| {
             let render_settings = RenderSettings {
                 rendering: &self.rendering,
+                #[cfg(feature = "defmt")]
                 defmt: &self.defmt_settings,
             };
             let new_height = l.update_line_height(self.last_terminal_size.width, render_settings);
@@ -33,6 +34,7 @@ impl Buffer {
         }) + self.styled_lines.tx.iter_mut().fold(0, |total, l| {
             let render_settings = RenderSettings {
                 rendering: &self.rendering,
+                #[cfg(feature = "defmt")]
                 defmt: &self.defmt_settings,
             };
             let new_height = l.update_line_height(self.last_terminal_size.width, render_settings);
@@ -942,6 +944,7 @@ impl Widget for &mut Buffer {
     }
 }
 
+#[cfg(feature = "defmt")]
 pub mod defmt {
     use defmt_parser::Level;
     use ratatui::prelude::*;

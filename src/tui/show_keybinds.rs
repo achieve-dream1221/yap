@@ -124,7 +124,9 @@ pub fn show_keybinds(
     let action_style = |action_opt: &ActionOption| -> Style {
         match action_opt {
             ActionOption::Recognized(Action::Pause(_)) => Color::LightBlue.into(),
+            #[cfg(feature = "macros")]
             ActionOption::Recognized(Action::MacroInvocation(_)) => Color::Green.into(),
+            #[cfg(feature = "espflash")]
             ActionOption::Recognized(Action::EspFlashProfile(_)) => Color::Magenta.into(),
             ActionOption::Recognized(_) => Color::Cyan.into(),
             ActionOption::Unrecognized(_) => Color::Yellow.into(),

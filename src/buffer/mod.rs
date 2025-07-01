@@ -30,16 +30,23 @@ use crate::settings::Defmt;
 use crate::{
     app::Event,
     buffer::{
-        buf_line::{BufLineKit, FrameLocation, RenderSettings},
-        defmt::{DefmtPacketError, rzcobs_decode},
+        buf_line::{BufLineKit, RenderSettings},
         tui::COLOR_RULES_PATH,
     },
     changed,
     errors::YapResult,
-    settings::{DefmtSupport, LoggingType, Rendering},
+    settings::{LoggingType, Rendering},
     traits::{ByteSuffixCheck, LineHelpers, interleave_by},
     tui::color_rules::ColorRules,
 };
+
+#[cfg(feature = "defmt")]
+use crate::buffer::{
+    buf_line::FrameLocation,
+    defmt::{DefmtPacketError, rzcobs_decode},
+};
+#[cfg(feature = "defmt")]
+use crate::settings::DefmtSupport;
 
 #[cfg(feature = "logging")]
 use crate::settings::Logging;
@@ -336,14 +343,6 @@ impl RawBuffer {
             None
         }
     }
-    fn next_slice(&self, defmt_support: DefmtSupport) -> Option<(usize, DelimitedSlice)> {
-        match defmt_support {
-            DefmtSupport::FramedRzcobs => self.next_slice_defmt_rzcobs(true),
-            DefmtSupport::UnframedRzcobs => self.next_slice_defmt_rzcobs(false),
-            DefmtSupport::Raw => self.next_slice_defmt_raw(),
-            DefmtSupport::Disabled => self.next_slice_raw(),
-        }
-    }
     fn next_slice_raw(&self) -> Option<(usize, DelimitedSlice)> {
         let start_index = self.consumed_up_to;
         let newest = &self.inner[start_index..];
@@ -353,6 +352,16 @@ impl RawBuffer {
             Some((start_index, DelimitedSlice::Raw(newest)))
         }
     }
+    #[cfg(feature = "defmt")]
+    fn next_slice(&self, defmt_support: DefmtSupport) -> Option<(usize, DelimitedSlice)> {
+        match defmt_support {
+            DefmtSupport::FramedRzcobs => self.next_slice_defmt_rzcobs(true),
+            DefmtSupport::UnframedRzcobs => self.next_slice_defmt_rzcobs(false),
+            DefmtSupport::Raw => self.next_slice_defmt_raw(),
+            DefmtSupport::Disabled => self.next_slice_raw(),
+        }
+    }
+    #[cfg(feature = "defmt")]
     fn next_slice_defmt_raw(&self) -> Option<(usize, DelimitedSlice)> {
         let start_index = self.consumed_up_to;
         let newest = &self.inner[start_index..];
@@ -362,6 +371,7 @@ impl RawBuffer {
             Some((start_index, DelimitedSlice::DefmtRaw(newest)))
         }
     }
+    #[cfg(feature = "defmt")]
     /// Returns (index_in_buffer, raw/defmt slice)
     ///
     /// Returns None if either a defmt frame is incomplete, or there is no new data to give.
@@ -428,6 +438,7 @@ struct StyledLines {
 }
 
 impl StyledLines {
+    #[cfg(feature = "defmt")]
     fn failed_decode(
         &mut self,
         delimited_slice: DelimitedSlice,
@@ -529,6 +540,7 @@ impl StyledLines {
             self.last_rx_was_complete = orig.has_line_ending(&line_ending);
         }
     }
+    #[cfg(feature = "defmt")]
     fn consume_frame(
         &mut self,
         kit: BufLineKit,
@@ -938,6 +950,7 @@ impl Buffer {
                 area_width: self.last_terminal_size.width,
                 render: RenderSettings {
                     rendering: &self.rendering,
+                    #[cfg(feature = "defmt")]
                     defmt: &self.defmt_settings,
                 },
                 full_range_slice: unsafe {
@@ -1298,6 +1311,7 @@ impl Buffer {
             self.update_wrapped_line_heights();
         }
 
+        #[cfg(all(feature = "logging", feature = "defmt"))]
         self.log_handle
             .update_defmt_settings(self.defmt_settings.clone())
             .unwrap();
@@ -1323,6 +1337,13 @@ impl Buffer {
 
         self.raw.reset();
     }
+    // pub fn render_settings(&self) -> RenderSettings {
+    //     RenderSettings {
+    //         rendering: &self.rendering,
+    //         #[cfg(feature = "defmt")]
+    //         defmt: &self.defmt_settings,
+    //     }
+    // }
 }
 // Returns None if the slice would be fully hidden by the color rules.
 fn slice_as_port_text(

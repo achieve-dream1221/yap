@@ -104,6 +104,7 @@ pub struct FrameLocation {
     file: CompactString,
 }
 
+#[cfg(feature = "defmt")]
 impl From<&defmt_decoder::Location> for FrameLocation {
     fn from(value: &defmt_decoder::Location) -> Self {
         Self {

@@ -46,13 +46,8 @@ use unicode_width::UnicodeWidthStr;
 #[cfg(feature = "defmt")]
 #[cfg(feature = "logging")]
 use crate::buffer::LoggingHandle;
-#[cfg(feature = "defmt")]
 use crate::{
-    buffer::defmt::elf_watcher::ElfWatchEvent, keybinds::ShowDefmtSelect, settings::Defmt,
-    tui::defmt::DefmtMeow,
-};
-use crate::{
-    buffer::{Buffer, defmt::DefmtTableError},
+    buffer::Buffer,
     event_carousel::{self, CarouselHandle},
     history::{History, UserInput},
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
@@ -75,6 +70,14 @@ use crate::{
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
 };
+
+#[cfg(feature = "defmt")]
+use crate::buffer::defmt::DefmtTableError;
+#[cfg(feature = "defmt")]
+use crate::{keybinds::ShowDefmtSelect, settings::Defmt, tui::defmt::DefmtMeow};
+
+#[cfg(feature = "defmt_watch")]
+use crate::buffer::defmt::elf_watcher::ElfWatchEvent;
 
 #[cfg(feature = "macros")]
 use crate::macros::{MacroNameTag, Macros};
@@ -374,9 +377,11 @@ impl App {
             settings.logging.clone(),
             #[cfg(feature = "logging")]
             tx.clone(),
+            #[cfg(feature = "defmt")]
             settings.defmt.clone(),
         );
 
+        #[cfg(feature = "defmt")]
         if let Some(last_elf) = defmt_meow.recent_elfs.last()
             && last_elf.is_file()
         {
@@ -792,7 +797,7 @@ impl App {
                     }
                 }
             }
-            #[cfg(feature = "defmt")]
+            #[cfg(feature = "defmt_watch")]
             Event::DefmtElfWatch(ElfWatchEvent::Error(err)) => {
                 self.notifs.notify_str(err, Color::Red);
             }
@@ -1500,9 +1505,11 @@ impl App {
             A::ShowDefmtSelect(ShowDefmtSelect::SelectRecent) => {
                 self.show_popup(Popup::DefmtRecentElf)
             }
+            #[cfg(feature = "defmt")]
             A::ShowDefmtSelect(ShowDefmtSelect::SelectTui) => {
                 self.show_popup(Popup::DefmtNewElf(create_file_explorer()?))
             }
+            #[cfg(feature = "defmt")]
             A::ShowDefmtSelect(ShowDefmtSelect::SelectSystem) => {
                 todo!("need a system file picker");
             } // unknown => {
@@ -2057,7 +2064,9 @@ impl App {
                 self.notifs
                     .notify_str("defmt settings saved!", Color::Green);
             }
+            #[cfg(feature = "defmt")]
             Some(Popup::DefmtNewElf(_)) => (),
+            #[cfg(feature = "defmt")]
             Some(Popup::DefmtRecentElf) => {
                 if let Some(selected) = self.popup_table_state.selected() {
                     let elf_path = self
@@ -2492,6 +2501,7 @@ impl App {
                 frame.render_widget(Clear, area);
                 frame.render_widget(&file_explorer.widget(), area);
             }
+            #[cfg(feature = "defmt")]
             Some(Popup::DefmtRecentElf) => {
                 let area = centered_rect_size(
                     Size {
@@ -2549,14 +2559,14 @@ impl App {
         // Set active states based on item index
         #[cfg(not(feature = "macros"))]
         {
-            match self.popup_menu_item {
+            match self.popup_menu_scroll {
                 0 => menu_selector_state.active = true,
 
                 _ => menu_selector_state.active = false,
             }
 
             assert!(
-                menu_selector_state.active == (self.popup_menu_item == 0),
+                menu_selector_state.active == (self.popup_menu_scroll == 0),
                 "Either a table element needs to be selected, or the menu title widget, but never both or neither."
             );
         }
@@ -3844,6 +3854,7 @@ enum TryLoadDefmtError {
     RecentSer(#[from] toml::ser::Error),
     #[error("failed saving recent elfs: {0}")]
     RecentSave(#[from] std::io::Error),
+    #[cfg(feature = "defmt")]
     #[error("failed parsing defmt from elf: {0}")]
     DefmtParse(#[from] DefmtTableError),
 }
@@ -4011,6 +4022,7 @@ pub fn render_scrolling_line<'a, T: Into<Line<'a>>>(
     );
 }
 
+#[cfg(feature = "defmt")]
 fn create_file_explorer() -> Result<FileExplorer, std::io::Error> {
     use ratatui_explorer::FileExplorer;
 

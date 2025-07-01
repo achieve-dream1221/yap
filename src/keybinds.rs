@@ -49,7 +49,7 @@ impl From<ShowPopupAction> for PopupMenu {
             ShowPopupAction::ShowEspFlash => Self::EspFlash,
             #[cfg(feature = "macros")]
             ShowPopupAction::ShowMacros => Self::Macros,
-            #[cfg(feature = "macros")]
+            #[cfg(feature = "defmt")]
             ShowPopupAction::ShowDefmt => Self::Defmt,
         }
     }

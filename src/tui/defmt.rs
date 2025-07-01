@@ -69,7 +69,9 @@ impl Drop for DefmtMeow {
 }
 
 impl DefmtMeow {
-    pub fn build(event_tx: Sender<Event>) -> Result<Self, toml::de::Error> {
+    pub fn build(
+        #[cfg(feature = "defmt_watch")] event_tx: Sender<Event>,
+    ) -> Result<Self, toml::de::Error> {
         #[cfg(feature = "defmt_watch")]
         {
             let (watcher_handle, watcher_join_handle) = ElfWatchHandle::build(event_tx).unwrap();
