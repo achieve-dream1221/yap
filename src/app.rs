@@ -1,3 +1,5 @@
+#[cfg(feature = "defmt")]
+use std::sync::Arc;
 use std::{
     borrow::Cow,
     collections::VecDeque,
@@ -41,6 +43,9 @@ use tui_big_text::{BigText, PixelSize};
 use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 use unicode_width::UnicodeWidthStr;
 
+#[cfg(feature = "defmt")]
+#[cfg(feature = "logging")]
+use crate::buffer::LoggingHandle;
 #[cfg(feature = "defmt")]
 use crate::{
     buffer::defmt::elf_watcher::ElfWatchEvent, keybinds::ShowDefmtSelect, settings::Defmt,
@@ -379,25 +384,32 @@ impl App {
                 &last_elf.to_owned(),
                 &mut buffer.defmt_decoder,
                 &mut defmt_meow.recent_elfs,
+                #[cfg(feature = "logging")]
+                &buffer.log_handle,
                 #[cfg(feature = "defmt_watch")]
                 &mut defmt_meow.watcher_handle,
             ) {
                 Ok(()) => (),
                 Err(e) => {
-                    let text = format!("defmt ELF reload failed! {e}");
+                    let text = format!("loading last defmt ELF failed! {e}");
                     error!("{text}");
-                    // self.notifs.notify_str(text, Color::Green);
+                    // self.notifs.notify_str(text, Color::Red);
                 }
             }
         }
 
-        if let Some(last_path) = defmt_meow.recent_elfs.last()
-            && last_path.exists()
-            && last_path.is_file()
-            && let Ok(decoder) = crate::buffer::defmt::DefmtDecoder::from_elf_bytes(last_path)
-        {
-            let _ = buffer.defmt_decoder.insert(decoder);
-        }
+        // if let Some(last_path) = defmt_meow.recent_elfs.last()
+        //     && last_path.exists()
+        //     && last_path.is_file()
+        //     && let Ok(decoder) = crate::buffer::defmt::DefmtDecoder::from_elf_bytes(last_path)
+        // {
+        //     let decoder_arc = Arc::new(decoder);
+        //     let _ = buffer.defmt_decoder.insert(decoder_arc.clone());
+        //     buffer
+        //         .log_handle
+        //         .update_defmt_decoder(Some(decoder_arc.clone()))
+        //         .unwrap();
+        // }
 
         // debug!("{buffer:#?}");
         Self {
@@ -763,6 +775,8 @@ impl App {
                         &elf_path,
                         &mut self.buffer.defmt_decoder,
                         &mut self.defmt_meow.recent_elfs,
+                        #[cfg(feature = "logging")]
+                        &self.buffer.log_handle,
                         #[cfg(feature = "defmt_watch")]
                         &mut self.defmt_meow.watcher_handle,
                     ) {
@@ -952,6 +966,8 @@ impl App {
                             &elf_path,
                             &mut self.buffer.defmt_decoder,
                             &mut self.defmt_meow.recent_elfs,
+                            #[cfg(feature = "logging")]
+                            &self.buffer.log_handle,
                             #[cfg(feature = "defmt_watch")]
                             &mut self.defmt_meow.watcher_handle,
                         ) {
@@ -1139,7 +1155,7 @@ impl App {
                     }
                 }
 
-                debug!("{actions:?}");
+                debug!("{key_combo}: {actions:?}");
 
                 self.queue_action_set(actions, Some(key_combo)).unwrap();
             }
@@ -1297,6 +1313,8 @@ impl App {
                 &elf_path,
                 &mut self.buffer.defmt_decoder,
                 &mut self.defmt_meow.recent_elfs,
+                #[cfg(feature = "logging")]
+                &self.buffer.log_handle,
                 #[cfg(feature = "defmt_watch")]
                 &mut self.defmt_meow.watcher_handle,
             ) {
@@ -1957,15 +1975,16 @@ impl App {
                             .run_method_from_action(EspAction::EspDeviceInfo.into())
                             .unwrap(),
                         3 => {
-                            // TODO config option to allow skipping this?
-                            if !shift_pressed && !ctrl_pressed {
+                            if self.settings.espflash.easy_erase_flash
+                                || (shift_pressed || ctrl_pressed)
+                            {
+                                self.run_method_from_action(EspAction::EspEraseFlash.into())
+                                    .unwrap();
+                            } else {
                                 self.notifs.notify_str(
                                     "Press Shift/Ctrl+Enter to erase flash!",
                                     Color::Yellow,
                                 );
-                            } else {
-                                self.run_method_from_action(EspAction::EspEraseFlash.into())
-                                    .unwrap();
                             }
                         }
                         unknown => unreachable!("unknown espflash command index {unknown}"),
@@ -1997,12 +2016,12 @@ impl App {
                 // Otherwise, save settings.
 
                 self.settings.logging = self.scratch.logging.clone();
-                let current_port = {
-                    let port_status_guard = self.serial.port_status.load();
-                    port_status_guard.current_port.clone()
-                };
+                // let current_port = {
+                //     let port_status_guard = self.serial.port_status.load();
+                //     port_status_guard.current_port.clone()
+                // };
                 self.buffer
-                    .update_logging_settings(self.settings.logging.clone(), current_port);
+                    .update_logging_settings(self.settings.logging.clone());
 
                 self.settings.save().unwrap();
                 self.dismiss_popup();
@@ -2051,6 +2070,8 @@ impl App {
                         &elf_path,
                         &mut self.buffer.defmt_decoder,
                         &mut self.defmt_meow.recent_elfs,
+                        #[cfg(feature = "logging")]
+                        &self.buffer.log_handle,
                         #[cfg(feature = "defmt_watch")]
                         &mut self.defmt_meow.watcher_handle,
                     ) {
@@ -3315,7 +3336,7 @@ impl App {
                     //         .with_selected_column(0)
                     //         .with_selected(corrected_index),
                     // );
-                    frame.render_widget(self.settings.defmt.as_table(), defmt_settings_area);
+                    frame.render_widget(self.scratch.defmt.as_table(), defmt_settings_area);
 
                     let hints = [
                         "Select an ELF file to decode defmt packets with. Shift/Ctrl to use native system file picker.",
@@ -3830,8 +3851,9 @@ enum TryLoadDefmtError {
 #[cfg(feature = "defmt")]
 fn try_load_defmt_elf(
     path: &Utf8Path,
-    decoder_opt: &mut Option<crate::buffer::defmt::DefmtDecoder>,
+    decoder_opt: &mut Option<Arc<crate::buffer::defmt::DefmtDecoder>>,
     recent_elfs: &mut crate::tui::defmt::DefmtRecentElfs,
+    #[cfg(feature = "logging")] logging: &LoggingHandle,
     #[cfg(feature = "defmt_watch")]
     watcher_handle: &mut crate::buffer::defmt::elf_watcher::ElfWatchHandle,
 ) -> Result<(), TryLoadDefmtError> {
@@ -3842,10 +3864,15 @@ fn try_load_defmt_elf(
     let new_decoder = DefmtDecoder::from_elf_bytes(path);
     match new_decoder {
         Ok(new_decoder) => {
-            let _ = decoder_opt.insert(new_decoder);
+            let decoder_arc = Arc::new(new_decoder);
+            let _ = decoder_opt.insert(decoder_arc.clone());
             // self.notifs
             //     .notify_str("defmt data parsed from ELF!", Color::Green);
             recent_elfs.elf_loaded(path)?;
+            #[cfg(feature = "logging")]
+            logging
+                .update_defmt_decoder(Some(decoder_arc.clone()))
+                .unwrap();
             #[cfg(feature = "defmt_watch")]
             watcher_handle.begin_watch(path);
         }

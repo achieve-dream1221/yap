@@ -1,3 +1,5 @@
+#[cfg(feature = "defmt")]
+use std::sync::Arc;
 use std::{cmp::Ordering, ops::Range, thread::JoinHandle};
 
 use ansi_to_tui::{IntoText, LossyFlavor};
@@ -49,7 +51,7 @@ mod tui;
 #[cfg(feature = "logging")]
 mod logging;
 #[cfg(feature = "logging")]
-use logging::LoggingHandle;
+pub use logging::LoggingHandle;
 #[cfg(feature = "logging")]
 pub use logging::{DEFAULT_TIMESTAMP_FORMAT, LoggingEvent};
 #[cfg(feature = "defmt")]
@@ -334,20 +336,11 @@ impl RawBuffer {
             None
         }
     }
-    fn next_slice(
-        &self,
-        defmt_support: DefmtSupport,
-        defmt_raw_consume_fail_raw_buffer_len: &Option<usize>,
-    ) -> Option<(usize, DelimitedSlice)> {
+    fn next_slice(&self, defmt_support: DefmtSupport) -> Option<(usize, DelimitedSlice)> {
         match defmt_support {
             DefmtSupport::FramedRzcobs => self.next_slice_defmt_rzcobs(true),
             DefmtSupport::UnframedRzcobs => self.next_slice_defmt_rzcobs(false),
-            DefmtSupport::Raw => match defmt_raw_consume_fail_raw_buffer_len {
-                None => self.next_slice_defmt_raw(),
-                Some(raw_len_on_fail) if *raw_len_on_fail == self.inner.len() => None,
-                Some(raw_len_on_fail) if *raw_len_on_fail == usize::MAX => None,
-                Some(_) => self.next_slice_defmt_raw(),
-            },
+            DefmtSupport::Raw => self.next_slice_defmt_raw(),
             DefmtSupport::Disabled => self.next_slice_raw(),
         }
     }
@@ -635,11 +628,11 @@ pub struct Buffer {
     #[cfg(feature = "logging")]
     log_settings: Logging,
     #[cfg(feature = "defmt")]
-    pub defmt_decoder: Option<DefmtDecoder>,
+    pub defmt_decoder: Option<Arc<DefmtDecoder>>,
     #[cfg(feature = "defmt")]
     defmt_settings: Defmt,
     #[cfg(feature = "defmt")]
-    defmt_raw_consume_fail_raw_buffer_len: Option<usize>,
+    defmt_raw_malformed: bool,
     // #[cfg(feature = "defmt")]
     // frame_delimiter: FrameDelimiter,
 }
@@ -700,8 +693,13 @@ impl Buffer {
     ) -> Self {
         let line_ending: LineEnding = line_ending.into();
         #[cfg(feature = "logging")]
-        let (log_handle, log_thread) =
-            LoggingHandle::new(line_ending.clone(), logging.clone(), event_tx);
+        let (log_handle, log_thread) = LoggingHandle::new(
+            line_ending.clone(),
+            logging.clone(),
+            event_tx,
+            #[cfg(feature = "defmt")]
+            defmt.clone(),
+        );
 
         Self {
             raw: RawBuffer {
@@ -737,7 +735,7 @@ impl Buffer {
             #[cfg(feature = "defmt")]
             defmt_settings: defmt,
             #[cfg(feature = "defmt")]
-            defmt_raw_consume_fail_raw_buffer_len: None,
+            defmt_raw_malformed: false,
         }
     }
     // pub fn append_str(&mut self, str: &str) {
@@ -811,7 +809,7 @@ impl Buffer {
                 LoggingType::Binary => (),
                 LoggingType::Text | LoggingType::Both => self
                     .log_handle
-                    .log_tx_bytes(now, bytes.to_owned(), line_ending.to_owned())
+                    .log_tx_bytes(now, bytes.to_owned(), line_ending.as_bytes().to_owned())
                     .unwrap(),
             }
         }
@@ -897,7 +895,11 @@ impl Buffer {
                     LoggingType::Binary => (),
                     LoggingType::Text | LoggingType::Both => self
                         .log_handle
-                        .log_tx_bytes(now, text.as_bytes().to_owned(), line_ending.to_owned())
+                        .log_tx_bytes(
+                            now,
+                            text.as_bytes().to_owned(),
+                            line_ending.as_bytes().to_owned(),
+                        )
                         .unwrap(),
                 }
             }
@@ -955,10 +957,11 @@ impl Buffer {
         }
 
         #[cfg(feature = "defmt")]
-        while let Some((index_in_buffer, delimited_slice)) = self.raw.next_slice(
-            self.defmt_settings.defmt_parsing.clone(),
-            &self.defmt_raw_consume_fail_raw_buffer_len,
-        ) {
+        while let Some((index_in_buffer, delimited_slice)) = self
+            .raw
+            .next_slice(self.defmt_settings.defmt_parsing.clone())
+            && !self.defmt_raw_malformed
+        {
             match delimited_slice {
                 DelimitedSlice::Raw(slice) => {
                     let kit = BufLineKit {
@@ -999,7 +1002,6 @@ impl Buffer {
 
                         match decoder.table.decode(&raw_uncompressed) {
                             Ok((frame, consumed)) => {
-                                self.defmt_raw_consume_fail_raw_buffer_len = None;
                                 self.styled_lines.consume_frame(
                                     kit,
                                     decoder,
@@ -1011,11 +1013,10 @@ impl Buffer {
                                 self.raw.consumed(consumed);
                             }
                             Err(defmt_decoder::DecodeError::UnexpectedEof) => {
-                                self.defmt_raw_consume_fail_raw_buffer_len =
-                                    Some(self.raw.inner.len());
+                                break;
                             }
                             Err(defmt_decoder::DecodeError::Malformed) => {
-                                self.defmt_raw_consume_fail_raw_buffer_len = Some(usize::MAX);
+                                self.defmt_raw_malformed = true;
                                 let line =
                                     Line::raw("defmt raw parse error, ceasing further attempts.");
                                 self.styled_lines.rx.push(BufLine::port_text_line(
@@ -1023,6 +1024,7 @@ impl Buffer {
                                     kit,
                                     &LineEnding::None,
                                 ));
+                                break;
                             }
                         }
                     }
@@ -1133,7 +1135,7 @@ impl Buffer {
 
         #[cfg(feature = "defmt")]
         {
-            self.defmt_raw_consume_fail_raw_buffer_len = None;
+            self.defmt_raw_malformed = false;
         }
 
         // Getting all time-tagged indices in the buffer where either
@@ -1251,8 +1253,6 @@ impl Buffer {
             self.log_handle
                 .update_line_ending(self.line_ending.clone())
                 .unwrap();
-            #[cfg(feature = "logging")]
-            self.clear_and_relog_buffers(self.log_settings.log_user_input);
         }
     }
     pub fn update_render_settings(&mut self, rendering: Rendering) {
@@ -1298,100 +1298,16 @@ impl Buffer {
             self.update_wrapped_line_heights();
         }
 
+        self.log_handle
+            .update_defmt_settings(self.defmt_settings.clone())
+            .unwrap();
+
         self.scroll_by(0);
     }
+
     #[cfg(feature = "logging")]
-    fn clear_and_relog_buffers(&mut self, with_user_input: bool) {
-        self.log_handle.clear_current_logs().unwrap();
-
-        let interleaved_points = interleave_by(
-            self.raw
-                .buffer_timestamps
-                .iter()
-                .map(|(index, timestamp)| (*index, *timestamp, None))
-                // Add a "finale" element to capture any remaining buffer, always placed at the end.
-                .chain(std::iter::once((self.raw.inner.len(), Local::now(), None))),
-            self.styled_lines
-                .tx
-                .iter()
-                // If a user line isn't visible, ignore it when taking external new-lines into account.
-                .filter(|_| with_user_input)
-                .map(|b| {
-                    let LineType::User {
-                        reloggable_raw: raw,
-                        ..
-                    } = &b.line_type
-                    else {
-                        unreachable!();
-                    };
-                    (b.raw_buffer_index, b.timestamp, Some(raw))
-                }),
-            // Interleaving by sorting in order of raw_buffer_index, if they're equal, then whichever has a sooner timestamp.
-            |port, user| match port.0.cmp(&user.0) {
-                Ordering::Equal => port.1 <= user.1,
-                Ordering::Less => true,
-                Ordering::Greater => false,
-            },
-        );
-
-        let buffer_slices = interleaved_points
-            .tuple_windows()
-            // Filtering out some empty slices, unless they indicate a user event.
-            .filter(|((start_index, _, user_line_buffer), (end_index, _, _))| {
-                start_index != end_index || user_line_buffer.is_some()
-            })
-            // Building the parent slices (pre-newline splitting)
-            .map(
-                |((start_index, timestamp, user_line_buffer), (end_index, _, _))| {
-                    (
-                        &self.raw.inner[start_index..end_index],
-                        timestamp,
-                        user_line_buffer,
-                        (start_index, end_index),
-                    )
-                },
-            );
-
-        for (slice, timestamp, user_line_buffer, (slice_start, slice_end)) in buffer_slices {
-            if let Some(raw) = user_line_buffer {
-                self.log_handle
-                    .log_tx_bytes(
-                        timestamp,
-                        raw.to_owned(),
-                        self.line_ending.as_bytes().to_owned(),
-                    )
-                    .unwrap();
-            } else {
-                self.log_handle
-                    .log_rx_bytes(timestamp, slice.to_owned())
-                    .unwrap();
-            }
-        }
-    }
-    #[cfg(feature = "logging")]
-    pub fn update_logging_settings(
-        &mut self,
-        logging: Logging,
-        current_port: Option<SerialPortInfo>,
-    ) {
-        let local_copy = logging.clone();
-        let old = std::mem::replace(&mut self.log_settings, local_copy);
-        let new = &self.log_settings;
-
-        let resend_needed = changed!(old, new, log_user_input)
-            || changed!(old, new, log_file_type)
-            || changed!(old, new, timestamp);
-
-        // Meh. Arbitrary decision but I don't want to resend everything if this changes.
-        // Especially since I don't currently log connection events to place them back in retroactively.
-        // changed!(old, new, log_connection_events)
-
+    pub fn update_logging_settings(&mut self, logging: Logging) {
         self.log_handle.update_settings(logging).unwrap();
-
-        if resend_needed && !self.raw.inner.is_empty() {
-            let log_user_input = new.log_user_input;
-            self.clear_and_relog_buffers(log_user_input);
-        }
     }
     pub fn intentional_disconnect_clear(&mut self) {
         #[cfg(feature = "logging")]
@@ -1460,6 +1376,18 @@ pub fn line_ending_iter<'a>(
     bytes: &'a [u8],
     line_ending: &'a LineEnding,
 ) -> impl Iterator<Item = (&'a [u8], &'a [u8], (usize, usize))> {
+    match line_ending {
+        LineEnding::None => Either::Left(std::iter::once((bytes, bytes, (0, bytes.len())))),
+        line_ending => Either::Right(_line_ending_iter(bytes, line_ending)),
+    }
+}
+
+// Internal impl, for actually iterating through line endings.
+#[inline(always)]
+fn _line_ending_iter<'a>(
+    bytes: &'a [u8],
+    line_ending: &'a LineEnding,
+) -> impl Iterator<Item = (&'a [u8], &'a [u8], (usize, usize))> {
     assert!(
         !matches!(line_ending, LineEnding::None),
         "line_ending can't be empty"
@@ -1483,13 +1411,6 @@ pub fn line_ending_iter<'a>(
         LineEnding::Byte(_) => 1,
         LineEnding::MultiByte(finder) => finder.needle().len(),
     };
-
-    // if not using a finder with multi-byte endings:
-    // Either::Left(memchr::memmem::find_iter(bytes, line_ending_bytes))
-
-    // let line_ending_pos_iter = if line_ending.len() == 1 {
-    // } else {
-    // };
 
     let line_ending_pos_iter = line_ending_pos_iter
         .into_iter()

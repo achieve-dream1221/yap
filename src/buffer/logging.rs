@@ -1,3 +1,5 @@
+#[cfg(feature = "defmt")]
+use std::time::Instant;
 use std::{
     borrow::Cow,
     io::{Seek, SeekFrom, Write},
@@ -19,6 +21,8 @@ use ratatui::text::Line;
 use serialport::SerialPortInfo;
 use tracing::{error, warn};
 
+#[cfg(feature = "defmt")]
+use crate::settings::Defmt;
 use crate::{
     app::Event,
     buffer::LineType,
@@ -50,45 +54,28 @@ pub enum LoggingCommand {
     },
     RequestStart(DateTime<Local>, SerialPortInfo),
     RequestStop,
-    // RequestToggle(DateTime<Local>, SerialPortInfo),
-    RequestClearFiles,
-    // InvalidateAndResetClearIndices,
     RxBytes(DateTime<Local>, Vec<u8>),
     TxBytes {
         timestamp: DateTime<Local>,
         bytes: Vec<u8>,
         line_ending: Vec<u8>,
     },
-    // RxLine(Line<'static>),
-    // Tx(Vec<u8>, Line<'static>),
-    // RxTxLine(BufLine),
     LineEndingChange(LineEnding),
     Settings(Logging),
+    #[cfg(feature = "defmt")]
+    DefmtSettings(Defmt),
+    #[cfg(feature = "defmt")]
+    DefmtDecoder(Option<Arc<super::defmt::DefmtDecoder>>),
     Shutdown(Sender<()>),
 }
 
 enum LoggingLineType {
     RxLine,
-    TxLine { line_ending: Vec<u8> },
-}
-
-#[derive(Debug)]
-struct FileAndResetIndex {
-    inner: fs::File,
-    // When a user performs an action that would require re-doing the log file,
-    // (such as changing line-endings or hiding user input)
-    // but we don't have access to the old data anymore (due to a previous intentional disconnect clearing the buffers),
-    // we need to know where to safely reset the files to.
-    reset_index: u64,
-}
-
-impl From<fs::File> for FileAndResetIndex {
-    fn from(value: fs::File) -> Self {
-        Self {
-            inner: value,
-            reset_index: 0,
-        }
-    }
+    TxLine {
+        line_ending: Vec<u8>,
+    },
+    #[cfg(feature = "defmt")]
+    DefmtRxLine,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -122,8 +109,8 @@ struct LoggingWorker {
     event_tx: Sender<Event>,
     command_rx: Receiver<LoggingCommand>,
     // path: PathBuf,
-    text_file: Option<FileAndResetIndex>,
-    raw_file: Option<FileAndResetIndex>,
+    text_file: Option<fs::File>,
+    raw_file: Option<fs::File>,
     started_logging_at: Option<DateTime<Local>>,
     settings: Logging,
     session_open: Arc<AtomicBool>,
@@ -132,6 +119,18 @@ struct LoggingWorker {
 
     //????
     last_known_port: Option<SerialPortInfo>,
+
+    #[cfg(feature = "defmt")]
+    defmt: DefmtKit,
+}
+
+#[cfg(feature = "defmt")]
+#[derive(Default)]
+struct DefmtKit {
+    settings: Defmt,
+    decoder: Option<Arc<super::defmt::DefmtDecoder>>,
+    unconsumed: Option<(DateTime<Local>, Vec<u8>)>,
+    raw_defmt_malformed: bool,
 }
 
 impl LoggingHandle {
@@ -139,6 +138,7 @@ impl LoggingHandle {
         line_ending: LineEnding,
         settings: Logging,
         event_tx: Sender<Event>,
+        #[cfg(feature = "defmt")] defmt_settings: Defmt,
     ) -> (Self, JoinHandle<()>) {
         let (command_tx, command_rx) = crossbeam::channel::unbounded();
 
@@ -156,6 +156,11 @@ impl LoggingHandle {
             session_open: session_open.clone(),
             last_rx_completed: true,
             last_known_port: None,
+            #[cfg(feature = "defmt")]
+            defmt: DefmtKit {
+                settings: defmt_settings,
+                ..Default::default()
+            },
         };
 
         let worker = std::thread::spawn(move || {
@@ -234,9 +239,20 @@ impl LoggingHandle {
     //         .map_err(|_| YapError::NoLoggingWorker)?;
     //     Ok(())
     // }
-    pub(super) fn clear_current_logs(&self) -> YapResult<()> {
+    #[cfg(feature = "defmt")]
+    pub fn update_defmt_settings(&self, settings: Defmt) -> YapResult<()> {
         self.command_tx
-            .send(LoggingCommand::RequestClearFiles)
+            .send(LoggingCommand::DefmtSettings(settings))
+            .map_err(|_| YapError::NoLoggingWorker)?;
+        Ok(())
+    }
+    #[cfg(feature = "defmt")]
+    pub fn update_defmt_decoder(
+        &self,
+        decoder: Option<Arc<super::defmt::DefmtDecoder>>,
+    ) -> YapResult<()> {
+        self.command_tx
+            .send(LoggingCommand::DefmtDecoder(decoder))
             .map_err(|_| YapError::NoLoggingWorker)?;
         Ok(())
     }
@@ -311,7 +327,7 @@ impl LoggingWorker {
         }
         if let Some(text_file) = &mut self.text_file {
             if !self.last_rx_completed {
-                write_line_ending(&mut text_file.inner)?;
+                write_line_ending(text_file)?;
                 self.last_rx_completed = true;
             }
 
@@ -325,13 +341,13 @@ impl LoggingWorker {
 
             let text = if let Some(port_info) = connected_to {
                 let port_name = &port_info.port_name;
-                format!("----- {time} | Connected to {port_name}! -----")
+                format!("{time} | Connected to {port_name}!")
             } else {
-                format!("----- {time} | Disconnected from port! -----")
+                format!("{time} | Disconnected from port!")
             };
 
-            text_file.inner.write_all(text.as_bytes())?;
-            write_line_ending(&mut text_file.inner)?;
+            text_file.write_all(text.as_bytes())?;
+            write_line_ending(text_file)?;
         }
 
         Ok(())
@@ -358,29 +374,48 @@ impl LoggingWorker {
                 self.begin_logging_session(timestamp, &port_info)?;
                 self.last_known_port = Some(port_info);
             }
-            // LoggingCommand::RequestToggle(timestamp, port_info) => {
-            //     if self.raw_file.is_some() || self.text_file.is_some() {
-            //         self.close_files(false)?;
-            //     } else {
-            //         self.begin_logging_session(timestamp, &port_info)?;
-            //     }
-            // }
             LoggingCommand::RxBytes(timestamp, buf) => {
-                // let Some(raw_file) = &mut self.raw_file else {
-                //     warn!("not logging byte buffer!");
-                //     return Ok(());
-                // };
-                // raw_file.inner.write_all(&buf)?;
                 if let Some(raw_file) = &mut self.raw_file {
-                    raw_file.inner.write_all(&buf)?;
+                    raw_file.write_all(&buf)?;
                 };
+
+                #[cfg(feature = "defmt")]
+                if let Some(text_file) = &mut self.text_file {
+                    use settings::DefmtSupport;
+
+                    match self.defmt.settings.defmt_parsing {
+                        DefmtSupport::Disabled => {
+                            self.last_rx_completed = write_buffer_to_text_file(
+                                timestamp,
+                                &self.settings.timestamp,
+                                &buf,
+                                self.last_rx_completed,
+                                text_file,
+                                &self.line_ending,
+                                // self.settings.timestamps,
+                                LoggingLineType::RxLine,
+                            )?;
+                        }
+                        DefmtSupport::FramedRzcobs
+                        | DefmtSupport::UnframedRzcobs
+                        | DefmtSupport::Raw => {
+                            if let Some((_, existing_buf)) = &mut self.defmt.unconsumed {
+                                existing_buf.extend(buf);
+                            } else {
+                                _ = self.defmt.unconsumed.insert((timestamp, buf));
+                            }
+                            self.consume_with_defmt()?;
+                        }
+                    }
+                };
+                #[cfg(not(feature = "defmt"))]
                 if let Some(text_file) = &mut self.text_file {
                     self.last_rx_completed = write_buffer_to_text_file(
                         timestamp,
                         &self.settings.timestamp,
                         &buf,
                         self.last_rx_completed,
-                        &mut text_file.inner,
+                        text_file,
                         &self.line_ending,
                         // self.settings.timestamps,
                         LoggingLineType::RxLine,
@@ -405,7 +440,7 @@ impl LoggingWorker {
                     &self.settings.timestamp,
                     &bytes,
                     self.last_rx_completed,
-                    &mut text_file.inner,
+                    text_file,
                     &self.line_ending,
                     // self.settings.timestamps,
                     LoggingLineType::TxLine { line_ending },
@@ -413,44 +448,7 @@ impl LoggingWorker {
             }
             // LoggingCommand::LineEndingChange(whole_raw_buffer, new_ending) => todo!(),
             LoggingCommand::LineEndingChange(new_ending) => self.line_ending = new_ending,
-            // LoggingCommand::RxTxLine(line) => {
-            //     let Some(text_file) = &mut self.text_file else {
-            //         warn!("not logging line!");
-            //         return Ok(());
-            //     };
 
-            //     write_bufline_to_file(&mut text_file.inner, &line, self.settings.timestamps)?;
-            // }
-            LoggingCommand::RequestClearFiles => {
-                if let Some(raw_file) = &mut self.raw_file {
-                    raw_file.inner.set_len(raw_file.reset_index)?;
-                    raw_file.inner.seek(SeekFrom::Start(raw_file.reset_index))?;
-                }
-                if let Some(text_file) = &mut self.text_file {
-                    text_file.inner.set_len(text_file.reset_index)?;
-                    text_file
-                        .inner
-                        .seek(SeekFrom::Start(text_file.reset_index))?;
-
-                    if text_file.reset_index == 0 {
-                        write_header_to_text_file(
-                            &mut text_file.inner,
-                            self.started_logging_at.unwrap(),
-                            &self.settings.timestamp,
-                            self.last_known_port.as_ref().unwrap(),
-                        )?;
-                        write_line_ending(&mut text_file.inner)?;
-                    }
-                }
-                self.flush_files(false)?;
-            }
-            // LoggingCommand::TxLine(line) => {
-            //     let Some(text_file) = &mut self.text_file else {
-            //         return Ok(());
-            //     };
-
-            //     write_bufline_to_file(text_file.inner, &line, self.settings.timestamps)?;
-            // }
             LoggingCommand::Settings(new) => {
                 let old = std::mem::replace(&mut self.settings, new);
                 let new = &self.settings;
@@ -487,6 +485,20 @@ impl LoggingWorker {
                     }
                 }
             }
+            #[cfg(feature = "defmt")]
+            LoggingCommand::DefmtSettings(defmt_settings) => {
+                let old = std::mem::replace(&mut self.defmt.settings, defmt_settings);
+                let new = &self.defmt.settings;
+
+                if changed!(old, new, defmt_parsing) && self.defmt.unconsumed.is_some() {
+                    self.defmt.raw_defmt_malformed = false;
+                    _ = self.defmt.unconsumed.take();
+                }
+            }
+            #[cfg(feature = "defmt")]
+            LoggingCommand::DefmtDecoder(decoder) => {
+                self.defmt.decoder = decoder;
+            }
             LoggingCommand::RequestStop => {
                 self.close_files(false)?;
                 self.event_tx
@@ -494,31 +506,241 @@ impl LoggingWorker {
             }
             LoggingCommand::PortDisconnect {
                 timestamp,
-                intentional: true,
-            } => {
-                if self.raw_file.is_none() && self.text_file.is_none() {
-                    return Ok(());
-                }
-                if self.settings.keep_log_across_devices {
-                    self.flush_files(false)?;
-                    self.update_reset_indices()?;
-                } else {
-                    self.close_files(false)?;
-                    self.event_tx
-                        .send(LoggingEvent::Stopped { error: None }.into())?;
-                }
-            }
-            LoggingCommand::PortDisconnect {
-                timestamp,
-                intentional: false,
+                intentional,
             } => {
                 if self.raw_file.is_none() && self.text_file.is_none() {
                     return Ok(());
                 }
                 self.log_connection_event(timestamp, None)?;
-                self.flush_files(false)?;
+                if intentional && !self.settings.keep_log_across_devices {
+                    self.close_files(false)?;
+                    self.event_tx
+                        .send(LoggingEvent::Stopped { error: None }.into())?;
+                } else {
+                    self.flush_files(false)?;
+                }
             }
-            LoggingCommand::Shutdown(sender) => unreachable!(),
+            LoggingCommand::Shutdown(_) => unreachable!(),
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "defmt")]
+    fn consume_with_defmt(&mut self) -> Result<(), std::io::Error> {
+        if self.defmt.raw_defmt_malformed {
+            _ = self.defmt.unconsumed.take();
+            return Ok(());
+        }
+
+        use crate::settings::DefmtSupport;
+
+        let Some((timestamp, unconsumed_buf)) = &mut self.defmt.unconsumed else {
+            unreachable!();
+        };
+
+        let Some(text_file) = &mut self.text_file else {
+            unreachable!();
+        };
+
+        let Some(decoder) = &self.defmt.decoder else {
+            unconsumed_buf.clear();
+
+            let defmt_encoding = match self.defmt.settings.defmt_parsing {
+                DefmtSupport::Disabled => unreachable!(),
+                DefmtSupport::FramedRzcobs => "framed rzcobs",
+                DefmtSupport::UnframedRzcobs => "rzcobs",
+                DefmtSupport::Raw => "uncompressed",
+            };
+
+            let mut text = format!("defmt table missing, can't decode ({defmt_encoding}): ");
+            text.extend(unconsumed_buf.into_iter().map(|b| format!("{b:X}")));
+
+            if !self.last_rx_completed {
+                write_line_ending(text_file)?;
+                self.last_rx_completed = true;
+            }
+
+            write_buffer_to_text_file(
+                *timestamp,
+                &self.settings.timestamp,
+                text.as_bytes(),
+                true,
+                text_file,
+                &LineEnding::None,
+                LoggingLineType::DefmtRxLine,
+            )?;
+            write_line_ending(text_file)?;
+
+            return Ok(());
+        };
+
+        use crate::buffer::defmt::rzcobs_decode;
+        use defmt_decoder::DecodeError;
+
+        match self.defmt.settings.defmt_parsing {
+            DefmtSupport::Disabled => unreachable!(),
+            DefmtSupport::Raw => loop {
+                match decoder.table.decode(unconsumed_buf) {
+                    Ok((decoded_frame, consumed)) => {
+                        self.last_rx_completed = write_defmt_frame_to_text_file(
+                            *timestamp,
+                            &self.settings.timestamp,
+                            &decoded_frame,
+                            decoder,
+                            self.last_rx_completed,
+                            text_file,
+                        )?;
+                    }
+                    Err(DecodeError::UnexpectedEof) => break,
+                    Err(DecodeError::Malformed) => {
+                        self.defmt.raw_defmt_malformed = true;
+
+                        self.last_rx_completed = write_buffer_to_text_file(
+                            *timestamp,
+                            &self.settings.timestamp,
+                            "malformed defmt packet, ceasing further decode attempts".as_bytes(),
+                            self.last_rx_completed,
+                            text_file,
+                            &LineEnding::None,
+                            LoggingLineType::DefmtRxLine,
+                        )?;
+
+                        break;
+                    }
+                }
+            },
+            DefmtSupport::UnframedRzcobs => {
+                // let mut rest = &unconsumed_buf[..];
+                loop {
+                    use crate::buffer::{DelimitedSlice, defmt::frame_delimiting::zero_delimited};
+
+                    let unconsumed_len = unconsumed_buf.len();
+                    let Ok((rest, delimited_slice)) = zero_delimited(unconsumed_buf) else {
+                        break;
+                    };
+
+                    let DelimitedSlice::DefmtRzcobs { raw, inner } = delimited_slice else {
+                        unreachable!();
+                    };
+
+                    let Ok(uncompressed) = rzcobs_decode(inner) else {
+                        self.last_rx_completed = write_buffer_to_text_file(
+                            *timestamp,
+                            &self.settings.timestamp,
+                            "malformed rzcobs packet".as_bytes(),
+                            self.last_rx_completed,
+                            text_file,
+                            &LineEnding::None,
+                            LoggingLineType::DefmtRxLine,
+                        )?;
+
+                        unconsumed_buf.drain(..unconsumed_len - rest.len());
+                        continue;
+                    };
+
+                    match decoder.table.decode(&uncompressed) {
+                        Ok((decoded_frame, consumed)) => {
+                            self.last_rx_completed = write_defmt_frame_to_text_file(
+                                *timestamp,
+                                &self.settings.timestamp,
+                                &decoded_frame,
+                                decoder,
+                                self.last_rx_completed,
+                                text_file,
+                            )?;
+                        }
+                        Err(_) => {
+                            self.last_rx_completed = write_buffer_to_text_file(
+                                *timestamp,
+                                &self.settings.timestamp,
+                                "malformed defmt packet".as_bytes(),
+                                true,
+                                text_file,
+                                &LineEnding::None,
+                                LoggingLineType::DefmtRxLine,
+                            )?;
+
+                            unconsumed_buf.drain(..unconsumed_len - rest.len());
+                            continue;
+                        }
+                    }
+
+                    unconsumed_buf.drain(..unconsumed_len - rest.len());
+                }
+            }
+            DefmtSupport::FramedRzcobs => {
+                // ();
+                loop {
+                    use crate::buffer::{
+                        DelimitedSlice, defmt::frame_delimiting::esp_println_delimited,
+                    };
+
+                    let unconsumed_len = unconsumed_buf.len();
+                    let Ok((rest, delimited_slice)) = esp_println_delimited(unconsumed_buf) else {
+                        break;
+                    };
+
+                    match delimited_slice {
+                        DelimitedSlice::DefmtRzcobs { raw, inner } => {
+                            let Ok(uncompressed) = rzcobs_decode(inner) else {
+                                self.last_rx_completed = write_buffer_to_text_file(
+                                    *timestamp,
+                                    &self.settings.timestamp,
+                                    "malformed rzcobs packet".as_bytes(),
+                                    self.last_rx_completed,
+                                    text_file,
+                                    &LineEnding::None,
+                                    LoggingLineType::DefmtRxLine,
+                                )?;
+
+                                unconsumed_buf.drain(..unconsumed_len - rest.len());
+                                continue;
+                            };
+
+                            match decoder.table.decode(&uncompressed) {
+                                Ok((decoded_frame, consumed)) => {
+                                    self.last_rx_completed = write_defmt_frame_to_text_file(
+                                        *timestamp,
+                                        &self.settings.timestamp,
+                                        &decoded_frame,
+                                        decoder,
+                                        self.last_rx_completed,
+                                        text_file,
+                                    )?;
+                                }
+                                Err(_) => {
+                                    self.last_rx_completed = write_buffer_to_text_file(
+                                        *timestamp,
+                                        &self.settings.timestamp,
+                                        "malformed defmt packet".as_bytes(),
+                                        self.last_rx_completed,
+                                        text_file,
+                                        &LineEnding::None,
+                                        LoggingLineType::DefmtRxLine,
+                                    )?;
+
+                                    unconsumed_buf.drain(..unconsumed_len - rest.len());
+                                    continue;
+                                }
+                            }
+                        }
+                        DelimitedSlice::Raw(potentially_text) => {
+                            self.last_rx_completed = write_buffer_to_text_file(
+                                *timestamp,
+                                &self.settings.timestamp,
+                                potentially_text,
+                                self.last_rx_completed,
+                                text_file,
+                                &self.line_ending,
+                                LoggingLineType::RxLine,
+                            )?;
+                        }
+                        DelimitedSlice::DefmtRaw(_) => unreachable!(),
+                    }
+
+                    unconsumed_buf.drain(..unconsumed_len - rest.len());
+                }
+            }
         }
         Ok(())
     }
@@ -556,24 +778,12 @@ impl LoggingWorker {
             Ok(())
         };
         if let Some(raw_file) = &mut self.raw_file {
-            flush_file(&mut raw_file.inner)?;
+            flush_file(raw_file)?;
         }
         if let Some(text_file) = &mut self.text_file {
-            flush_file(&mut text_file.inner)?;
+            flush_file(text_file)?;
         }
 
-        Ok(())
-    }
-
-    fn update_reset_indices(&mut self) -> Result<(), std::io::Error> {
-        if let Some(raw_file) = &mut self.raw_file {
-            let raw_file_metadata = fs::metadata(raw_file.inner.path())?;
-            raw_file.reset_index = raw_file_metadata.len();
-        }
-        if let Some(text_file) = &mut self.text_file {
-            let text_file_metadata = fs::metadata(text_file.inner.path())?;
-            text_file.reset_index = text_file_metadata.len();
-        }
         Ok(())
     }
 
@@ -647,8 +857,8 @@ impl LoggingWorker {
             LoggingType::Binary => {
                 // Raw only, flush and drop text file in case we had one.
                 if let Some(mut text_file) = self.text_file.take() {
-                    text_file.inner.flush()?;
-                    text_file.inner.sync_all()?;
+                    text_file.flush()?;
+                    text_file.sync_all()?;
                 }
                 if self.raw_file.is_none() {
                     self.raw_file = Some(make_binary_log().map(Into::into)?);
@@ -657,8 +867,8 @@ impl LoggingWorker {
             LoggingType::Text => {
                 // Text only, flush and drop raw binary file in case we had one.
                 if let Some(mut raw_file) = self.raw_file.take() {
-                    raw_file.inner.flush()?;
-                    raw_file.inner.sync_all()?;
+                    raw_file.flush()?;
+                    raw_file.sync_all()?;
                 }
                 if self.text_file.is_none() {
                     self.text_file = Some(make_text_log(port_info).map(Into::into)?);
@@ -703,7 +913,7 @@ fn write_header_to_text_file(
     let header_timestamp = started_at.format(header_timestamp_format);
 
     let file_header = format!(
-        "----- {time} | Port: {name} | {port_text} -----",
+        "{time} | Port: {name} | {port_text}",
         name = port_info.port_name,
         time = header_timestamp,
     );
@@ -713,6 +923,7 @@ fn write_header_to_text_file(
     Ok(())
 }
 
+/// Output a line ending, not for rendering [`LineEndings`].
 fn write_line_ending(file: &mut fs::File) -> Result<(), std::io::Error> {
     file.write_all(&[b'\n'])
 }
@@ -728,6 +939,7 @@ fn write_buffer_to_text_file(
     line_type: LoggingLineType,
 ) -> Result<bool, std::io::Error> {
     let is_tx_line = matches!(&line_type, LoggingLineType::TxLine { .. });
+    let appendable_text = matches!(&line_type, LoggingLineType::RxLine);
     let timestamp_string = if timestamp_fmt.trim().is_empty() {
         None
     } else {
@@ -735,7 +947,7 @@ fn write_buffer_to_text_file(
     };
 
     for (_trunc, orig, _indices) in line_ending_iter(bytes, line_ending) {
-        if last_line_was_completed || is_tx_line {
+        if last_line_was_completed || !appendable_text {
             let line_to_write = {
                 let line_capacity = orig.len();
                 let mut output = String::with_capacity(line_capacity);
@@ -749,7 +961,7 @@ fn write_buffer_to_text_file(
 
                 output
             };
-            if !last_line_was_completed && is_tx_line {
+            if !last_line_was_completed && !appendable_text {
                 write_line_ending(text_file)?;
             }
             text_file.write_all(line_to_write.as_bytes())?;
@@ -770,7 +982,7 @@ fn write_buffer_to_text_file(
             }
         }
 
-        last_line_was_completed = orig.has_line_ending(line_ending) || is_tx_line;
+        last_line_was_completed = orig.has_line_ending(line_ending) || !appendable_text;
         if last_line_was_completed {
             write_line_ending(text_file)?;
         }
@@ -778,6 +990,41 @@ fn write_buffer_to_text_file(
 
     let last_line_is_completed = last_line_was_completed;
     Ok(last_line_is_completed)
+}
+
+#[cfg(feature = "defmt")]
+fn write_defmt_frame_to_text_file(
+    timestamp: DateTime<Local>,
+    timestamp_fmt: &str,
+    frame: &defmt_decoder::Frame,
+    table: &super::defmt::DefmtDecoder,
+    mut last_line_was_completed: bool,
+    text_file: &mut fs::File,
+) -> Result<bool, std::io::Error> {
+    let timestamp_string = if timestamp_fmt.trim().is_empty() {
+        None
+    } else {
+        Some(timestamp.format(timestamp_fmt).to_string())
+    };
+    let defmt_message = format!("{}", frame.display(false));
+    let lines = defmt_message.lines();
+
+    for line in lines {
+        let mut output = String::new();
+
+        if let Some(timestamp_str) = &timestamp_string {
+            output.push_str(&timestamp_str);
+            output.push_str(": ");
+        }
+
+        let text = format!("[defmt] {line}");
+        output.push_str(&text);
+
+        text_file.write_all(output.as_bytes())?;
+        write_line_ending(text_file)?;
+    }
+
+    Ok(true)
 }
 
 // fn write_bufline_to_file(

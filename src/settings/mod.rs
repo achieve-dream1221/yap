@@ -51,6 +51,9 @@ pub struct Settings {
     pub misc: Misc,
     #[serde(default)]
     pub last_port_settings: PortSettings,
+    #[cfg(feature = "espflash")]
+    #[serde(default)]
+    pub espflash: Espflash,
     #[cfg(feature = "defmt")]
     #[serde(default)]
     pub defmt: Defmt,
@@ -260,7 +263,7 @@ pub struct Logging {
     #[serde_inline_default(String::from(crate::buffer::DEFAULT_TIMESTAMP_FORMAT))]
     #[derivative(Default(value = "String::from(crate::buffer::DEFAULT_TIMESTAMP_FORMAT)"))]
     #[table(skip)]
-    /// Show timestamps next to each line in text outputs.
+    /// Format for output timestamps.
     pub timestamp: String,
 
     // Just always doing instead right now, no need for the option.
@@ -413,6 +416,15 @@ impl From<defmt_parser::Level> for Level {
             defmt_parser::Level::Error => Level::Error,
         }
     }
+}
+
+#[cfg(feature = "espflash")]
+#[serde_inline_default]
+#[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
+#[derivative(Default)]
+pub struct Espflash {
+    /// Skip requirement for holding Shift/Ctrl when selecting Erase Flash on ESP32 Flashing menu.
+    pub easy_erase_flash: bool,
 }
 
 #[cfg(feature = "defmt")]
