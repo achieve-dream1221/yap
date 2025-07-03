@@ -15,6 +15,8 @@ mod show_keybinds;
 pub mod single_line_selector;
 pub use show_keybinds::show_keybinds;
 
+pub const ALWAYS_PRESENT_SELECTOR_COUNT: usize = 2;
+
 /// Returns a `Rect` with the provided percentage of the parent `Rect` and centered.
 pub fn centered_rect_ratio(percent_x: u16, percent_y: u16, parent: Rect) -> Rect {
     let width = parent.width * percent_x / 100;

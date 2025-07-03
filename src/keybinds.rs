@@ -9,7 +9,6 @@ use fs_err as fs;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use crate::app::PopupMenu;
 #[cfg(feature = "macros")]
 use crate::macros::MacroNameTag;
 
@@ -37,23 +36,23 @@ pub enum ShowPopupAction {
     ShowDefmt,
 }
 
-impl From<ShowPopupAction> for PopupMenu {
-    fn from(value: ShowPopupAction) -> Self {
-        match value {
-            ShowPopupAction::ShowBehavior => Self::BehaviorSettings,
-            ShowPopupAction::ShowRendering => Self::RenderingSettings,
-            ShowPopupAction::ShowPortSettings => Self::PortSettings,
-            #[cfg(feature = "logging")]
-            ShowPopupAction::ShowLogging => Self::Logging,
-            #[cfg(feature = "espflash")]
-            ShowPopupAction::ShowEspFlash => Self::EspFlash,
-            #[cfg(feature = "macros")]
-            ShowPopupAction::ShowMacros => Self::Macros,
-            #[cfg(feature = "defmt")]
-            ShowPopupAction::ShowDefmt => Self::Defmt,
-        }
-    }
-}
+// impl From<ShowPopupAction> for PopupMenu {
+//     fn from(value: ShowPopupAction) -> Self {
+//         match value {
+//             ShowPopupAction::ShowBehavior => Self::BehaviorSettings,
+//             ShowPopupAction::ShowRendering => Self::RenderingSettings,
+//             ShowPopupAction::ShowPortSettings => Self::PortSettings,
+//             #[cfg(feature = "logging")]
+//             ShowPopupAction::ShowLogging => Self::Logging,
+//             #[cfg(feature = "espflash")]
+//             ShowPopupAction::ShowEspFlash => Self::EspFlash,
+//             #[cfg(feature = "macros")]
+//             ShowPopupAction::ShowMacros => Self::Macros,
+//             #[cfg(feature = "defmt")]
+//             ShowPopupAction::ShowDefmt => Self::Defmt,
+//         }
+//     }
+// }
 
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
