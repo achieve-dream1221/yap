@@ -57,6 +57,8 @@ impl ElfWatchHandle {
         let worker = std::thread::spawn(move || {
             if let Err(e) = worker.work_loop() {
                 error!("ELF Watcher closed with error: {e}");
+            } else {
+                debug!("ELF Watcher closed gracefully!");
             }
         });
 

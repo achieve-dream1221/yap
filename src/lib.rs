@@ -135,6 +135,7 @@ fn run_inner() -> color_eyre::Result<()> {
                 break;
             }
         }
+        debug!("Crossterm thread closed!");
     });
 
     // for p in ports {

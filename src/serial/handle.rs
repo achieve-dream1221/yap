@@ -4,11 +4,10 @@ use arc_swap::ArcSwap;
 use bstr::ByteVec;
 use crossbeam::channel::{Receiver, Sender};
 use serialport::SerialPortInfo;
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::{
     app::Event,
-    errors::{YapError, YapResult},
     serial::{ReconnectType, Reconnections},
     settings::{Ignored, PortSettings},
 };
@@ -81,9 +80,11 @@ impl SerialHandle {
         );
 
         let worker = std::thread::spawn(move || {
-            worker
-                .work_loop()
-                .expect("Serial worker encountered a fatal error!");
+            if let Err(e) = worker.work_loop() {
+                error!("Serial worker closed with error: {e}");
+            } else {
+                debug!("Serial worker closed gracefully!");
+            }
         });
 
         let handle = Self {

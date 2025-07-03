@@ -4,8 +4,4 @@ pub type YapResult<T> = Result<T, YapError>;
 pub enum YapError {
     #[error("No Serial Worker")]
     NoSerialWorker,
-    #[error("No Carousel Worker")]
-    NoCarouselWorker,
-    #[error("No Logging Worker")]
-    NoLoggingWorker,
 }
