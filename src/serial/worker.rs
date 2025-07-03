@@ -167,8 +167,7 @@ impl SerialWorker {
                         error!("Port command error: {e}");
                         self.unhealthy_disconnection();
                         self.event_tx
-                            .send(SerialDisconnectReason::Error(e.to_string()).into())
-                            .map_err(|_| WorkerError::FailedSend)?;
+                            .send(SerialDisconnectReason::Error(e.to_string()).into())?;
                     }
                 }
                 Ok(cmd) => self.handle_worker_command(cmd)?,
@@ -194,9 +193,7 @@ impl SerialWorker {
                     Ok(t) if t > 0 => {
                         let cloned_buff = self.rx_buffer[..t].to_owned();
                         // info!("{:?}", &serial_buf[..t]);
-                        self.buffer_tx
-                            .send(cloned_buff)
-                            .map_err(|_| WorkerError::FailedSend)?;
+                        self.buffer_tx.send(cloned_buff)?;
                     }
                     // 0-size read, ignoring
                     Ok(_) => (),
@@ -206,8 +203,7 @@ impl SerialWorker {
                         error!("{:?}", e);
                         self.unhealthy_disconnection();
                         self.event_tx
-                            .send(SerialDisconnectReason::Error(e.to_string()).into())
-                            .map_err(|_| WorkerError::FailedSend)?;
+                            .send(SerialDisconnectReason::Error(e.to_string()).into())?;
                     }
                 }
 
@@ -217,8 +213,7 @@ impl SerialWorker {
                         error!("{:?}", e);
                         self.unhealthy_disconnection();
                         self.event_tx
-                            .send(SerialDisconnectReason::Error(e.to_string()).into())
-                            .map_err(|_| WorkerError::FailedSend)?;
+                            .send(SerialDisconnectReason::Error(e.to_string()).into())?;
                     }
                 }
             }
@@ -286,8 +281,7 @@ impl SerialWorker {
                     .store(Arc::new(previous_status.to_idle(&*settings)));
                 self.port.drop();
                 self.event_tx
-                    .send(SerialDisconnectReason::Intentional.into())
-                    .map_err(|_| WorkerError::FailedSend)?;
+                    .send(SerialDisconnectReason::Intentional.into())?;
             }
 
             SerialWorkerCommand::Disconnect {
@@ -296,8 +290,7 @@ impl SerialWorker {
                 self.unhealthy_disconnection();
 
                 self.event_tx
-                    .send(SerialDisconnectReason::UserBrokeConnection.into())
-                    .map_err(|_| WorkerError::FailedSend)?;
+                    .send(SerialDisconnectReason::UserBrokeConnection.into())?;
             }
             SerialWorkerCommand::Disconnect {
                 user_wants_break: true,
@@ -306,9 +299,7 @@ impl SerialWorker {
             SerialWorkerCommand::RequestPortScan => {
                 let ports = self.scan_for_serial_ports()?;
                 self.scan_snapshot = ports.clone();
-                self.event_tx
-                    .send(SerialEvent::Ports(ports).into())
-                    .map_err(|_| WorkerError::FailedSend)?;
+                self.event_tx.send(SerialEvent::Ports(ports).into())?;
             }
             SerialWorkerCommand::RequestReconnect(strictness_opt) => {
                 if let Err(e) = self.attempt_reconnect(strictness_opt) {
@@ -400,16 +391,13 @@ impl SerialWorker {
                         Ok(n) => {
                             // info!("buf n: {n}");
                             buf = &buf[n..];
-                            self.event_tx
-                                .send(Tick::Tx.into())
-                                .map_err(|_| WorkerError::FailedSend)?;
+                            self.event_tx.send(Tick::Tx.into())?;
                             std::thread::sleep(Duration::from_millis(1));
                         }
                         Err(e) => {
                             self.unhealthy_disconnection();
                             self.event_tx
-                                .send(SerialDisconnectReason::Error(e.to_string()).into())
-                                .map_err(|_| WorkerError::FailedSend)?;
+                                .send(SerialDisconnectReason::Error(e.to_string()).into())?;
                             return Ok(());
                         }
                     }
@@ -419,9 +407,7 @@ impl SerialWorker {
             PortCommand::TxBuffer(unsent) => {
                 let len = unsent.len();
                 warn!("Got a buffer of {len} len that can't be sent! Returning buffer...");
-                self.event_tx
-                    .send(SerialEvent::UnsentTx(unsent).into())
-                    .map_err(|_| WorkerError::FailedSend)?;
+                self.event_tx.send(SerialEvent::UnsentTx(unsent).into())?;
             }
         }
         Ok(())
@@ -637,8 +623,7 @@ impl SerialWorker {
         );
         // info!("port.baud_rate {}", self.port.as_ref().unwrap().baud_rate()?);
         self.event_tx
-            .send(SerialEvent::Connected(reconnect_type).into())
-            .map_err(|_| WorkerError::FailedSend)?;
+            .send(SerialEvent::Connected(reconnect_type).into())?;
         Ok(())
     }
 
@@ -660,8 +645,7 @@ impl SerialWorker {
                 // But always send the UI update tick if a DTR/RTS change requested it
                 if changed || force_share {
                     self.event_tx
-                        .send(Tick::Requested("Serial Signals").into())
-                        .map_err(|_| WorkerError::FailedSend)?;
+                        .send(Tick::Requested("Serial Signals").into())?;
                 }
             }
         }
@@ -715,9 +699,7 @@ impl SerialWorker {
 
         self.shared_status.store(Arc::new(status.clone()));
 
-        self.event_tx
-            .send(EspEvent::Connecting.into())
-            .map_err(|_| WorkerError::FailedSend)?;
+        self.event_tx.send(EspEvent::Connecting.into())?;
 
         let lent_port = self
             .port
@@ -731,9 +713,7 @@ impl SerialWorker {
                 if let Ok(esp_info) = flasher.device_info() {
                     debug!("{esp_info:#?}");
 
-                    self.event_tx
-                        .send(EspEvent::DeviceInfo(esp_info).into())
-                        .map_err(|_| WorkerError::FailedSend)?;
+                    self.event_tx.send(EspEvent::DeviceInfo(esp_info).into())?;
                 }
 
                 flasher.connection().reset()?;
@@ -745,14 +725,12 @@ impl SerialWorker {
                 EspRestartType::Bootloader { active: true } => {
                     let flasher = self.connect_esp_flasher(lent_port, usb_port_info, true, true)?;
 
-                    self.event_tx
-                        .send(
-                            EspEvent::BootloaderSuccess {
-                                chip: flasher.chip().to_compact_string().to_uppercase(),
-                            }
-                            .into(),
-                        )
-                        .map_err(|_| WorkerError::FailedSend)?;
+                    self.event_tx.send(
+                        EspEvent::BootloaderSuccess {
+                            chip: flasher.chip().to_compact_string().to_uppercase(),
+                        }
+                        .into(),
+                    )?;
 
                     flasher.into_serial()
                 }
@@ -766,9 +744,7 @@ impl SerialWorker {
 
                     connection.reset_to_flash(true)?;
 
-                    self.event_tx
-                        .send(EspEvent::HardResetAttempt.into())
-                        .map_err(|_| WorkerError::FailedSend)?;
+                    self.event_tx.send(EspEvent::HardResetAttempt.into())?;
 
                     connection.into_serial()
                 }
@@ -782,9 +758,7 @@ impl SerialWorker {
 
                     connection.reset()?;
 
-                    self.event_tx
-                        .send(EspEvent::HardResetAttempt.into())
-                        .map_err(|_| WorkerError::FailedSend)?;
+                    self.event_tx.send(EspEvent::HardResetAttempt.into())?;
 
                     connection.into_serial()
                 }
@@ -848,23 +822,18 @@ impl SerialWorker {
                     if let Err(e) = flasher.write_bins_to_flash(&rom_segs, Some(&mut propagator)) {
                         // TODO show on UI
                         self.event_tx
-                            .send(EspEvent::Error(format!("espflash error: {e}")).into())
-                            .map_err(|_| WorkerError::FailedSend)?;
+                            .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
                         error!("Error during flashing: {e}");
                     }
 
-                    self.event_tx
-                        .send(EspEvent::PortReturned.into())
-                        .map_err(|_| WorkerError::FailedSend)?;
+                    self.event_tx.send(EspEvent::PortReturned.into())?;
                 } else {
-                    self.event_tx
-                        .send(
-                            EspEvent::Error(
-                                "Not flashing! ESP variant doesn't match expected!".to_owned(),
-                            )
-                            .into(),
+                    self.event_tx.send(
+                        EspEvent::Error(
+                            "Not flashing! ESP variant doesn't match expected!".to_owned(),
                         )
-                        .map_err(|_| WorkerError::FailedSend)?;
+                        .into(),
+                    )?;
                 }
 
                 flasher.into_serial()
@@ -892,7 +861,7 @@ impl SerialWorker {
                         flasher.change_baud(baud)?;
                     }
 
-                    let elf_data = fs::read(elf.path).map_err(|e| WorkerError::File(e))?;
+                    let elf_data = fs::read(elf.path)?;
 
                     let mut propagator = ProgressPropagator::new(
                         self.event_tx.clone(),
@@ -903,8 +872,7 @@ impl SerialWorker {
                         if let Err(e) = flasher.load_elf_to_ram(&elf_data, Some(&mut propagator)) {
                             // TODO show on UI
                             self.event_tx
-                                .send(EspEvent::Error(format!("espflash error: {e}")).into())
-                                .map_err(|_| WorkerError::FailedSend)?;
+                                .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
                             error!("Error during RAM load: {e}");
                         }
                     } else {
@@ -933,25 +901,20 @@ impl SerialWorker {
                             ) {
                                 // TODO show on UI
                                 self.event_tx
-                                    .send(EspEvent::Error(format!("espflash error: {e}")).into())
-                                    .map_err(|_| WorkerError::FailedSend)?;
+                                    .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
                                 error!("Error during flashing: {e}");
                             }
                         }
                     }
 
-                    self.event_tx
-                        .send(EspEvent::PortReturned.into())
-                        .map_err(|_| WorkerError::FailedSend)?;
+                    self.event_tx.send(EspEvent::PortReturned.into())?;
                 } else {
-                    self.event_tx
-                        .send(
-                            EspEvent::Error(
-                                "Not flashing! ESP variant doesn't match expected!".to_owned(),
-                            )
-                            .into(),
+                    self.event_tx.send(
+                        EspEvent::Error(
+                            "Not flashing! ESP variant doesn't match expected!".to_owned(),
                         )
-                        .map_err(|_| WorkerError::FailedSend)?;
+                        .into(),
+                    )?;
                 }
 
                 flasher.into_serial()
@@ -962,13 +925,10 @@ impl SerialWorker {
                 let chip = esp_chip.to_compact_string().to_uppercase();
 
                 self.event_tx
-                    .send(EspEvent::EraseStart { chip: chip.clone() }.into())
-                    .map_err(|_| WorkerError::FailedSend)?;
+                    .send(EspEvent::EraseStart { chip: chip.clone() }.into())?;
 
                 if let Ok(()) = flasher.erase_flash() {
-                    self.event_tx
-                        .send(EspEvent::EraseSuccess { chip }.into())
-                        .map_err(|_| WorkerError::FailedSend)?;
+                    self.event_tx.send(EspEvent::EraseSuccess { chip }.into())?;
                 }
 
                 flasher.into_serial()
@@ -976,9 +936,7 @@ impl SerialWorker {
         };
 
         self.return_native_port(returned_port)?;
-        self.event_tx
-            .send(EspEvent::PortReturned.into())
-            .map_err(|_| WorkerError::FailedSend)?;
+        self.event_tx.send(EspEvent::PortReturned.into())?;
 
         Ok(())
     }
@@ -999,9 +957,7 @@ impl SerialWorker {
 
         self.shared_status.store(Arc::new(status));
 
-        self.event_tx
-            .send(SerialEvent::Connected(None).into())
-            .map_err(|_| WorkerError::FailedSend)?;
+        self.event_tx.send(SerialEvent::Connected(None).into())?;
 
         Ok(())
     }
@@ -1030,9 +986,7 @@ impl SerialWorker {
         let esp_chip = flasher.chip();
         let chip = esp_chip.to_compact_string().to_uppercase();
 
-        self.event_tx
-            .send(EspEvent::Connected { chip }.into())
-            .map_err(|_| WorkerError::FailedSend)?;
+        self.event_tx.send(EspEvent::Connected { chip }.into())?;
 
         Ok(flasher)
     }
@@ -1062,6 +1016,12 @@ pub(crate) enum WorkerError {
     #[cfg(feature = "espflash")]
     #[error("tried to act on lent out port")]
     MissingPort,
+}
+
+impl<T> From<crossbeam::channel::SendError<T>> for WorkerError {
+    fn from(_: crossbeam::channel::SendError<T>) -> Self {
+        Self::FailedSend
+    }
 }
 
 // This status struct leaves a bit to be desired

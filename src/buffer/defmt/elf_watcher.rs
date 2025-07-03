@@ -20,6 +20,12 @@ pub enum ElfWatchEvent {
     Error(String),
 }
 
+impl From<ElfWatchEvent> for Event {
+    fn from(value: ElfWatchEvent) -> Self {
+        Self::DefmtElfWatch(value)
+    }
+}
+
 enum ElfWatchCommand {
     BeginWatch(Utf8PathBuf),
     EndWatch,
@@ -111,6 +117,12 @@ enum ElfWatchError {
     HandleDropped,
 }
 
+impl<T> From<crossbeam::channel::SendError<T>> for ElfWatchError {
+    fn from(_: crossbeam::channel::SendError<T>) -> Self {
+        Self::EventSend
+    }
+}
+
 impl ElfWatchWorker {
     pub fn work_loop(&mut self) -> Result<(), ElfWatchError> {
         loop {
@@ -132,12 +144,9 @@ impl ElfWatchWorker {
                                 let owned_watched_path =
                                     self.file_under_watch.as_ref().unwrap().to_owned();
 
-                                if let Err(e) = self.event_tx.send(Event::DefmtElfWatch(
-                                    ElfWatchEvent::ElfUpdated(owned_watched_path),
-                                )) {
-                                    error!("Error sending file watch event, stopping thread: {e}");
-                                    return Err(ElfWatchError::EventSend);
-                                }
+                                self.event_tx
+                                    .send(ElfWatchEvent::ElfUpdated(owned_watched_path).into())?;
+
                                 self.load_debounce_instant = Instant::now();
                                 debug!("ELF Watcher sent reload request.");
                             }
@@ -210,6 +219,8 @@ impl ElfWatchWorker {
                     info!("Already watching! Not acting further.");
                     return Ok(());
                 }
+                // Forget old file
+                _ = self.file_under_watch.take();
 
                 let Some(new_file_parent) = new_file.parent() else {
                     error!("Requested file to watch has no parent? Not acting further.");
@@ -223,11 +234,11 @@ impl ElfWatchWorker {
                     notify::RecursiveMode::NonRecursive,
                 ) {
                     self.event_tx
-                        .send(Event::DefmtElfWatch(ElfWatchEvent::Error(e.to_string())))
-                        .map_err(|_| ElfWatchError::EventSend)?;
+                        .send(ElfWatchEvent::Error(e.to_string()).into())?;
+                } else {
+                    info!("Watch started for: {new_file}");
+                    _ = self.file_under_watch.insert(new_file);
                 }
-                info!("Watch started for: {new_file}");
-                _ = self.file_under_watch.insert(new_file);
             }
             ElfWatchCommand::EndWatch => {
                 if let Some(old_path) = self.file_under_watch.take() {

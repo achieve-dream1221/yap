@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 enum CarouselCommand {
     AddEvent(CarouselEvent),
@@ -32,6 +32,8 @@ impl CarouselHandle {
         let worker = std::thread::spawn(move || {
             if let Err(e) = worker.work_loop() {
                 error!("Carousel worker closed with error: {e}");
+            } else {
+                debug!("Carousel worker closed gracefully!");
             }
         });
 
