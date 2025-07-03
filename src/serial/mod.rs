@@ -2,7 +2,6 @@ use serialport::{SerialPort, SerialPortInfo, SerialPortType};
 
 use crate::app::Event;
 
-mod errors;
 mod ignorable;
 pub use ignorable::*;
 
@@ -26,7 +25,7 @@ pub enum ReconnectType {
 pub enum SerialEvent {
     Ports(Vec<SerialPortInfo>),
     Connected(Option<ReconnectType>),
-    // RxBuffer(Vec<u8>),
+    UnsentTx(Vec<u8>),
     #[cfg(feature = "espflash")]
     EspFlash(EspEvent),
     Disconnected(SerialDisconnectReason),
@@ -37,6 +36,12 @@ pub enum SerialDisconnectReason {
     Intentional,
     UserBrokeConnection,
     Error(String),
+}
+
+impl From<SerialDisconnectReason> for Event {
+    fn from(value: SerialDisconnectReason) -> Self {
+        SerialEvent::Disconnected(value).into()
+    }
 }
 
 impl From<SerialEvent> for Event {

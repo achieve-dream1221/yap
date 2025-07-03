@@ -683,6 +683,7 @@ impl App {
                     }
                 }
             }
+            Event::Serial(SerialEvent::UnsentTx(unsent)) => todo!("{unsent:?}"),
             #[cfg(feature = "espflash")]
             Event::Serial(SerialEvent::EspFlash(esp_event)) => match esp_event {
                 EspEvent::BootloaderSuccess { chip } => self

@@ -75,32 +75,65 @@ fn run_inner() -> color_eyre::Result<()> {
 
     let (tx, rx) = crossbeam::channel::unbounded::<app::Event>();
     let crossterm_tx = tx.clone();
-    let crossterm_events = std::thread::spawn(move || -> color_eyre::Result<()> {
-        loop {
-            use crossterm::event::Event;
-            use crossterm::event::KeyEventKind;
-            match crossterm::event::read().unwrap() {
-                Event::Resize(_, _) => crossterm_tx.send(CrosstermEvent::Resize.into())?,
+    let crossterm_thread = std::thread::spawn(move || {
+        use crossterm::event::{Event, KeyEventKind};
+
+        #[derive(Debug)]
+        struct SendError;
+
+        impl std::fmt::Display for SendError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "failed to send crossterm event")
+            }
+        }
+
+        impl std::error::Error for SendError {}
+
+        let filter_and_send = |event: Event| -> Result<(), SendError> {
+            let send_event = |crossterm_event: CrosstermEvent| -> Result<(), SendError> {
+                crossterm_tx
+                    .send(crossterm_event.into())
+                    .map_err(|_| SendError)?;
+                Ok(())
+            };
+            match event {
+                Event::Resize(_, _) => {
+                    send_event(CrosstermEvent::Resize)?;
+                }
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    crossterm_tx.send(CrosstermEvent::KeyPress(key).into())?;
+                    send_event(CrosstermEvent::KeyPress(key))?
                 }
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp => {
-                        crossterm_tx.send(CrosstermEvent::MouseScroll { up: true }.into())?
+                        send_event(CrosstermEvent::MouseScroll { up: true })?;
                     }
                     MouseEventKind::ScrollDown => {
-                        crossterm_tx.send(CrosstermEvent::MouseScroll { up: false }.into())?
+                        send_event(CrosstermEvent::MouseScroll { up: false })?;
                     }
-                    MouseEventKind::Down(button) => match button {
-                        MouseButton::Left | MouseButton::Middle => (),
-                        MouseButton::Right => {
-                            crossterm_tx.send(CrosstermEvent::RightClick.into())?
-                        }
-                    },
+                    MouseEventKind::Down(button) if matches!(button, MouseButton::Right) => {
+                        send_event(CrosstermEvent::RightClick)?;
+                    }
                     _ => (),
                 },
                 _ => (),
+            }
+            Ok(())
+        };
+
+        loop {
+            let event = match crossterm::event::read() {
+                Ok(ev) => ev,
+                Err(e) => {
+                    error!("error encountered when reading crossterm event, shutting down. {e}");
+                    // return Err(e);
+                    break;
+                }
             };
+
+            if let Err(e) = filter_and_send(event) {
+                error!("{e}");
+                break;
+            }
         }
     });
 

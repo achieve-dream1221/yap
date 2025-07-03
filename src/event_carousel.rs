@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 enum CarouselCommand {
     AddEvent(CarouselEvent),
@@ -30,9 +30,9 @@ impl CarouselHandle {
         };
 
         let worker = std::thread::spawn(move || {
-            worker
-                .work_loop()
-                .expect("Carousel encountered a fatal error");
+            if let Err(e) = worker.work_loop() {
+                error!("Carousel worker closed with error: {e}");
+            }
         });
 
         (Self { command_tx }, worker)
@@ -102,8 +102,18 @@ struct CarouselWorker {
     events: Vec<CarouselEvent>,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum CarouselError {
+    #[error("closure returned error")]
+    EventTrigger,
+    #[error("failed to reply to shutdown request in time")]
+    ShutdownReply,
+    #[error("handle dropped, can't recieve commands")]
+    HandleDropped,
+}
+
 impl CarouselWorker {
-    fn work_loop(&mut self) -> Result<(), ()> {
+    fn work_loop(&mut self) -> Result<(), CarouselError> {
         let mut sleep_time = Duration::from_secs(5);
         let mut send_error = false;
         loop {
@@ -116,13 +126,18 @@ impl CarouselWorker {
                     self.events.push(event);
                 }
                 Ok(CarouselCommand::Shutdown(shutdown_tx)) => {
-                    shutdown_tx
-                        .send(())
-                        .expect("Failed to reply to shutdown request");
+                    if let Err(_) = shutdown_tx.send(()) {
+                        error!("Failed to reply to shutdown request!");
+                        return Err(CarouselError::ShutdownReply);
+                    }
+
                     break;
                 }
                 Err(RecvTimeoutError::Timeout) => (),
-                Err(RecvTimeoutError::Disconnected) => panic!("Carousel lost all Handles"),
+                Err(RecvTimeoutError::Disconnected) => {
+                    warn!("Handle dropped, closing carousel thread!");
+                    return Err(CarouselError::HandleDropped);
+                }
             };
             let now = Instant::now();
             self.woke_at = now;
@@ -169,6 +184,10 @@ impl CarouselWorker {
 
             // info!("Waiting for {sleep_time:?}");
         }
-        if send_error { Err(()) } else { Ok(()) }
+        if send_error {
+            Err(CarouselError::EventTrigger)
+        } else {
+            Ok(())
+        }
     }
 }

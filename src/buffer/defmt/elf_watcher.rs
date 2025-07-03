@@ -49,9 +49,9 @@ impl ElfWatchHandle {
         };
 
         let worker = std::thread::spawn(move || {
-            worker
-                .work_loop()
-                .expect("ELF Watcher encountered a fatal error");
+            if let Err(e) = worker.work_loop() {
+                error!("ELF Watcher closed with error: {e}");
+            }
         });
 
         Ok((Self { command_tx }, worker))
@@ -99,11 +99,21 @@ struct ElfWatchWorker {
     load_debounce_instant: Instant,
 }
 
-impl ElfWatchWorker {
-    pub fn work_loop(&mut self) -> Result<(), std::io::Error> {
-        loop {
-            // if let Ok(watcher_event_res) =
+#[derive(Debug, thiserror::Error)]
+enum ElfWatchError {
+    #[error("watcher event loop dropped event handle")]
+    WatcherDisconnect,
+    #[error("failed to send event back to app")]
+    EventSend,
+    #[error("failed to reply to shutdown request in time")]
+    ShutdownReply,
+    #[error("handle dropped, can't recieve commands")]
+    HandleDropped,
+}
 
+impl ElfWatchWorker {
+    pub fn work_loop(&mut self) -> Result<(), ElfWatchError> {
+        loop {
             let mut channel_notifier = crossbeam::channel::Select::new();
             channel_notifier.recv(&self.watcher_rx);
             channel_notifier.recv(&self.command_rx);
@@ -126,7 +136,7 @@ impl ElfWatchWorker {
                                     ElfWatchEvent::ElfUpdated(owned_watched_path),
                                 )) {
                                     error!("Error sending file watch event, stopping thread: {e}");
-                                    break;
+                                    return Err(ElfWatchError::EventSend);
                                 }
                                 self.load_debounce_instant = Instant::now();
                                 debug!("ELF Watcher sent reload request.");
@@ -137,22 +147,23 @@ impl ElfWatchWorker {
                     }
                 }
                 Err(TryRecvError::Empty) => (),
-                Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Disconnected) => return Err(ElfWatchError::WatcherDisconnect),
             }
 
             match self.command_rx.try_recv() {
                 Ok(ElfWatchCommand::Shutdown(shutdown_tx)) => {
-                    shutdown_tx
-                        .send(())
-                        .expect("Failed to reply to shutdown request");
-                    break;
+                    if let Err(_) = shutdown_tx.send(()) {
+                        error!("Failed to reply to shutdown request!");
+                        return Err(ElfWatchError::ShutdownReply);
+                    }
                 }
                 Ok(command) => {
                     self.handle_command(command).unwrap();
                 }
                 Err(TryRecvError::Empty) => (),
-                Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Disconnected) => return Err(ElfWatchError::HandleDropped),
             }
+            break;
         }
 
         Ok(())
@@ -188,7 +199,7 @@ impl ElfWatchWorker {
             false
         }
     }
-    fn handle_command(&mut self, command: ElfWatchCommand) -> Result<(), std::io::Error> {
+    fn handle_command(&mut self, command: ElfWatchCommand) -> Result<(), ElfWatchError> {
         match command {
             ElfWatchCommand::BeginWatch(new_file) => {
                 info!("Asked to watch for updates to: {new_file}");
@@ -200,7 +211,10 @@ impl ElfWatchWorker {
                     return Ok(());
                 }
 
-                let new_file_parent = new_file.parent().ok_or("file has no parent").unwrap();
+                let Some(new_file_parent) = new_file.parent() else {
+                    error!("Requested file to watch has no parent? Not acting further.");
+                    return Ok(());
+                };
 
                 self.handle_command(ElfWatchCommand::EndWatch)?;
 
@@ -210,15 +224,17 @@ impl ElfWatchWorker {
                 ) {
                     self.event_tx
                         .send(Event::DefmtElfWatch(ElfWatchEvent::Error(e.to_string())))
-                        .unwrap();
+                        .map_err(|_| ElfWatchError::EventSend)?;
                 }
+                info!("Watch started for: {new_file}");
                 _ = self.file_under_watch.insert(new_file);
             }
             ElfWatchCommand::EndWatch => {
                 if let Some(old_path) = self.file_under_watch.take() {
-                    let old_path_parent = old_path.parent().unwrap();
+                    let old_path_parent =
+                        old_path.parent().expect("inserted path should have parent");
                     if let Err(e) = self.watcher.unwatch(old_path_parent.as_ref()) {
-                        error!("Error unwatching file: {e}")
+                        error!("Error unwatching file: {e}, but continuing anyway")
                     }
                 }
             }
