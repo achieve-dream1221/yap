@@ -901,7 +901,7 @@ impl SerialWorker {
                         flasher.change_baud(baud)?;
                     }
 
-                    let elf_data = fs::read(elf.path).unwrap();
+                    let elf_data = fs_err::read(elf.path).unwrap();
 
                     let mut propagator = ProgressPropagator::new(
                         self.event_tx.clone(),
