@@ -12,7 +12,7 @@ use notify::{
 };
 use tracing::{debug, error, info, trace};
 
-use crate::app::Event;
+use crate::{app::Event, errors::HandleResult};
 
 #[derive(Debug)]
 pub enum ElfWatchEvent {
@@ -65,15 +65,15 @@ impl ElfWatchHandle {
         Ok((Self { command_tx }, worker))
     }
 
-    pub fn begin_watch(&self, elf_path: &Utf8Path) {
+    pub fn begin_watch(&self, elf_path: &Utf8Path) -> HandleResult<()> {
         let path = elf_path.to_owned();
-        self.command_tx
-            .send(ElfWatchCommand::BeginWatch(path))
-            .unwrap();
+        self.command_tx.send(ElfWatchCommand::BeginWatch(path))?;
+        Ok(())
     }
 
-    pub fn end_watch(&self) {
-        self.command_tx.send(ElfWatchCommand::EndWatch).unwrap();
+    pub fn end_watch(&self) -> HandleResult<()> {
+        self.command_tx.send(ElfWatchCommand::EndWatch)?;
+        Ok(())
     }
 
     pub fn shutdown(&self) -> Result<(), ()> {

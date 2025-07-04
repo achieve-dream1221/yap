@@ -34,7 +34,6 @@ use crate::{
         tui::COLOR_RULES_PATH,
     },
     changed,
-    errors::YapResult,
     settings::{LoggingType, Rendering},
     traits::{ByteSuffixCheck, LineHelpers, interleave_by},
     tui::color_rules::ColorRules,

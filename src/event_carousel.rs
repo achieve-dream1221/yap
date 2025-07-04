@@ -1,10 +1,12 @@
 use std::{
-    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TrySendError},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-use tracing::{debug, error, info, warn};
+use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, bounded};
+use tracing::{debug, error, warn};
+
+use crate::errors::HandleResult;
 
 enum CarouselCommand {
     AddEvent(CarouselEvent),
@@ -20,7 +22,7 @@ type PayloadFn = Box<dyn Fn() -> Result<(), String> + Send + 'static>;
 
 impl CarouselHandle {
     pub fn new() -> (Self, JoinHandle<()>) {
-        let (command_tx, command_rx) = mpsc::channel();
+        let (command_tx, command_rx) = bounded(20);
 
         let mut worker = CarouselWorker {
             // event_tx,
@@ -39,7 +41,12 @@ impl CarouselHandle {
 
         (Self { command_tx }, worker)
     }
-    pub fn add_repeating<S: Into<String>>(&self, name: S, payload: PayloadFn, interval: Duration) {
+    pub fn add_repeating<S: Into<String>>(
+        &self,
+        name: S,
+        payload: PayloadFn,
+        interval: Duration,
+    ) -> HandleResult<()> {
         let event = CarouselEvent {
             name: name.into(),
             payload,
@@ -47,11 +54,15 @@ impl CarouselHandle {
             last_sent: Instant::now(),
             event_type: EventType::Repeating,
         };
-        self.command_tx
-            .send(CarouselCommand::AddEvent(event))
-            .unwrap();
+        self.command_tx.send(CarouselCommand::AddEvent(event))?;
+        Ok(())
     }
-    pub fn add_oneshot<S: Into<String>>(&self, name: S, payload: PayloadFn, delay: Duration) {
+    pub fn add_oneshot<S: Into<String>>(
+        &self,
+        name: S,
+        payload: PayloadFn,
+        delay: Duration,
+    ) -> HandleResult<()> {
         let event = CarouselEvent {
             name: name.into(),
             payload,
@@ -59,12 +70,11 @@ impl CarouselHandle {
             last_sent: Instant::now(),
             event_type: EventType::Oneshot,
         };
-        self.command_tx
-            .send(CarouselCommand::AddEvent(event))
-            .unwrap();
+        self.command_tx.send(CarouselCommand::AddEvent(event))?;
+        Ok(())
     }
     pub fn shutdown(&self) -> Result<(), ()> {
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = bounded(0);
         if self
             .command_tx
             .send(CarouselCommand::Shutdown(shutdown_tx))

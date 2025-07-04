@@ -9,7 +9,6 @@ use ratatui_macros::{horizontal, vertical};
 
 use crate::{
     buffer::buf_line::RenderSettings,
-    errors::YapResult,
     settings::HexHighlightStyle,
     traits::{ToggleBool, interleave_by},
     tui::color_rules::ColorRules,
@@ -299,7 +298,7 @@ impl Buffer {
     pub fn update_terminal_size(
         &mut self,
         terminal: &mut ratatui::Terminal<impl ratatui::prelude::Backend>,
-    ) -> YapResult<()> {
+    ) -> std::io::Result<()> {
         self.last_terminal_size = {
             let mut terminal_size = terminal.size().unwrap();
             // `2` is the lines from the repeating_pattern_widget and the input buffer.

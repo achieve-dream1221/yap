@@ -15,7 +15,7 @@ use std::{
 use bstr::ByteSlice;
 use chrono::{DateTime, Local};
 use compact_str::CompactString;
-use crossbeam::channel::{Receiver, SendError, Sender};
+use crossbeam::channel::{Receiver, RecvError, SendError, Sender};
 use fs_err as fs;
 use ratatui::text::Line;
 use serialport::SerialPortInfo;
@@ -27,7 +27,7 @@ use crate::{
     app::Event,
     buffer::LineType,
     changed,
-    errors::{YapError, YapResult},
+    errors::HandleResult,
     serial::ReconnectType,
     settings::{self, Logging, LoggingType},
     traits::ByteSuffixCheck,
@@ -82,13 +82,15 @@ enum LoggingLineType {
 enum LoggingError {
     #[error("File error: {0}")]
     File(#[from] std::io::Error),
-    #[error("Fatal TX Error")]
-    Tx,
+    #[error("failed to send event to main app")]
+    EventSend,
+    #[error("failed to reply to shutdown request in time")]
+    ShutdownReply,
 }
 
 impl<T> From<SendError<T>> for LoggingError {
     fn from(_value: SendError<T>) -> Self {
-        Self::Tx
+        Self::EventSend
     }
 }
 
@@ -180,42 +182,39 @@ impl LoggingHandle {
     pub fn logging_active(&self) -> bool {
         self.session_open.load(Ordering::Acquire)
     }
-    pub fn request_log_start(&self, port_info: SerialPortInfo) -> YapResult<()> {
+    pub fn request_log_start(&self, port_info: SerialPortInfo) -> HandleResult<()> {
         self.command_tx
-            .send(LoggingCommand::RequestStart(Local::now(), port_info))
-            .map_err(|_| YapError::NoLoggingWorker)?;
+            .send(LoggingCommand::RequestStart(Local::now(), port_info))?;
         Ok(())
     }
-    // pub fn request_log_toggle(&self, port_info: SerialPortInfo) -> YapResult<()> {
+    // pub fn request_log_toggle(&self, port_info: SerialPortInfo) -> WorkerResult<()> {
     //     self.command_tx
-    //         .send(LoggingCommand::RequestToggle(Local::now(), port_info))
-    //         .map_err(|_| YapError::NoLoggingWorker)?;
+    //         .send(LoggingCommand::RequestToggle(Local::now(), port_info))?;
     //     Ok(())
     // }
-    pub fn request_log_stop(&self) -> YapResult<()> {
-        self.command_tx
-            .send(LoggingCommand::RequestStop)
-            .map_err(|_| YapError::NoLoggingWorker)?;
+    pub fn request_log_stop(&self) -> HandleResult<()> {
+        self.command_tx.send(LoggingCommand::RequestStop)?;
         Ok(())
     }
     pub fn log_port_connected(
         &self,
         port_info: SerialPortInfo,
         reconnect_type: Option<ReconnectType>,
-    ) -> YapResult<()> {
-        self.command_tx
-            .send(LoggingCommand::PortConnected(
-                Local::now(),
-                port_info,
-                reconnect_type,
-            ))
-            .map_err(|_| YapError::NoLoggingWorker)?;
+    ) -> HandleResult<()> {
+        self.command_tx.send(LoggingCommand::PortConnected(
+            Local::now(),
+            port_info,
+            reconnect_type,
+        ))?;
         Ok(())
     }
-    pub(super) fn log_rx_bytes(&self, timestamp: DateTime<Local>, bytes: Vec<u8>) -> YapResult<()> {
+    pub(super) fn log_rx_bytes(
+        &self,
+        timestamp: DateTime<Local>,
+        bytes: Vec<u8>,
+    ) -> HandleResult<()> {
         self.command_tx
-            .send(LoggingCommand::RxBytes(timestamp, bytes))
-            .map_err(|_| YapError::NoLoggingWorker)?;
+            .send(LoggingCommand::RxBytes(timestamp, bytes))?;
         Ok(())
     }
     pub(super) fn log_tx_bytes(
@@ -223,58 +222,48 @@ impl LoggingHandle {
         timestamp: DateTime<Local>,
         bytes: Vec<u8>,
         line_ending: Vec<u8>,
-    ) -> YapResult<()> {
-        self.command_tx
-            .send(LoggingCommand::TxBytes {
-                timestamp,
-                bytes,
-                line_ending,
-            })
-            .map_err(|_| YapError::NoLoggingWorker)?;
+    ) -> HandleResult<()> {
+        self.command_tx.send(LoggingCommand::TxBytes {
+            timestamp,
+            bytes,
+            line_ending,
+        })?;
         Ok(())
     }
-    // pub(super) fn log_bufline(&self, line: BufLine) -> YapResult<()> {
+    // pub(super) fn log_bufline(&self, line: BufLine) -> WorkerResult<()> {
     //     self.command_tx
-    //         .send(LoggingCommand::RxTxLine(line))
-    //         .map_err(|_| YapError::NoLoggingWorker)?;
+    //         .send(LoggingCommand::RxTxLine(line))?;
     //     Ok(())
     // }
     #[cfg(feature = "defmt")]
-    pub fn update_defmt_settings(&self, settings: Defmt) -> YapResult<()> {
+    pub fn update_defmt_settings(&self, settings: Defmt) -> HandleResult<()> {
         self.command_tx
-            .send(LoggingCommand::DefmtSettings(settings))
-            .map_err(|_| YapError::NoLoggingWorker)?;
+            .send(LoggingCommand::DefmtSettings(settings))?;
         Ok(())
     }
     #[cfg(feature = "defmt")]
     pub fn update_defmt_decoder(
         &self,
         decoder: Option<Arc<super::defmt::DefmtDecoder>>,
-    ) -> YapResult<()> {
+    ) -> HandleResult<()> {
         self.command_tx
-            .send(LoggingCommand::DefmtDecoder(decoder))
-            .map_err(|_| YapError::NoLoggingWorker)?;
+            .send(LoggingCommand::DefmtDecoder(decoder))?;
         Ok(())
     }
-    pub(super) fn update_line_ending(&self, line_ending: LineEnding) -> YapResult<()> {
+    pub(super) fn update_line_ending(&self, line_ending: LineEnding) -> HandleResult<()> {
         self.command_tx
-            .send(LoggingCommand::LineEndingChange(line_ending))
-            .map_err(|_| YapError::NoLoggingWorker)?;
+            .send(LoggingCommand::LineEndingChange(line_ending))?;
         Ok(())
     }
-    pub(super) fn update_settings(&self, logging: Logging) -> YapResult<()> {
-        self.command_tx
-            .send(LoggingCommand::Settings(logging))
-            .map_err(|_| YapError::NoLoggingWorker)?;
+    pub(super) fn update_settings(&self, logging: Logging) -> HandleResult<()> {
+        self.command_tx.send(LoggingCommand::Settings(logging))?;
         Ok(())
     }
-    pub fn log_port_disconnected(&self, intentional: bool) -> YapResult<()> {
-        self.command_tx
-            .send(LoggingCommand::PortDisconnect {
-                timestamp: Local::now(),
-                intentional,
-            })
-            .map_err(|_| YapError::NoLoggingWorker)?;
+    pub fn log_port_disconnected(&self, intentional: bool) -> HandleResult<()> {
+        self.command_tx.send(LoggingCommand::PortDisconnect {
+            timestamp: Local::now(),
+            intentional,
+        })?;
         Ok(())
     }
     pub(super) fn shutdown(&self) -> Result<(), ()> {
@@ -301,17 +290,17 @@ impl LoggingWorker {
     fn work_loop(&mut self) -> Result<(), LoggingError> {
         loop {
             match self.command_rx.recv() {
-                Ok(LoggingCommand::Shutdown(sender)) => {
-                    // TODO flush
+                Ok(LoggingCommand::Shutdown(shutdown_tx)) => {
                     self.close_files(true)?;
-                    sender.send(()).unwrap();
+                    if let Err(_) = shutdown_tx.send(()) {
+                        error!("Failed to reply to shutdown request!");
+                        return Err(LoggingError::ShutdownReply);
+                    }
+
                     break;
                 }
                 Ok(cmd) => self.handle_command(cmd)?,
-                Err(e) => {
-                    todo!();
-                    break;
-                }
+                Err(RecvError) => {}
             }
         }
 

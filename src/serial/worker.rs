@@ -32,7 +32,7 @@ pub type NativePort = serialport::TTYPort;
 #[cfg(windows)]
 pub type NativePort = serialport::COMPort;
 
-#[derive(Default)]
+#[derive(Default, strum::EnumIs)]
 enum TakeablePort {
     #[default]
     None,
@@ -42,17 +42,14 @@ enum TakeablePort {
 }
 
 impl TakeablePort {
-    fn is_none(&self) -> bool {
-        matches!(self, TakeablePort::None)
-    }
     fn is_some(&self) -> bool {
         !self.is_none()
     }
-    fn is_borrowed(&self) -> bool {
-        matches!(self, TakeablePort::Borrowed)
-    }
-    fn is_owned(&self) -> bool {
-        matches!(self, TakeablePort::Native(_) | TakeablePort::Loopback(_))
+    fn is_available(&self) -> bool {
+        match self {
+            TakeablePort::Native(_) | TakeablePort::Loopback(_) => true,
+            _ => false,
+        }
     }
     fn drop(&mut self) {
         *self = TakeablePort::None;
@@ -360,8 +357,11 @@ impl SerialWorker {
             }
             // This should maybe reply with a success/fail in case the
             // port is having an issue, so the user's input buffer isn't consumed visually
-            PortCommand::TxBuffer(data) if self.port.is_owned() => {
-                let port = self.port.as_mut_port().expect("was told port was owned");
+            PortCommand::TxBuffer(data) if self.port.is_available() => {
+                let port = self
+                    .port
+                    .as_mut_port()
+                    .expect("was told port was available");
 
                 let mut buf = &data[..];
 
@@ -439,7 +439,7 @@ impl SerialWorker {
     ) -> Result<(), WorkerError> {
         // assert!(self.connected_port_info.read().unwrap().is_some());
         // assert!(self.port.is_none());
-        if self.port.is_owned() || self.port.is_borrowed() {
+        if self.port.is_available() || self.port.is_borrowed() {
             error!("Got request to reconnect when already connected to port! Not acting...");
             return Ok(());
         }
@@ -657,9 +657,9 @@ impl SerialWorker {
     // Returning an error from here means that we couldn't recover,
     // and the connection needs to be re-established.
     fn handle_esp_command(&mut self, esp_command: EspCommand) -> Result<(), WorkerError> {
-        if !self.port.is_owned() {
+        if !self.port.is_native() {
             // TODO decide if i wanna keep this or just return Ok(())
-            error!("ESP Command given when we don't own port!");
+            error!("ESP Command given when we don't own native port!");
             return Err(WorkerError::MissingPort);
         }
 
@@ -704,7 +704,7 @@ impl SerialWorker {
         let lent_port = self
             .port
             .take_native()
-            .expect("worker should have port ownership");
+            .expect("worker should have native port ownership");
 
         let returned_port = match esp_command {
             EspCommand::DeviceInfo => {

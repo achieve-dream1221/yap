@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     app::Event,
-    errors::{YapError, YapResult},
+    errors::HandleResult,
     tui::esp::{EspBins, EspProfile},
 };
 
@@ -38,28 +38,26 @@ impl From<EspCommand> for SerialWorkerCommand {
 }
 
 impl SerialHandle {
-    pub fn esp_restart(&self, restart_type: EspRestartType) -> YapResult<()> {
+    pub fn esp_restart(&self, restart_type: EspRestartType) -> HandleResult<()> {
         self.command_tx
-            .send(EspCommand::Restart(restart_type).into())
-            .map_err(|_| YapError::NoSerialWorker)
+            .send(EspCommand::Restart(restart_type).into())?;
+        Ok(())
     }
 
-    pub fn esp_device_info(&self) -> YapResult<()> {
-        self.command_tx
-            .send(EspCommand::DeviceInfo.into())
-            .map_err(|_| YapError::NoSerialWorker)
+    pub fn esp_device_info(&self) -> HandleResult<()> {
+        self.command_tx.send(EspCommand::DeviceInfo.into())?;
+        Ok(())
     }
 
-    pub fn esp_flash_profile(&self, profile: EspProfile) -> YapResult<()> {
+    pub fn esp_flash_profile(&self, profile: EspProfile) -> HandleResult<()> {
         self.command_tx
-            .send(EspCommand::FlashProfile(profile).into())
-            .map_err(|_| YapError::NoSerialWorker)
+            .send(EspCommand::FlashProfile(profile).into())?;
+        Ok(())
     }
 
-    pub fn esp_erase_flash(&self) -> YapResult<()> {
-        self.command_tx
-            .send(EspCommand::EraseFlash.into())
-            .map_err(|_| YapError::NoSerialWorker)
+    pub fn esp_erase_flash(&self) -> HandleResult<()> {
+        self.command_tx.send(EspCommand::EraseFlash.into())?;
+        Ok(())
     }
 }
 

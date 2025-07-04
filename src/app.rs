@@ -376,23 +376,26 @@ impl App {
         let (serial_buf_tx, serial_buf_rx) = crossbeam::channel::unbounded();
 
         let (event_carousel, carousel_thread) = CarouselHandle::new();
-        let (serial_handle, serial_thread) = SerialHandle::new(
+        let (serial_handle, serial_thread) = SerialHandle::build(
             tx.clone(),
             serial_buf_tx,
             settings.last_port_settings.clone(),
             settings.ignored.clone(),
-        );
+        )
+        .expect("Failed to build serial worker!");
 
         let tick_tx = tx.clone();
-        event_carousel.add_repeating(
-            "PerSecond",
-            Box::new(move || {
-                tick_tx
-                    .send(Tick::PerSecond.into())
-                    .map_err(|e| e.to_string())
-            }),
-            Duration::from_secs(1),
-        );
+        event_carousel
+            .add_repeating(
+                "PerSecond",
+                Box::new(move || {
+                    tick_tx
+                        .send(Tick::PerSecond.into())
+                        .map_err(|e| e.to_string())
+                }),
+                Duration::from_secs(1),
+            )
+            .unwrap();
         let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
 
         #[cfg(feature = "defmt")]
@@ -764,11 +767,15 @@ impl App {
 
                 if self.popup.is_some() {
                     let tx = self.tx.clone();
-                    self.carousel.add_oneshot(
-                        "ScrollText",
-                        Box::new(move || tx.send(Tick::Scroll.into()).map_err(|e| e.to_string())),
-                        Duration::from_millis(400),
-                    );
+                    self.carousel
+                        .add_oneshot(
+                            "ScrollText",
+                            Box::new(move || {
+                                tx.send(Tick::Scroll.into()).map_err(|e| e.to_string())
+                            }),
+                            Duration::from_millis(400),
+                        )
+                        .unwrap();
                 }
             }
             Event::Tick(Tick::Action) => {
@@ -787,14 +794,16 @@ impl App {
                     } else {
                         PAUSE_TIME.saturating_sub(notif.shown_for())
                     };
-                    self.carousel.add_oneshot(
-                        "Notification",
-                        Box::new(move || {
-                            tx.send(Tick::Notification.into())
-                                .map_err(|e| e.to_string())
-                        }),
-                        sleep_time,
-                    );
+                    self.carousel
+                        .add_oneshot(
+                            "Notification",
+                            Box::new(move || {
+                                tx.send(Tick::Notification.into())
+                                    .map_err(|e| e.to_string())
+                            }),
+                            sleep_time,
+                        )
+                        .unwrap();
                 }
             }
             Event::Tick(Tick::Requested(origin)) => {
@@ -1291,11 +1300,13 @@ impl App {
             InnerPortStatus::Connected => (),
             InnerPortStatus::LentOut => {
                 let tx = self.tx.clone();
-                self.carousel.add_oneshot(
-                    "ActionQueue",
-                    Box::new(move || tx.send(Tick::Action.into()).map_err(|e| e.to_string())),
-                    Duration::from_millis(500),
-                );
+                self.carousel
+                    .add_oneshot(
+                        "ActionQueue",
+                        Box::new(move || tx.send(Tick::Action.into()).map_err(|e| e.to_string())),
+                        Duration::from_millis(500),
+                    )
+                    .unwrap();
                 return Ok(());
             }
             InnerPortStatus::Idle | InnerPortStatus::PrematureDisconnect => {
@@ -1319,11 +1330,13 @@ impl App {
         let next_action_delay =
             pause_duration_opt.unwrap_or(self.settings.behavior.action_chain_delay);
         let tx = self.tx.clone();
-        self.carousel.add_oneshot(
-            "ActionQueue",
-            Box::new(move || tx.send(Tick::Action.into()).map_err(|e| e.to_string())),
-            next_action_delay,
-        );
+        self.carousel
+            .add_oneshot(
+                "ActionQueue",
+                Box::new(move || tx.send(Tick::Action.into()).map_err(|e| e.to_string())),
+                next_action_delay,
+            )
+            .unwrap();
 
         Ok(())
     }
@@ -2258,14 +2271,16 @@ impl App {
                     self.failed_send_at = Some(Instant::now());
                     // Temporarily show text on red background when trying to send while unhealthy
                     let tx = self.tx.clone();
-                    self.carousel.add_oneshot(
-                        "UnhealthyTxUi",
-                        Box::new(move || {
-                            tx.send(Tick::Requested("Unhealthy TX Background Removal").into())
-                                .map_err(|e| e.to_string())
-                        }),
-                        FAILED_SEND_VISUAL_TIME,
-                    );
+                    self.carousel
+                        .add_oneshot(
+                            "UnhealthyTxUi",
+                            Box::new(move || {
+                                tx.send(Tick::Requested("Unhealthy TX Background Removal").into())
+                                    .map_err(|e| e.to_string())
+                            }),
+                            FAILED_SEND_VISUAL_TIME,
+                        )
+                        .unwrap();
                 }
             }
             Menu::Terminal(TerminalPrompt::DisconnectPrompt) => {
@@ -4225,9 +4240,10 @@ fn try_load_defmt_elf(
                 .update_defmt_decoder(Some(decoder_arc.clone()))
                 .unwrap();
             #[cfg(feature = "defmt_watch")]
-            watcher_handle.begin_watch(path);
+            watcher_handle.begin_watch(path).unwrap();
         }
         Err(e) => {
+            error!("error loading defmt elf {e}");
             // self.notifs
             //     .notify_str(format!("defmt Error: {e}"), Color::Red);
         }
