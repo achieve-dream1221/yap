@@ -2,7 +2,7 @@ use std::{borrow::Cow, f32::consts::PI, path::PathBuf};
 
 use camino::Utf8PathBuf;
 use compact_str::CompactString;
-use espflash::{flasher::DeviceInfo, targets::Chip};
+use espflash::{flasher::DeviceInfo, target::Chip};
 use fs_err as fs;
 use ratatui::{
     prelude::*,
@@ -320,12 +320,22 @@ pub struct SerializedEspFiles {
 }
 
 #[derive(Debug, Default)]
+pub enum SegmentAction {
+    #[default]
+    Flashing,
+    Verifying,
+    Skipped,
+    Finished,
+}
+
+#[derive(Debug, Default)]
 pub struct Flashing {
     current_file_name: Option<String>,
     chip: CompactString,
     current_file_addr: u32,
     current_file_len: usize,
     current_progress: usize,
+    current_action: SegmentAction,
 }
 
 #[derive(Debug)]
@@ -386,8 +396,13 @@ impl EspFlashHelper {
                     crystal_frequency,
                     flash_size,
                     features,
-                    mac_address,
+                    mac_address: mac_address_opt,
                 } = info;
+
+                let mac_address = mac_address_opt
+                    .as_ref()
+                    .map(String::as_str)
+                    .unwrap_or("???");
 
                 let rows: Vec<Row> = vec![
                     Row::new([
@@ -426,7 +441,7 @@ impl EspFlashHelper {
                 self.popup = Some(EspPopup::DeviceInfo(table));
             }
             EspEvent::FlashProgress(progress) => match progress {
-                FlashProgress::Init {
+                FlashProgress::SegmentInit {
                     chip,
                     addr,
                     size,
@@ -438,6 +453,7 @@ impl EspFlashHelper {
                         current_file_len: size,
                         current_progress: 0,
                         current_file_name: file_name,
+                        current_action: SegmentAction::Flashing,
                     }));
                 }
                 FlashProgress::Progress(progress) => {
@@ -449,12 +465,27 @@ impl EspFlashHelper {
                         ..flashing
                     }));
                 }
-                FlashProgress::SegmentFinished => {
+                FlashProgress::Verifying => {
                     let Some(EspPopup::Flashing(flashing)) = self.popup.take() else {
                         unreachable!();
                     };
                     self.popup = Some(EspPopup::Flashing(Flashing {
+                        current_action: SegmentAction::Verifying,
+                        ..flashing
+                    }));
+                }
+                FlashProgress::SegmentFinished { skipped } => {
+                    let Some(EspPopup::Flashing(flashing)) = self.popup.take() else {
+                        unreachable!();
+                    };
+                    let current_action = if skipped {
+                        SegmentAction::Skipped
+                    } else {
+                        SegmentAction::Finished
+                    };
+                    self.popup = Some(EspPopup::Flashing(Flashing {
                         current_progress: flashing.current_file_len,
+                        current_action,
                         ..flashing
                     }));
                 }
@@ -531,6 +562,7 @@ impl EspFlashHelper {
                 current_file_len,
                 current_progress,
                 current_file_name,
+                current_action,
             }) => {
                 let mut file_and_addr_line =
                     line!["@ 0x", format!("{current_file_addr:06X}")].centered();
@@ -552,9 +584,22 @@ impl EspFlashHelper {
                     *current_progress as f64 / *current_file_len as f64
                 };
 
-                let label = format!("{:.2}%", ratio * 100.0);
+                let label = match current_action {
+                    SegmentAction::Flashing => Cow::from(format!("{:.2}%", ratio * 100.0)),
+                    SegmentAction::Verifying => Cow::from("Verifying..."),
+                    SegmentAction::Skipped => Cow::from("Skipped! (checksum matches)"),
+                    SegmentAction::Finished => Cow::from("Segment flashed successfully!"),
+                };
+
+                let gauge_style: Style = match current_action {
+                    SegmentAction::Flashing => Color::Green.into(),
+                    SegmentAction::Verifying => Color::LightMagenta.into(),
+                    SegmentAction::Skipped => Color::LightBlue.into(),
+                    SegmentAction::Finished => Color::LightGreen.into(),
+                };
+
                 let progressbar = Gauge::default()
-                    .gauge_style(Style::from(Color::Green))
+                    .gauge_style(gauge_style)
                     .label(label)
                     .ratio(ratio);
 

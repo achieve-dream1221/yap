@@ -3606,7 +3606,7 @@ impl App {
                     .borders(Borders::TOP)
                     .border_style(Style::from(block_color));
                 frame.render_widget(
-                    Line::raw("Powered by esp-rs/espflash v3.3.0!") // TODO 4.0.0
+                    Line::raw("Powered by esp-rs/espflash v4.0.0!")
                         .all_spans_styled(Color::DarkGray.into())
                         .centered(),
                     line_area,
@@ -3636,12 +3636,11 @@ impl App {
                         &mut self.popup_table_state,
                     );
                     if let Some(profile) = self.espflash.profile_from_index(corrected_index) {
-                        use espflash::targets::Chip;
-
                         use crate::tui::esp::{EspBins, EspElf, EspProfile};
 
-                        let upper_chip =
-                            |chip: &Chip| chip.to_compact_string().to_ascii_uppercase();
+                        let upper_chip = |chip: &espflash::target::Chip| {
+                            chip.to_compact_string().to_ascii_uppercase()
+                        };
                         let chip = match &profile {
                             EspProfile::Bins(EspBins { expected_chip, .. })
                             | EspProfile::Elf(EspElf { expected_chip, .. }) => {

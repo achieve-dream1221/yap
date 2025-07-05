@@ -1,9 +1,6 @@
 use compact_str::{CompactString, ToCompactString};
 use crossbeam::channel::{Receiver, Sender};
-use espflash::{
-    connection::reset::ResetStrategy,
-    flasher::{DeviceInfo, ProgressCallbacks},
-};
+use espflash::{flasher::DeviceInfo, target::ProgressCallbacks};
 use std::time::Duration;
 use tracing::debug;
 
@@ -77,15 +74,17 @@ pub enum EspEvent {
 
 #[derive(Debug, Clone)]
 pub enum FlashProgress {
-    Init {
+    SegmentInit {
         chip: CompactString,
         addr: u32,
         size: usize,
         file_name: Option<String>,
     },
     Progress(usize),
-    SegmentFinished,
-    // TODO Verifying + Skipping popups
+    Verifying,
+    SegmentFinished {
+        skipped: bool,
+    },
 }
 
 impl From<EspEvent> for SerialEvent {
@@ -125,7 +124,7 @@ impl<'a> ProgressPropagator<'a> {
 impl ProgressCallbacks for ProgressPropagator<'_> {
     fn init(&mut self, addr: u32, total: usize) {
         _ = self.tx.send(
-            FlashProgress::Init {
+            FlashProgress::SegmentInit {
                 chip: self.chip.clone(),
                 addr,
                 size: total,
@@ -140,48 +139,53 @@ impl ProgressCallbacks for ProgressPropagator<'_> {
     fn update(&mut self, current: usize) {
         _ = self.tx.send(FlashProgress::Progress(current).into());
     }
-    fn finish(&mut self) {
-        _ = self.tx.send(FlashProgress::SegmentFinished.into());
+    fn verifying(&mut self) {
+        _ = self.tx.send(FlashProgress::Verifying.into());
+    }
+    fn finish(&mut self, skipped: bool) {
+        _ = self
+            .tx
+            .send(FlashProgress::SegmentFinished { skipped }.into());
         self.current_index += 1;
     }
 }
 
-pub struct TestReset {
-    delay: u64,
-}
-impl TestReset {
-    pub fn new() -> Self {
-        Self { delay: 50 }
-    }
-}
-impl ResetStrategy for TestReset {
-    fn reset(
-        &self,
-        serial_port: &mut espflash::connection::Port,
-    ) -> Result<(), espflash::error::Error> {
-        debug!(
-            "Using Classic reset strategy with delay of {}ms",
-            self.delay
-        );
-        self.set_dtr(serial_port, false)?;
-        self.set_rts(serial_port, false)?;
+// pub struct TestReset {
+//     delay: u64,
+// }
+// impl TestReset {
+//     pub fn new() -> Self {
+//         Self { delay: 50 }
+//     }
+// }
+// impl ResetStrategy for TestReset {
+//     fn reset(
+//         &self,
+//         serial_port: &mut espflash::connection::Port,
+//     ) -> Result<(), espflash::error::Error> {
+//         debug!(
+//             "Using Classic reset strategy with delay of {}ms",
+//             self.delay
+//         );
+//         self.set_dtr(serial_port, false)?;
+//         self.set_rts(serial_port, false)?;
 
-        self.set_dtr(serial_port, true)?;
-        self.set_rts(serial_port, true)?;
+//         self.set_dtr(serial_port, true)?;
+//         self.set_rts(serial_port, true)?;
 
-        self.set_dtr(serial_port, false)?; // IO0 = HIGH
-        self.set_rts(serial_port, true)?; // EN = LOW, chip in reset
+//         self.set_dtr(serial_port, false)?; // IO0 = HIGH
+//         self.set_rts(serial_port, true)?; // EN = LOW, chip in reset
 
-        std::thread::sleep(Duration::from_millis(100));
+//         std::thread::sleep(Duration::from_millis(100));
 
-        self.set_dtr(serial_port, true)?; // IO0 = LOW
-        self.set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
+//         self.set_dtr(serial_port, true)?; // IO0 = LOW
+//         self.set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
 
-        std::thread::sleep(Duration::from_millis(self.delay));
+//         std::thread::sleep(Duration::from_millis(self.delay));
 
-        self.set_dtr(serial_port, false)?; // IO0 = HIGH, done
-        self.set_rts(serial_port, false)?;
+//         self.set_dtr(serial_port, false)?; // IO0 = HIGH, done
+//         self.set_rts(serial_port, false)?;
 
-        Ok(())
-    }
-}
+//         Ok(())
+//     }
+// }

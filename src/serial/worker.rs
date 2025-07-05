@@ -24,8 +24,6 @@ use super::{
 
 #[cfg(feature = "espflash")]
 use super::esp::{EspCommand, EspEvent};
-#[cfg(feature = "espflash")]
-use espflash::connection::reset::ResetStrategy;
 
 #[cfg(unix)]
 pub type NativePort = serialport::TTYPort;
@@ -660,10 +658,7 @@ impl SerialWorker {
         use std::{borrow::Cow, fs};
 
         use compact_str::{CompactString, ToCompactString};
-        use espflash::{
-            elf::RomSegment,
-            flasher::{FlashData, FlashSettings, ProgressCallbacks},
-        };
+        use espflash::flasher::{FlashData, FlashSettings};
         use serialport::UsbPortInfo;
 
         use crate::{
@@ -702,7 +697,8 @@ impl SerialWorker {
 
         let returned_port = match esp_command {
             EspCommand::DeviceInfo => {
-                let mut flasher = self.connect_esp_flasher(lent_port, usb_port_info, true, true)?;
+                let mut flasher =
+                    self.connect_esp_flasher(lent_port, usb_port_info, true, true, None)?;
 
                 if let Ok(esp_info) = flasher.device_info() {
                     debug!("{esp_info:#?}");
@@ -712,12 +708,13 @@ impl SerialWorker {
 
                 flasher.connection().reset()?;
 
-                flasher.into_serial()
+                flasher.into_connection().into_serial()
             }
 
             EspCommand::Restart(restart_type) => match restart_type {
                 EspRestartType::Bootloader { active: true } => {
-                    let flasher = self.connect_esp_flasher(lent_port, usb_port_info, true, true)?;
+                    let flasher =
+                        self.connect_esp_flasher(lent_port, usb_port_info, true, true, None)?;
 
                     self.event_tx.send(
                         EspEvent::BootloaderSuccess {
@@ -726,14 +723,15 @@ impl SerialWorker {
                         .into(),
                     )?;
 
-                    flasher.into_serial()
+                    flasher.into_connection().into_serial()
                 }
                 EspRestartType::Bootloader { active: false } => {
                     let mut connection = espflash::connection::Connection::new(
                         lent_port,
                         usb_port_info,
-                        espflash::connection::reset::ResetAfterOperation::HardReset,
-                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                        espflash::connection::ResetAfterOperation::HardReset,
+                        espflash::connection::ResetBeforeOperation::DefaultReset,
+                        115200,
                     );
 
                     connection.reset_to_flash(true)?;
@@ -746,8 +744,9 @@ impl SerialWorker {
                     let mut connection = espflash::connection::Connection::new(
                         lent_port,
                         usb_port_info,
-                        espflash::connection::reset::ResetAfterOperation::HardReset,
-                        espflash::connection::reset::ResetBeforeOperation::DefaultReset,
+                        espflash::connection::ResetAfterOperation::HardReset,
+                        espflash::connection::ResetBeforeOperation::DefaultReset,
+                        115200,
                     );
 
                     connection.reset()?;
@@ -764,6 +763,7 @@ impl SerialWorker {
                     usb_port_info,
                     !bins.no_verify,
                     !bins.no_skip,
+                    bins.upload_baud,
                 )?;
 
                 let matches = bins.expected_chip.map_or(true, |expected| {
@@ -776,18 +776,19 @@ impl SerialWorker {
                 });
 
                 if matches {
+                    use espflash::image_format::Segment;
                     use itertools::Itertools;
 
                     if let Some(baud) = bins.upload_baud {
                         flasher.change_baud(baud)?;
                     }
 
-                    let (rom_segs, mut errs): (Vec<RomSegment>, Vec<std::io::Error>) = bins
+                    let (rom_segs, mut errs): (Vec<Segment>, Vec<std::io::Error>) = bins
                         .bins
                         .iter()
-                        .map(|(addr, path)| -> Result<RomSegment, std::io::Error> {
+                        .map(|(addr, path)| -> Result<Segment, std::io::Error> {
                             let bytes = fs::read(path)?;
-                            Ok(RomSegment {
+                            Ok(Segment {
                                 addr: *addr,
                                 data: Cow::Owned(bytes),
                             })
@@ -813,7 +814,7 @@ impl SerialWorker {
                         filenames,
                     );
 
-                    if let Err(e) = flasher.write_bins_to_flash(&rom_segs, Some(&mut propagator)) {
+                    if let Err(e) = flasher.write_bins_to_flash(&rom_segs, &mut propagator) {
                         // TODO show on UI
                         self.event_tx
                             .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
@@ -830,7 +831,7 @@ impl SerialWorker {
                     )?;
                 }
 
-                flasher.into_serial()
+                flasher.into_connection().into_serial()
             }
             EspCommand::FlashProfile(EspProfile::Elf(elf)) => {
                 // assert!(!elf.path.is_empty(), "expected path");
@@ -839,6 +840,7 @@ impl SerialWorker {
                     usb_port_info,
                     !elf.no_verify,
                     !elf.no_skip,
+                    elf.upload_baud,
                 )?;
 
                 let matches = elf.expected_chip.map_or(true, |expected| {
@@ -864,7 +866,7 @@ impl SerialWorker {
                     );
 
                     if elf.ram {
-                        if let Err(e) = flasher.load_elf_to_ram(&elf_data, Some(&mut propagator)) {
+                        if let Err(e) = flasher.load_elf_to_ram(&elf_data, &mut propagator) {
                             // TODO show on UI
                             self.event_tx
                                 .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
@@ -872,28 +874,39 @@ impl SerialWorker {
                         }
                     } else {
                         if let Ok(esp_info) = flasher.device_info() {
+                            use espflash::image_format::idf::IdfBootloaderFormat;
+
+                            // TODO? dunno tbh
+                            let min_chip_rev = 0;
+                            let mmu_page_size = None;
                             let flash_data = FlashData::new(
-                                elf.bootloader.as_ref().map(AsRef::as_ref),
-                                elf.partition_table.as_ref().map(AsRef::as_ref),
-                                // TODO?
-                                None,
-                                // TODO?
-                                None,
-                                FlashSettings::default(),
-                                0,
+                                // Not sure how important it is I populate the other fields (or any at all?)
+                                FlashSettings::new(None, Some(esp_info.flash_size), None),
+                                min_chip_rev,
+                                mmu_page_size,
+                                esp_info.chip,
+                                esp_info.crystal_frequency,
                             );
 
-                            let flash_data = match flash_data {
-                                Ok(data) => data,
-                                Err(e) => Err(WorkerError::FlashData(e.to_string()))?,
+                            let format_res = IdfBootloaderFormat::new(
+                                &elf_data,
+                                &flash_data,
+                                elf.partition_table.as_ref().map(AsRef::as_ref),
+                                elf.bootloader.as_ref().map(AsRef::as_ref),
+                                None,
+                                None,
+                            );
+
+                            let format = match format_res {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    return Err(WorkerError::ImageFormat(e));
+                                }
                             };
 
-                            if let Err(e) = flasher.load_elf_to_flash(
-                                &elf_data,
-                                flash_data,
-                                Some(&mut propagator),
-                                esp_info.crystal_frequency,
-                            ) {
+                            if let Err(e) =
+                                flasher.load_image_to_flash(&mut propagator, format.into())
+                            {
                                 // TODO show on UI
                                 self.event_tx
                                     .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
@@ -912,10 +925,11 @@ impl SerialWorker {
                     )?;
                 }
 
-                flasher.into_serial()
+                flasher.into_connection().into_serial()
             }
             EspCommand::EraseFlash => {
-                let mut flasher = self.connect_esp_flasher(lent_port, usb_port_info, true, true)?;
+                let mut flasher =
+                    self.connect_esp_flasher(lent_port, usb_port_info, true, true, None)?;
                 let esp_chip = flasher.chip();
                 let chip = esp_chip.to_compact_string().to_uppercase();
 
@@ -926,7 +940,7 @@ impl SerialWorker {
                     self.event_tx.send(EspEvent::EraseSuccess { chip }.into())?;
                 }
 
-                flasher.into_serial()
+                flasher.into_connection().into_serial()
             }
         };
 
@@ -963,20 +977,20 @@ impl SerialWorker {
         usb_port_info: serialport::UsbPortInfo,
         verify: bool,
         skip: bool,
+        upload_baud: Option<u32>,
     ) -> Result<espflash::flasher::Flasher, WorkerError> {
         use compact_str::ToCompactString;
 
-        let flasher = espflash::flasher::Flasher::connect(
+        let connection = espflash::connection::Connection::new(
             lent_port,
             usb_port_info,
-            Some(115200),
-            true,
-            verify,
-            skip,
-            None,
-            espflash::connection::reset::ResetAfterOperation::HardReset,
-            espflash::connection::reset::ResetBeforeOperation::DefaultReset,
-        )?;
+            espflash::connection::ResetAfterOperation::HardReset,
+            espflash::connection::ResetBeforeOperation::DefaultReset,
+            upload_baud.unwrap_or(115200),
+        );
+
+        let flasher =
+            espflash::flasher::Flasher::connect(connection, true, verify, skip, None, upload_baud)?;
 
         let esp_chip = flasher.chip();
         let chip = esp_chip.to_compact_string().to_uppercase();
@@ -1000,7 +1014,7 @@ pub(crate) enum WorkerError {
 
     #[cfg(feature = "espflash")]
     #[error("espflash error: {0}")]
-    EspFlash(#[from] espflash::error::Error),
+    EspFlash(#[from] espflash::Error),
 
     #[cfg(feature = "espflash")]
     #[error("file error: {0}")]
@@ -1012,7 +1026,7 @@ pub(crate) enum WorkerError {
 
     #[cfg(feature = "espflash")]
     #[error("failed creating FlashData: {0}")]
-    FlashData(String),
+    ImageFormat(#[source] espflash::Error),
 
     #[cfg(feature = "espflash")]
     #[error("tried to act on lent out port")]
