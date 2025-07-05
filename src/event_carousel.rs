@@ -141,9 +141,9 @@ impl CarouselWorker {
                     if let Err(_) = shutdown_tx.send(()) {
                         error!("Failed to reply to shutdown request!");
                         return Err(CarouselError::ShutdownReply);
+                    } else {
+                        break Ok(());
                     }
-
-                    break;
                 }
                 Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => {
@@ -186,20 +186,14 @@ impl CarouselWorker {
                     shortest.min(until_next_send)
                 });
 
+            if send_error {
+                break Err(CarouselError::EventTrigger);
+            }
+
             // Removing any expired oneshots
             self.events
                 .retain(|e| e.event_type != EventType::ExpiredOneshot);
-
-            if send_error {
-                break;
-            }
-
             // info!("Waiting for {sleep_time:?}");
-        }
-        if send_error {
-            Err(CarouselError::EventTrigger)
-        } else {
-            Ok(())
         }
     }
 }

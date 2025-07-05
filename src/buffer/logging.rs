@@ -86,6 +86,8 @@ enum LoggingError {
     EventSend,
     #[error("failed to reply to shutdown request in time")]
     ShutdownReply,
+    #[error("handle dropped, can't recieve commands")]
+    HandleDropped,
 }
 
 impl<T> From<SendError<T>> for LoggingError {
@@ -294,17 +296,15 @@ impl LoggingWorker {
                     self.close_files(true)?;
                     if let Err(_) = shutdown_tx.send(()) {
                         error!("Failed to reply to shutdown request!");
-                        return Err(LoggingError::ShutdownReply);
+                        break Err(LoggingError::ShutdownReply);
+                    } else {
+                        break Ok(());
                     }
-
-                    break;
                 }
                 Ok(cmd) => self.handle_command(cmd)?,
-                Err(RecvError) => {}
+                Err(RecvError) => break Err(LoggingError::HandleDropped),
             }
         }
-
-        Ok(())
     }
     fn log_connection_event(
         &mut self,

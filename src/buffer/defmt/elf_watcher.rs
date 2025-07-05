@@ -158,26 +158,25 @@ impl ElfWatchWorker {
                     }
                 }
                 Err(TryRecvError::Empty) => (),
-                Err(TryRecvError::Disconnected) => return Err(ElfWatchError::WatcherDisconnect),
+                Err(TryRecvError::Disconnected) => break Err(ElfWatchError::WatcherDisconnect),
             }
 
             match self.command_rx.try_recv() {
                 Ok(ElfWatchCommand::Shutdown(shutdown_tx)) => {
                     if let Err(_) = shutdown_tx.send(()) {
                         error!("Failed to reply to shutdown request!");
-                        return Err(ElfWatchError::ShutdownReply);
+                        break Err(ElfWatchError::ShutdownReply);
+                    } else {
+                        return Ok(());
                     }
                 }
                 Ok(command) => {
                     self.handle_command(command)?;
                 }
                 Err(TryRecvError::Empty) => (),
-                Err(TryRecvError::Disconnected) => return Err(ElfWatchError::HandleDropped),
+                Err(TryRecvError::Disconnected) => break Err(ElfWatchError::HandleDropped),
             }
-            break;
         }
-
-        Ok(())
     }
     fn event_matches_watched_file(&self, event: &notify::Event) -> bool {
         if let Some(watched_path) = &self.file_under_watch

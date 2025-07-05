@@ -154,9 +154,9 @@ impl SerialWorker {
 
                     if let Err(_) = shutdown_tx.send(()) {
                         error!("Failed to reply to shutdown request!");
-                        return Err(WorkerError::ShutdownReply);
+                        break Err(WorkerError::ShutdownReply);
                     } else {
-                        break;
+                        break Ok(());
                     }
                 }
                 Ok(SerialWorkerCommand::PortCommand(port_cmd)) => {
@@ -173,14 +173,11 @@ impl SerialWorker {
                 Err(crossbeam::channel::RecvTimeoutError::Timeout) => (),
                 Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
                     error!("Serial worker handle got dropped! Shutting down!");
-                    break;
+                    break Err(WorkerError::HandleDropped);
                 }
             }
 
             if let Some(port) = self.port.as_mut_port() {
-                // if port.bytes_to_read().unwrap() == 0 {
-                //     continue;
-                // }
                 // info!(
                 //     "bytes incoming: {}, bytes outcoming: {}",
                 //     port.bytes_to_read().unwrap(),
@@ -215,8 +212,6 @@ impl SerialWorker {
                 }
             }
         }
-
-        Ok(())
     }
 
     fn unhealthy_disconnection(&mut self) {
@@ -658,7 +653,6 @@ impl SerialWorker {
     // and the connection needs to be re-established.
     fn handle_esp_command(&mut self, esp_command: EspCommand) -> Result<(), WorkerError> {
         if !self.port.is_native() {
-            // TODO decide if i wanna keep this or just return Ok(())
             error!("ESP Command given when we don't own native port!");
             return Err(WorkerError::MissingPort);
         }
@@ -1001,6 +995,8 @@ pub(crate) enum WorkerError {
     FailedSend,
     #[error("failed to reply to shutdown request in time")]
     ShutdownReply,
+    #[error("handle dropped, can't recieve commands")]
+    HandleDropped,
 
     #[cfg(feature = "espflash")]
     #[error("espflash error: {0}")]
