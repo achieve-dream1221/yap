@@ -804,19 +804,19 @@ impl SerialWorker {
                         return Err(err)?;
                     }
 
-                    // let filenames: Vec<_> = bins
-                    //     .bins
-                    //     .iter()
-                    //     .map(|(index, name)| {
-                    //         name.file_name()
-                    //             .map(|n| n.to_string_lossy())
-                    //             .expect("can't have file without name")
-                    //     })
-                    //     .collect();
+                    let filenames: Vec<_> = bins
+                        .bins
+                        .iter()
+                        .map(|(_addr, path)| path.file_name().unwrap_or_default())
+                        .collect();
+                    if filenames.iter().any(|n| n.is_empty()) {
+                        return Err(WorkerError::FileMissingName);
+                    }
 
                     let mut propagator = ProgressPropagator::new(
                         self.event_tx.clone(),
                         flasher.chip().to_compact_string().to_uppercase(),
+                        filenames,
                     );
 
                     if let Err(e) = flasher.write_bins_to_flash(&rom_segs, Some(&mut propagator)) {
@@ -861,11 +861,12 @@ impl SerialWorker {
                         flasher.change_baud(baud)?;
                     }
 
-                    let elf_data = fs::read(elf.path)?;
+                    let elf_data = fs::read(&elf.path)?;
 
                     let mut propagator = ProgressPropagator::new(
                         self.event_tx.clone(),
                         flasher.chip().to_compact_string().to_uppercase(),
+                        vec![],
                     );
 
                     if elf.ram {
@@ -1008,6 +1009,10 @@ pub(crate) enum WorkerError {
     #[cfg(feature = "espflash")]
     #[error("file error: {0}")]
     File(#[from] std::io::Error),
+
+    #[cfg(feature = "espflash")]
+    #[error("given file has invalid name")]
+    FileMissingName,
 
     #[cfg(feature = "espflash")]
     #[error("failed creating FlashData: {0}")]

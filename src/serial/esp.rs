@@ -81,6 +81,7 @@ pub enum FlashProgress {
         chip: CompactString,
         addr: u32,
         size: usize,
+        file_name: Option<String>,
     },
     Progress(usize),
     SegmentFinished,
@@ -105,30 +106,33 @@ impl From<FlashProgress> for Event {
     }
 }
 
-pub struct ProgressPropagator {
+pub struct ProgressPropagator<'a> {
     chip: CompactString,
     tx: Sender<Event>,
-    // filenames: Vec<&'a str>,
-    // current_index: i16,
+    filenames: Vec<&'a str>,
+    current_index: usize,
 }
-impl ProgressPropagator {
-    pub fn new(tx: Sender<Event>, chip: CompactString) -> Self {
+impl<'a> ProgressPropagator<'a> {
+    pub fn new(tx: Sender<Event>, chip: CompactString, filenames: Vec<&'a str>) -> Self {
         Self {
             chip,
             tx,
-            // filenames: Vec::from_iter(filenames.iter().map(AsRef::as_ref)),
-            // current_index: -1,
+            filenames,
+            current_index: 0,
         }
     }
 }
-impl ProgressCallbacks for ProgressPropagator {
+impl ProgressCallbacks for ProgressPropagator<'_> {
     fn init(&mut self, addr: u32, total: usize) {
         _ = self.tx.send(
             FlashProgress::Init {
                 chip: self.chip.clone(),
                 addr,
                 size: total,
-                // name: self.filenames[self.current_index as usize].to_compact_string(),
+                file_name: self
+                    .filenames
+                    .get(self.current_index)
+                    .map(ToString::to_string),
             }
             .into(),
         );
@@ -138,6 +142,7 @@ impl ProgressCallbacks for ProgressPropagator {
     }
     fn finish(&mut self) {
         _ = self.tx.send(FlashProgress::SegmentFinished.into());
+        self.current_index += 1;
     }
 }
 
