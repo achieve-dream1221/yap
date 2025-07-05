@@ -1,6 +1,6 @@
 use bstr::{ByteSlice, ByteVec};
 use compact_str::{CompactString, ToCompactString};
-use std::str::FromStr;
+use std::{convert::Infallible, str::FromStr};
 
 pub const PRESET_LINE_ENDINGS: &[&'static str] = &["\n", "\r", "\r\n", ""];
 pub const PRESET_LINE_ENDINGS_ESCAPED: &[&'static str] = &["\\n", "\\r", "\\r\\n", ""];
@@ -36,7 +36,7 @@ impl std::fmt::Display for RxLineEnding {
 }
 
 impl FromStr for RxLineEnding {
-    type Err = ();
+    type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -108,7 +108,7 @@ impl std::fmt::Display for TxLineEnding {
 }
 
 impl FromStr for TxLineEnding {
-    type Err = ();
+    type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -186,7 +186,7 @@ impl std::fmt::Display for MacroTxLineEnding {
 }
 
 impl FromStr for MacroTxLineEnding {
-    type Err = ();
+    type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -228,16 +228,16 @@ impl FromStr for MacroTxLineEnding {
 
 impl<S: AsRef<str>> From<S> for RxLineEnding {
     fn from(value: S) -> Self {
-        Self::from_str(value.as_ref()).unwrap()
+        Self::from_str(value.as_ref()).expect("should be infallible conversion")
     }
 }
 impl<S: AsRef<str>> From<S> for TxLineEnding {
     fn from(value: S) -> Self {
-        Self::from_str(value.as_ref()).unwrap()
+        Self::from_str(value.as_ref()).expect("should be infallible conversion")
     }
 }
 impl<S: AsRef<str>> From<S> for MacroTxLineEnding {
     fn from(value: S) -> Self {
-        Self::from_str(value.as_ref()).unwrap()
+        Self::from_str(value.as_ref()).expect("should be infallible conversion")
     }
 }

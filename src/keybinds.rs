@@ -407,7 +407,8 @@ impl Keybinds {
             .map(|(kc, _)| kc.to_compact_string());
     }
     pub fn overridable_defaults() -> Self {
-        let mut deserialized: Self = toml::from_str(OVERRIDABLE_DEFAULTS).unwrap();
+        let mut deserialized: Self =
+            toml::from_str(OVERRIDABLE_DEFAULTS).expect("hardcoded default should be valid");
 
         deserialized.fill_port_settings_hint();
 
@@ -440,8 +441,8 @@ mod test {
 
     #[test]
     fn test_default_config_deser() {
-        let keybinds =
-            Keybinds::load(include_str!("../example_configs/yap_keybinds.toml")).unwrap();
+        let keybinds = Keybinds::load(include_str!("../example_configs/yap_keybinds.toml"))
+            .expect("example configs should be valid");
         assert!(keybinds.keybindings.len() > 0);
 
         let port_settings_bind = keybinds.keybindings.get(&crokey::key!(ctrl - '.')).unwrap();

@@ -1,10 +1,4 @@
-// Current ELF:
-// select an ELF
-// select recent ELF
-// ---
-// SETTINGS
-
-use std::{path::PathBuf, thread::JoinHandle};
+use std::thread::JoinHandle;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use crossbeam::channel::Sender;
@@ -12,16 +6,16 @@ use ratatui::{
     prelude::*,
     widgets::{Cell, HighlightSpacing, Row, Table},
 };
-use ratatui_explorer::FileExplorer;
+
 use serde::{Deserialize, Serialize};
 
 use fs_err as fs;
 #[cfg(feature = "defmt_watch")]
 use takeable::Takeable;
 
+use crate::app::Event;
 #[cfg(feature = "defmt_watch")]
 use crate::buffer::defmt::elf_watcher::ElfWatchHandle;
-use crate::{app::Event, buffer::defmt::DefmtDecoder};
 
 const DEFMT_RECENT_PATH: &str = "yap_defmt_recent.toml";
 
@@ -44,7 +38,7 @@ impl From<usize> for DefmtPopupSelection {
     }
 }
 
-pub struct DefmtMeow {
+pub struct DefmtHelpers {
     pub recent_elfs: DefmtRecentElfs,
     #[cfg(feature = "defmt_watch")]
     pub watcher_handle: ElfWatchHandle,
@@ -53,7 +47,7 @@ pub struct DefmtMeow {
 }
 
 #[cfg(feature = "defmt_watch")]
-impl Drop for DefmtMeow {
+impl Drop for DefmtHelpers {
     fn drop(&mut self) {
         use tracing::debug;
         use tracing::error;
@@ -68,13 +62,23 @@ impl Drop for DefmtMeow {
     }
 }
 
-impl DefmtMeow {
+#[derive(Debug, thiserror::Error)]
+pub enum DefmtHelperBuildError {
+    #[error(transparent)]
+    RecentElfs(#[from] DefmtRecentError),
+
+    #[cfg(feature = "defmt_watch")]
+    #[error(transparent)]
+    Watcher(#[from] notify::Error),
+}
+
+impl DefmtHelpers {
     pub fn build(
         #[cfg(feature = "defmt_watch")] event_tx: Sender<Event>,
-    ) -> Result<Self, toml::de::Error> {
+    ) -> Result<Self, DefmtHelperBuildError> {
         #[cfg(feature = "defmt_watch")]
         {
-            let (watcher_handle, watcher_join_handle) = ElfWatchHandle::build(event_tx).unwrap();
+            let (watcher_handle, watcher_join_handle) = ElfWatchHandle::build(event_tx)?;
             let watcher_join_handle = Takeable::new(watcher_join_handle);
             Ok(Self {
                 recent_elfs: DefmtRecentElfs::load()?,
@@ -98,27 +102,34 @@ pub struct DefmtRecentElfs {
     recent: Vec<Utf8PathBuf>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum DefmtRecentError {
+    #[error("failed deserializing recent elfs: {0}")]
+    Deser(#[from] toml::de::Error),
+    #[error("failed serializing recent elfs: {0}")]
+    Ser(#[from] toml::ser::Error),
+    #[error("failed recent elfs file op: {0}")]
+    File(#[from] std::io::Error),
+}
+
 impl DefmtRecentElfs {
-    pub fn load() -> Result<Self, toml::de::Error> {
+    pub fn load() -> Result<Self, DefmtRecentError> {
         let toml_path = Utf8PathBuf::from(DEFMT_RECENT_PATH);
 
         if toml_path.exists() {
-            let recent_toml = fs::read_to_string(toml_path).unwrap();
+            let recent_toml = fs::read_to_string(toml_path)?;
 
-            toml::from_str(&recent_toml)
+            toml::from_str(&recent_toml).map_err(Into::into)
         } else {
             fs::write(
                 DEFMT_RECENT_PATH,
-                toml::to_string(&DefmtRecentElfs::default())
-                    .unwrap()
-                    .as_bytes(),
-            )
-            .unwrap();
+                toml::to_string(&DefmtRecentElfs::default())?.as_bytes(),
+            )?;
 
             Ok(DefmtRecentElfs::default())
         }
     }
-    pub fn elf_loaded(&mut self, newest: &Utf8Path) -> Result<(), toml::ser::Error> {
+    pub fn elf_loaded(&mut self, newest: &Utf8Path) -> Result<(), DefmtRecentError> {
         let _ = self.last.insert(newest.to_owned());
         if let Some(found_index) = self.recent.iter().position(|p| *p == newest) {
             let element = self.recent.remove(found_index);
@@ -129,9 +140,9 @@ impl DefmtRecentElfs {
 
         self.recent.truncate(DEFMT_RECENT_MAX_AMOUNT);
 
-        let recent_toml = toml::to_string(&self).unwrap();
+        let recent_toml = toml::to_string(&self)?;
 
-        fs::write(DEFMT_RECENT_PATH, recent_toml.as_bytes()).unwrap();
+        fs::write(DEFMT_RECENT_PATH, recent_toml.as_bytes())?;
 
         Ok(())
     }
@@ -172,6 +183,6 @@ impl DefmtRecentElfs {
     }
 }
 
-pub fn defmt_buttons(decoder: &Option<DefmtDecoder>, frame: &mut Frame, screen: Rect) {
-    let decoder = decoder.as_ref();
-}
+// pub fn defmt_buttons(decoder: &Option<DefmtDecoder>, frame: &mut Frame, screen: Rect) {
+//     let decoder = decoder.as_ref();
+// }

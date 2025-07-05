@@ -1,6 +1,6 @@
 use arboard::Clipboard;
 use itertools::Itertools;
-use tracing::debug;
+use tracing::{debug, warn};
 use tui_input::Input;
 
 use crate::traits::LastIndex as _;
@@ -17,18 +17,25 @@ pub struct UserInput {
     pub preserved_input: Option<String>,
     pub search_result: Option<usize>,
     pub history: History,
-    pub clipboard: Clipboard,
+    pub clipboard: Option<Clipboard>,
 }
 
 impl Default for UserInput {
     fn default() -> Self {
+        let clipboard = Clipboard::new().map_or_else(
+            |e| {
+                warn!("Clipboard not supported? {e}");
+                None
+            },
+            Some,
+        );
         Self {
             input_box: Input::default(),
             all_text_selected: false,
             preserved_input: None,
             search_result: None,
             history: History::new(),
-            clipboard: Clipboard::new().unwrap(),
+            clipboard,
         }
     }
 }

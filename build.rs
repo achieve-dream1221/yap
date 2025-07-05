@@ -11,7 +11,8 @@ fn main() {
     ];
 
     for file in &items_to_copy {
-        copy_to_output(file, &env::var("PROFILE").unwrap()).expect("Could not copy");
+        copy_to_output(file, &env::var("PROFILE").unwrap())
+            .expect(&format!("Could not copy {file}"));
     }
 
     // Invalidate the build if the files change

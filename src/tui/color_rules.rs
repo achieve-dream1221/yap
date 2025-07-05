@@ -52,11 +52,25 @@ struct SerializedRule {
     censor: bool,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ColorRuleError {
+    #[error("error reading color rules file: {0}")]
+    File(#[from] std::io::Error),
+    #[error("error deserializing color rules: {0}")]
+    Deser(#[from] toml::de::Error),
+    #[error("rule must either be hiding, censoring, or coloring")]
+    UnspecifiedRule,
+    #[error("invalid regex: \"{0}\" due to {1}")]
+    InvalidRegex(String, regex::Error),
+    #[error("unrecognized color: \"{0}\"")]
+    UnrecognizedColor(String),
+}
+
 impl ColorRules {
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Self {
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, ColorRuleError> {
         // TODO check for missing file and fill with commented example contents
-        let buffer = fs::read_to_string(path.as_ref()).unwrap();
-        let ColorRulesFile { regex, literal } = toml::from_str(&buffer).unwrap();
+        let buffer = fs::read_to_string(path.as_ref())?;
+        let ColorRulesFile { regex, literal } = toml::from_str(&buffer)?;
 
         let mut regex_lines = Vec::new();
         let mut regex_words = Vec::new();
@@ -64,10 +78,17 @@ impl ColorRules {
         let mut literal_words = Vec::new();
 
         for rule in regex {
-            let color_opt = rule
+            let color_res_opt = rule
                 .color
                 .as_ref()
-                .map(|color_str| Color::from_str(color_str).unwrap());
+                .map(|color_str| Color::from_str(color_str).map_err(|_| color_str));
+
+            let color_opt = match color_res_opt.transpose() {
+                Ok(c) => c,
+                Err(unrecognized) => {
+                    return Err(ColorRuleError::UnrecognizedColor(unrecognized.to_string()));
+                }
+            };
 
             let rule_type = {
                 if rule.hide {
@@ -77,11 +98,12 @@ impl ColorRules {
                 } else if let Some(color) = color_opt {
                     RuleType::Color(color)
                 } else {
-                    todo!("invalid rule; TODO make proper error")
+                    return Err(ColorRuleError::UnspecifiedRule);
                 }
             };
 
-            let regex = Regex::new(&rule.rule).unwrap();
+            let regex = Regex::new(&rule.rule)
+                .map_err(|e| ColorRuleError::InvalidRegex(rule.rule.to_string(), e))?;
             if rule.line {
                 regex_lines.push((RegexRule { regex }, rule_type));
             } else {
@@ -90,10 +112,17 @@ impl ColorRules {
         }
 
         for rule in literal {
-            let color_opt = rule
+            let color_res = rule
                 .color
                 .as_ref()
-                .map(|color_str| Color::from_str(color_str).unwrap());
+                .map(|color_str| Color::from_str(color_str).map_err(|_| color_str));
+
+            let color_opt = match color_res.transpose() {
+                Ok(c) => c,
+                Err(unrecognized) => {
+                    return Err(ColorRuleError::UnrecognizedColor(unrecognized.to_string()));
+                }
+            };
 
             let rule_type = {
                 if rule.hide {
@@ -103,7 +132,7 @@ impl ColorRules {
                 } else if let Some(color) = color_opt {
                     RuleType::Color(color)
                 } else {
-                    todo!("invalid rule; TODO make proper error")
+                    return Err(ColorRuleError::UnspecifiedRule);
                 }
             };
 
@@ -115,12 +144,12 @@ impl ColorRules {
             }
         }
 
-        Self {
+        Ok(Self {
             regex_lines,
             regex_words,
             literal_lines,
             literal_words,
-        }
+        })
     }
 
     pub fn apply_onto<'a, 'b>(&self, original: &[u8], mut line: Line<'b>) -> Option<Line<'b>> {
@@ -425,14 +454,13 @@ fn remove_if_possible(
     Some(new_range)
 }
 
+/// Returns the adjusted current range (in the *current* string),
+/// if none of its positions overlap an already_removed range from the original.
 fn act_if_possible(
     slice_len: usize,
     already_removed: &[Range<usize>],
     current: Range<usize>,
 ) -> Option<Range<usize>> {
-    // act_if_possible: Returns the adjusted current range (in the *current* string),
-    // if none of its positions overlap an already_removed range from the original.
-
     // If any part of `current` overlaps any range already_removed, skip (None).
     for rem in already_removed {
         if rem.start < current.end && rem.end > current.start {

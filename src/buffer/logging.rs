@@ -468,8 +468,7 @@ impl LoggingWorker {
                             self.create_log_files(
                                 self.started_logging_at.unwrap(),
                                 &port_info.clone(),
-                            )
-                            .unwrap();
+                            )?;
                         }
                     }
                 }

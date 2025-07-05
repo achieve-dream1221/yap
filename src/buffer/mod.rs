@@ -33,10 +33,10 @@ use crate::{
         buf_line::{BufLineKit, RenderSettings},
         tui::COLOR_RULES_PATH,
     },
-    changed,
+    changed, config_adjacent_path,
     settings::{LoggingType, Rendering},
     traits::{ByteSuffixCheck, LineHelpers, interleave_by},
-    tui::color_rules::ColorRules,
+    tui::color_rules::{ColorRuleError, ColorRules},
 };
 
 #[cfg(feature = "defmt")]
@@ -482,9 +482,13 @@ impl StyledLines {
 
                 // let start = range_slice.range.start;
                 let trunc = last_index..index_in_buffer + trunc.len();
-                let trunc = raw_buffer.range(trunc).unwrap();
+                let trunc = raw_buffer
+                    .range(trunc)
+                    .expect("failed to get truncated line-to-continue buffer");
                 let orig = last_index..index_in_buffer + orig.len();
-                let orig = raw_buffer.range(orig).unwrap();
+                let orig = raw_buffer
+                    .range(orig)
+                    .expect("failed to get line-to-continue buffer");
                 // debug!("Appendo from {last_index}! trunc: {trunc:#?} orig: {orig:#?}");
 
                 // info!("AAAFG: {:?}", slice);
@@ -695,13 +699,13 @@ pub enum UserEcho {
 impl Buffer {
     // TODO lower sources of truth for all this.
     // Rc<Something> with the settings that's shared around?
-    pub fn new(
+    pub fn build(
         line_ending: &[u8],
         rendering: Rendering,
         #[cfg(feature = "logging")] logging: Logging,
         #[cfg(feature = "logging")] event_tx: Sender<Event>,
         #[cfg(feature = "defmt")] defmt: Defmt,
-    ) -> Self {
+    ) -> Result<Self, ColorRuleError> {
         let line_ending: LineEnding = line_ending.into();
         #[cfg(feature = "logging")]
         let (log_handle, log_thread) = LoggingHandle::new(
@@ -712,7 +716,9 @@ impl Buffer {
             defmt.clone(),
         );
 
-        Self {
+        let color_rules = ColorRules::load_from_file(config_adjacent_path(COLOR_RULES_PATH))?;
+
+        Ok(Self {
             raw: RawBuffer {
                 inner: Vec::with_capacity(1024),
                 buffer_timestamps: Vec::with_capacity(1024),
@@ -734,7 +740,7 @@ impl Buffer {
             },
             rendering,
             line_ending,
-            color_rules: ColorRules::load_from_file(COLOR_RULES_PATH),
+            color_rules,
             #[cfg(feature = "logging")]
             log_handle,
             #[cfg(feature = "logging")]
@@ -747,7 +753,7 @@ impl Buffer {
             defmt_settings: defmt,
             #[cfg(feature = "defmt")]
             defmt_raw_malformed: false,
-        }
+        })
     }
     // pub fn append_str(&mut self, str: &str) {
     // }

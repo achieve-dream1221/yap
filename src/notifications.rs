@@ -4,14 +4,13 @@ use std::{
 };
 
 use compact_str::{CompactString, format_compact};
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::Sender;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear},
 };
 use ratatui_macros::horizontal;
 use tracing::debug;
-use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Event, Tick};
 

@@ -9,9 +9,10 @@ use ratatui_macros::{horizontal, vertical};
 
 use crate::{
     buffer::buf_line::RenderSettings,
+    config_adjacent_path,
     settings::HexHighlightStyle,
     traits::{ToggleBool, interleave_by},
-    tui::color_rules::ColorRules,
+    tui::color_rules::{ColorRuleError, ColorRules},
 };
 
 use super::{Buffer, UserEcho, buf_line::BufLine, hex_spans::*};
@@ -300,7 +301,7 @@ impl Buffer {
         terminal: &mut ratatui::Terminal<impl ratatui::prelude::Backend>,
     ) -> std::io::Result<()> {
         self.last_terminal_size = {
-            let mut terminal_size = terminal.size().unwrap();
+            let mut terminal_size = terminal.size()?;
             // `2` is the lines from the repeating_pattern_widget and the input buffer.
             // Might need to make more dynamic later?
             terminal_size.height = terminal_size.height.saturating_sub(2);
@@ -316,8 +317,8 @@ impl Buffer {
     //     self.line_ending.as_ref().as_bytes()
     // }
 
-    pub fn reload_color_rules(&mut self) -> color_eyre::Result<()> {
-        self.color_rules = ColorRules::load_from_file(COLOR_RULES_PATH);
+    pub fn reload_color_rules(&mut self) -> Result<(), ColorRuleError> {
+        self.color_rules = ColorRules::load_from_file(config_adjacent_path(COLOR_RULES_PATH))?;
         self.reconsume_raw_buffer();
         Ok(())
     }

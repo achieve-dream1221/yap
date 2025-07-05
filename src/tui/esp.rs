@@ -12,6 +12,7 @@ use ratatui_macros::{line, vertical};
 use tracing::debug;
 
 use crate::{
+    config_adjacent_path,
     serial::esp::{EspEvent, FlashProgress},
     traits::{LastIndex, LineHelpers},
 };
@@ -312,13 +313,15 @@ impl<'de> Deserialize<'de> for EspBins {
 
 #[derive(Debug, serde::Deserialize)]
 pub struct SerializedEspFiles {
-    elf: Vec<EspElf>,
-    bin: Vec<EspBins>,
+    #[serde(rename = "elf")]
+    elfs: Vec<EspElf>,
+    #[serde(rename = "bin")]
+    bins: Vec<EspBins>,
 }
 
 #[derive(Debug, Default)]
 pub struct Flashing {
-    // current_file_name: CompactString,
+    current_file_name: Option<String>,
     chip: CompactString,
     current_file_addr: u32,
     current_file_len: usize,
@@ -335,32 +338,41 @@ pub enum EspPopup {
 }
 
 #[derive(Debug)]
-pub struct EspFlashState {
+pub struct EspFlashHelper {
     popup: Option<EspPopup>,
     bins: Vec<EspBins>,
     elfs: Vec<EspElf>,
 }
 
-impl EspFlashState {
-    pub fn new() -> Self {
-        let meow = fs::read_to_string(ESP_PROFILES_PATH).unwrap();
-        let SerializedEspFiles { bin, elf } = toml::from_str(&meow).unwrap();
-        debug!("{bin:#?}");
-        Self {
+#[derive(Debug, thiserror::Error)]
+pub enum DefmtRecentError {
+    #[error("failed deserializing espflash profiles: {0}")]
+    Deser(#[from] toml::de::Error),
+    // #[error("failed serializing espflash profiles: {0}")]
+    // Ser(#[from] toml::ser::Error),
+    #[error("failed reading espflash profiles: {0}")]
+    File(#[from] std::io::Error),
+}
+
+impl EspFlashHelper {
+    pub fn build() -> Result<Self, DefmtRecentError> {
+        let meow = fs::read_to_string(config_adjacent_path(ESP_PROFILES_PATH))?;
+        let SerializedEspFiles { bins, elfs } = toml::from_str(&meow)?;
+
+        Ok(Self {
             popup: None,
-            bins: bin,
-            elfs: elf,
-        }
+            bins,
+            elfs,
+        })
     }
     pub fn reload(&mut self) -> color_eyre::Result<()> {
         self.reset_popup();
 
-        let meow = fs::read_to_string(ESP_PROFILES_PATH)?;
-        let SerializedEspFiles { bin, elf } = toml::from_str(&meow)?;
-        debug!("{bin:#?}");
+        let meow = fs::read_to_string(config_adjacent_path(ESP_PROFILES_PATH))?;
+        let SerializedEspFiles { bins, elfs } = toml::from_str(&meow)?;
 
-        self.bins = bin;
-        self.elfs = elf;
+        self.bins = bins;
+        self.elfs = elfs;
 
         Ok(())
     }
@@ -414,12 +426,18 @@ impl EspFlashState {
                 self.popup = Some(EspPopup::DeviceInfo(table));
             }
             EspEvent::FlashProgress(progress) => match progress {
-                FlashProgress::Init { chip, addr, size } => {
+                FlashProgress::Init {
+                    chip,
+                    addr,
+                    size,
+                    file_name,
+                } => {
                     self.popup = Some(EspPopup::Flashing(Flashing {
                         chip,
                         current_file_addr: addr,
                         current_file_len: size,
                         current_progress: 0,
+                        current_file_name: file_name,
                     }));
                 }
                 FlashProgress::Progress(progress) => {
@@ -512,11 +530,16 @@ impl EspFlashState {
                 current_file_addr,
                 current_file_len,
                 current_progress,
+                current_file_name,
             }) => {
-                frame.render_widget(
-                    line!["@ 0x", format!("{current_file_addr:06X}")].centered(),
-                    title_area,
-                );
+                let mut file_and_addr_line =
+                    line!["@ 0x", format!("{current_file_addr:06X}")].centered();
+                if let Some(file_name) = current_file_name {
+                    file_and_addr_line.spans.insert(0, Span::raw(file_name));
+                    file_and_addr_line.spans.insert(1, Span::raw(" "));
+                }
+                frame.render_widget(file_and_addr_line, title_area);
+
                 frame.render_widget(line!["Chunks: "].centered(), chunks_text);
                 frame.render_widget(
                     line![format!("{current_progress} / {current_file_len}")].centered(),
@@ -557,7 +580,10 @@ impl EspFlashState {
                 frame.render_widget(line!["Connected to ", chip, "!"].centered(), body2_area);
             }
             EspPopup::Erasing { chip } => {
-                frame.render_widget(line!["Erasing ", chip, "..."].centered(), body2_area);
+                frame.render_widget(
+                    line!["Erasing ", chip, " flash contents..."].centered(),
+                    body2_area,
+                );
             }
             EspPopup::DeviceInfo(text) => {
                 frame.render_widget(text, inner_area);
@@ -630,7 +656,7 @@ impl EspFlashState {
     }
 }
 
-impl LastIndex for EspFlashState {
+impl LastIndex for EspFlashHelper {
     fn last_index_checked(&self) -> Option<usize> {
         if self.is_empty() {
             None
@@ -642,7 +668,7 @@ impl LastIndex for EspFlashState {
 
 pub const ESPFLASH_BUTTON_COUNT: usize = 4;
 
-pub fn espflash_buttons() -> Table<'static> {
+pub fn espflash_buttons(unchecked_bootloader: bool) -> Table<'static> {
     let selected_row_style = Style::new().reversed();
     let first_column_style = Style::new().reset();
 
@@ -652,7 +678,12 @@ pub fn espflash_buttons() -> Table<'static> {
             Text::raw("Reboot!").centered().italic(),
         ]),
         Row::new([
-            Text::raw("ESP->Bootloader ").right_aligned(),
+            Text::raw(if unchecked_bootloader {
+                "ESP->Bootloader (Unchecked) "
+            } else {
+                "ESP->Bootloader "
+            })
+            .right_aligned(),
             Text::raw("Reboot!").centered().italic(),
         ]),
         Row::new([

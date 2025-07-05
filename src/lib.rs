@@ -2,12 +2,13 @@
 
 use std::{
     net::{SocketAddr, TcpStream},
-    sync::{Mutex, mpsc},
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 
 use app::{App, CrosstermEvent};
-use color_eyre::eyre::Context;
+use camino::Utf8PathBuf;
+
 use fs_err as fs;
 use panic_handler::initialize_panic_handler;
 use ratatui::crossterm::{
@@ -16,7 +17,6 @@ use ratatui::crossterm::{
     terminal,
 };
 
-use serialport::{SerialPortInfo, SerialPortType};
 use tracing::{Level, debug, error, info, level_filters::LevelFilter};
 use tracing_appender::non_blocking::WorkerGuard;
 
@@ -35,6 +35,20 @@ mod settings;
 mod traits;
 mod tui;
 
+pub static CONFIG_PARENT_PATH_CELL: OnceLock<Utf8PathBuf> = OnceLock::new();
+
+pub fn config_adjacent_path<P: Into<Utf8PathBuf>>(path: P) -> Utf8PathBuf {
+    let path = path.into();
+    let config_path = CONFIG_PARENT_PATH_CELL.get_or_init(|| {
+        determine_working_directory()
+            .expect("failed to determine working directory")
+            .try_into()
+            .expect("working directory is not valid utf-8")
+    });
+
+    config_path.join(path)
+}
+
 /// Wrapper runner so any fatal errors get properly logged.
 pub fn run() -> color_eyre::Result<()> {
     initialize_panic_handler()?;
@@ -45,18 +59,6 @@ pub fn run() -> color_eyre::Result<()> {
     std::env::set_current_dir(&working_directory).expect("Failed to change working directory");
     let _log_guard = initialize_logging(Level::TRACE)?;
 
-    // let meow1 = b"1111\r\n22\r\n3333\n";
-    // for meow in line_ending_iter(meow1, "\r\n").unwrap() {
-    //     info!("MEOW: {meow:?}");
-    // }
-
-    // use ansi_to_tui::IntoText;
-    // // let bytes = b"\x1b[38;2;225;192;203mAAAAA\x1b[0m".to_owned().to_vec();
-    // let bytes = [
-    // ];
-    // let text = bytes.into_text().unwrap();
-    // debug!("{text:#?}");
-
     let result = run_inner();
     if let Err(e) = &result {
         error!("Fatal error: {e}");
@@ -65,14 +67,9 @@ pub fn run() -> color_eyre::Result<()> {
     ratatui::restore();
     crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
     result
-    // std::thread::sleep(std::time::Duration::from_millis(500));
-    // Ok(())
 }
 
 fn run_inner() -> color_eyre::Result<()> {
-    // Err(color_eyre::Report::msg("AAA"))?;
-    // None::<u8>.unwrap();
-
     let (tx, rx) = crossbeam::channel::unbounded::<app::Event>();
     let crossterm_tx = tx.clone();
     let crossterm_thread = std::thread::spawn(move || {
@@ -184,7 +181,7 @@ pub fn initialize_logging(max_level: Level) -> color_eyre::Result<WorkerGuard> {
         .with_filter(LevelFilter::from_level(max_level));
 
     // let (fmt_layer, reload_handle) = tracing_subscriber::reload::Layer::new(fmt_layer);
-    // Allow everything through but limit lnk to just info, since it spits out a bit too much when reading shortcuts
+    // Allow everything through but limit a few crate's levels.
     let env_filter = tracing_subscriber::EnvFilter::new("trace,espflash=info,notify=debug");
     let registry = tracing_subscriber::registry()
         // .with(console)

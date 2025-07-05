@@ -169,7 +169,7 @@ impl ElfWatchWorker {
                     }
                 }
                 Ok(command) => {
-                    self.handle_command(command).unwrap();
+                    self.handle_command(command)?;
                 }
                 Err(TryRecvError::Empty) => (),
                 Err(TryRecvError::Disconnected) => return Err(ElfWatchError::HandleDropped),

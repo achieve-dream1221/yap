@@ -64,6 +64,7 @@ use crate::{
     traits::{FirstChars, LastIndex, LineHelpers, ToggleBool},
     tui::{
         centered_rect_size,
+        defmt::DefmtRecentError,
         prompts::{
             AttemptReconnectPrompt, DisconnectPrompt, PromptKeybind, PromptTable, centered_rect,
         },
@@ -75,13 +76,14 @@ use crate::{
 #[cfg(feature = "defmt")]
 use crate::buffer::defmt::DefmtTableError;
 #[cfg(feature = "defmt")]
-use crate::{keybinds::ShowDefmtSelect, settings::Defmt, tui::defmt::DefmtMeow};
+use crate::{keybinds::ShowDefmtSelect, settings::Defmt, tui::defmt::DefmtHelpers};
 
 #[cfg(feature = "defmt_watch")]
 use crate::buffer::defmt::elf_watcher::ElfWatchEvent;
 
 #[cfg(feature = "macros")]
 use crate::{
+    config_adjacent_path,
     macros::{MacroNameTag, Macros},
     tui::ALWAYS_PRESENT_SELECTOR_COUNT,
 };
@@ -103,7 +105,7 @@ use crate::serial::esp::{EspEvent, EspRestartType};
 #[cfg(feature = "espflash")]
 use crate::tui::esp::espflash_buttons;
 #[cfg(feature = "espflash")]
-use crate::tui::esp::{self, EspFlashState};
+use crate::tui::esp::{self, EspFlashHelper};
 
 #[derive(Clone, Debug)]
 pub enum CrosstermEvent {
@@ -313,10 +315,10 @@ pub struct App {
     keybinds: Keybinds,
 
     #[cfg(feature = "espflash")]
-    espflash: EspFlashState,
+    espflash: EspFlashHelper,
 
     #[cfg(feature = "defmt")]
-    defmt_meow: DefmtMeow,
+    defmt_meow: DefmtHelpers,
     // TODO
     // error_message: Option<String>,
 }
@@ -399,13 +401,13 @@ impl App {
         let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
 
         #[cfg(feature = "defmt")]
-        let mut defmt_meow = DefmtMeow::build(
+        let mut defmt_meow = DefmtHelpers::build(
             #[cfg(feature = "defmt_watch")]
             tx.clone(),
         )
         .unwrap();
 
-        let mut buffer = Buffer::new(
+        let mut buffer = Buffer::build(
             line_ending,
             settings.rendering.clone(),
             #[cfg(feature = "logging")]
@@ -414,7 +416,8 @@ impl App {
             tx.clone(),
             #[cfg(feature = "defmt")]
             settings.defmt.clone(),
-        );
+        )
+        .unwrap();
 
         #[cfg(feature = "defmt")]
         if let Some(last_elf) = defmt_meow.recent_elfs.last()
@@ -437,6 +440,13 @@ impl App {
                 }
             }
         }
+
+        #[cfg(feature = "macros")]
+        let mut macros = Macros::new();
+        #[cfg(feature = "macros")]
+        macros
+            .load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))
+            .unwrap();
 
         // if let Some(last_path) = defmt_meow.recent_elfs.last()
         //     && last_path.exists()
@@ -480,7 +490,7 @@ impl App {
             failed_send_at: None,
 
             #[cfg(feature = "macros")]
-            macros: Macros::new(),
+            macros,
             action_queue: VecDeque::new(),
             scratch: settings.clone(),
             settings,
@@ -491,7 +501,7 @@ impl App {
             serial_buf_rx,
 
             #[cfg(feature = "espflash")]
-            espflash: EspFlashState::new(),
+            espflash: EspFlashHelper::build().unwrap(),
 
             #[cfg(feature = "defmt")]
             defmt_meow,
@@ -611,15 +621,16 @@ impl App {
             }
 
             Event::Crossterm(CrosstermEvent::RightClick) => {
-                match self.user_input.clipboard.get_text() {
-                    Ok(clipboard_text) => {
-                        let mut previous_value = self.user_input.input_box.value().to_owned();
-                        previous_value.push_str(&clipboard_text);
-                        self.user_input.input_box = previous_value.into();
-                    }
-                    Err(e) => {
-                        // error!("Failed to get clipboard text!");
-                        error!("{e}");
+                if let Some(clipboard) = &mut self.user_input.clipboard {
+                    match clipboard.get_text() {
+                        Ok(clipboard_text) => {
+                            let mut previous_value = self.user_input.input_box.value().to_owned();
+                            previous_value.push_str(&clipboard_text);
+                            self.user_input.input_box = previous_value.into();
+                        }
+                        Err(e) => {
+                            error!("error getting clipboard text: {e}");
+                        }
                     }
                 }
             }
@@ -1479,7 +1490,7 @@ impl App {
             #[cfg(feature = "macros")]
             A::Macros(MacroAction::ReloadMacros) => {
                 self.macros
-                    .load_from_folder(crate::macros::MACROS_DIR_PATH)
+                    .load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))
                     .unwrap();
                 self.notifs
                     .notify_str(format!("Reloaded Macros!"), Color::Green);
@@ -3617,7 +3628,7 @@ impl App {
                     self.popup_table_state.select_first_column();
                     self.popup_table_state.select(Some(corrected_index));
 
-                    frame.render_widget(esp::espflash_buttons(), settings_area);
+                    frame.render_widget(esp::espflash_buttons(false), settings_area);
                     frame.render_widget(&line_block, new_seperator);
                     frame.render_stateful_widget(
                         self.espflash.profiles_table(),
@@ -3668,7 +3679,7 @@ impl App {
                     self.popup_table_state.select_first_column();
                     self.popup_table_state.select(corrected_index);
                     frame.render_stateful_widget(
-                        esp::espflash_buttons(),
+                        esp::espflash_buttons(false),
                         settings_area,
                         &mut self.popup_table_state,
                     );
@@ -4203,13 +4214,11 @@ impl App {
     }
 }
 
+#[cfg(feature = "defmt")]
 #[derive(Debug, thiserror::Error)]
 enum TryLoadDefmtError {
-    #[error("failed serializing recents: {0}")]
-    RecentSer(#[from] toml::ser::Error),
-    #[error("failed saving recent elfs: {0}")]
-    RecentSave(#[from] std::io::Error),
-    #[cfg(feature = "defmt")]
+    #[error("recent elfs error: {0}")]
+    Recents(#[from] DefmtRecentError),
     #[error("failed parsing defmt from elf: {0}")]
     DefmtParse(#[from] DefmtTableError),
 }
@@ -4223,11 +4232,9 @@ fn try_load_defmt_elf(
     #[cfg(feature = "defmt_watch")]
     watcher_handle: &mut crate::buffer::defmt::elf_watcher::ElfWatchHandle,
 ) -> Result<(), TryLoadDefmtError> {
-    use camino::Utf8PathBuf;
-
     use crate::buffer::defmt::DefmtDecoder;
 
-    let new_decoder = DefmtDecoder::from_elf_bytes(path);
+    let new_decoder = DefmtDecoder::from_elf_path(path);
     match new_decoder {
         Ok(new_decoder) => {
             let decoder_arc = Arc::new(new_decoder);

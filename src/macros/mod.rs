@@ -20,10 +20,11 @@ use ratatui::{
     text::Text,
     widgets::{Cell, HighlightSpacing, Row, ScrollbarState, Table},
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tui_input::Input;
 
 use crate::{
+    config_adjacent_path,
     keybinds::Keybinds,
     traits::{HasEscapedBytes, LastIndex},
     tui::single_line_selector::SingleLineSelectorState,
@@ -64,11 +65,15 @@ pub struct Macros {
     pub search_input: Input,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum MacrosLoadError {
+    #[error("error reading macro file: {0}")]
+    File(#[from] std::io::Error),
+}
+
 impl Macros {
     pub fn new() -> Self {
-        // TODO Load from disk
-
-        let mut macros = Self {
+        Self {
             // scrollbar_state: ScrollbarState::new(test_macros.len()),
             all: BTreeMap::new(),
             // tx_queue: Vec::new(),
@@ -76,10 +81,7 @@ impl Macros {
             search_input: Input::default(),
             categories_selector: SingleLineSelectorState::new().with_selected(2),
             // categories: BTreeSet::new(),
-        };
-        macros.load_from_folder(MACROS_DIR_PATH).unwrap();
-
-        macros
+        }
     }
     pub fn is_empty(&self) -> bool {
         self.all.is_empty()
@@ -276,12 +278,12 @@ impl Macros {
             .remove(macro_ref)
             .expect("attempted removal of non-existant element");
     }
-    pub fn load_from_folder<P: AsRef<Path>>(&mut self, folder: P) -> color_eyre::Result<()> {
+    pub fn load_from_folder<P: AsRef<Path>>(&mut self, folder: P) -> Result<(), MacrosLoadError> {
         // TODO never return on error, just log and notify user to check logs for details.
         fn visit_dir(
             dir: &Path,
             new_macros: &mut BTreeMap<MacroNameTag, MacroContent>,
-        ) -> color_eyre::Result<()> {
+        ) -> Result<(), MacrosLoadError> {
             for entry in fs::read_dir(dir)? {
                 let entry = match entry {
                     Ok(e) => e,
@@ -316,7 +318,14 @@ impl Macros {
                     continue;
                 }
 
-                let file_name = Utf8PathBuf::from_path_buf(entry.path()).unwrap();
+                let Ok(file_name) = Utf8PathBuf::from_path_buf(entry.path()) else {
+                    warn!(
+                        "Macro path \"{}\" is not valid UTF-8! Skipping...",
+                        entry.path().display()
+                    );
+                    continue;
+                };
+
                 if let Some(extension) = file_name.extension() {
                     if extension != "toml" {
                         continue;
@@ -345,7 +354,14 @@ impl Macros {
                     file.macros
                         .iter_mut()
                         .filter(|m| m.category.is_none())
-                        .for_each(|m| m.category = Some(file_name.file_stem().unwrap().into()));
+                        .for_each(|m| {
+                            m.category = Some(
+                                file_name
+                                    .file_stem()
+                                    .expect("expected to remove toml extension")
+                                    .into(),
+                            )
+                        });
                 }
 
                 for ser_macro in file.macros {
@@ -357,11 +373,10 @@ impl Macros {
                         }
                     }
 
-                    let old = new_macros.insert(tag, content);
-                    if old.is_some() {
-                        // TODO don't panic
-                        panic!("Duplicate found!")
+                    if let Some(_old) = new_macros.get(&tag) {
+                        warn!("Duplicate found for macro {tag}!")
                     }
+                    _ = new_macros.insert(tag, content);
                 }
             }
             Ok(())

@@ -13,7 +13,7 @@ use crate::buffer::{buf_line::BufLine, tui::defmt::defmt_level_bracketed};
 
 // #[ouroboros::self_referencing]
 pub struct DefmtDecoder {
-    elf: Vec<u8>,
+    elf_data: Vec<u8>,
     pub elf_md5: String,
     pub elf_path: Utf8PathBuf,
     pub table: Table,
@@ -48,6 +48,16 @@ pub enum DefmtTableError {
     ParseFail(String),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum DefmtLoadError {
+    #[error(transparent)]
+    ElfParse(#[from] DefmtTableError),
+    #[error("error reading elf: {0}")]
+    File(#[from] std::io::Error),
+    #[error("path to elf is not utf-8: {0:?}")]
+    NonUtf8Path(std::path::PathBuf),
+}
+
 // Much taken from defmt-print
 // https://github.com/knurling-rs/defmt/blob/d52b9908c175497d46fc527f4f8dfd6278744f09/print/src/main.rs#L183
 
@@ -56,11 +66,7 @@ pub enum DefmtTableError {
 // )
 
 impl DefmtDecoder {
-    // pub fn from_elf_bytes(bytes: &[u8]) -> Result<Self, DefmtTableError> {
-    pub fn from_elf_bytes<P: AsRef<std::path::Path>>(path: P) -> Result<Self, DefmtTableError> {
-        let path = path.as_ref().to_owned();
-        let bytes = fs::read(&path).unwrap();
-
+    fn from_elf_bytes(bytes: &[u8]) -> Result<(Table, Option<Locations>), DefmtTableError> {
         let table = Table::parse(&bytes)
             .map_err(|e| DefmtTableError::ParseFail(e.to_string()))?
             .ok_or_else(|| DefmtTableError::DataMissing)?;
@@ -82,16 +88,25 @@ impl DefmtDecoder {
             None
         };
 
-        let elf = bytes.to_owned();
+        Ok((table, locations))
+    }
+    pub fn from_elf_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self, DefmtLoadError> {
+        let path = path.as_ref().to_owned();
+        let bytes = fs::read(&path)?;
 
-        // let decoder = DefmtDecoder::new(elf, table, Table::new_stream_decoder, locations);
+        let elf_path = Utf8PathBuf::from_path_buf(path)
+            .map_err(|original| DefmtLoadError::NonUtf8Path(original))?;
+
+        let elf_data = bytes.to_owned();
+
+        let (table, locations) = Self::from_elf_bytes(&bytes)?;
 
         let decoder = DefmtDecoder {
-            elf_md5: format!("{:X}", md5::compute(&elf)),
-            elf,
+            elf_md5: format!("{:X}", md5::compute(&elf_data)),
+            elf_path,
+            elf_data,
             locations,
             table,
-            elf_path: Utf8PathBuf::from_path_buf(path).unwrap(),
         };
 
         Ok(decoder)

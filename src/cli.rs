@@ -13,3 +13,4 @@
 // - maybe also allow USB PID+VID as an "address"? would prefer to accept same formats as usb ignore configs
 
 // option to print out all possible AppActions then exit?
+// option for is_portable behavior
