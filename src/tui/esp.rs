@@ -69,6 +69,7 @@ pub struct EspElf {
     pub upload_baud: Option<u32>,
     pub expected_chip: Option<Chip>,
     pub partition_table: Option<Utf8PathBuf>,
+    // pub partition_table_offset: Option<u32>,
     pub bootloader: Option<Utf8PathBuf>,
     pub no_skip: bool,
     pub no_verify: bool,

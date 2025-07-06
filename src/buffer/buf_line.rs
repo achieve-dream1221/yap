@@ -379,17 +379,19 @@ impl BufLine {
             _ => None,
         });
 
-        // let line_ending = std::iter::once(&self.line_type).filter_map(|lt| match lt {
-        //     _ if !rendering.show_line_ending => None,
-        //     LineType::Port {
-        //         escaped_line_ending: Some(line_ending),
-        //     } => Some(Span::styled(Cow::Borrowed(line_ending.as_str()), dark_gray)),
-        //     LineType::Port {
-        //         escaped_line_ending: None,
-        //     } => None,
-        //     LineType::User { .. } => None,
-        //     LineType::PortDefmt { .. } => None,
-        // });
+        let line_ending = std::iter::once(&self.line_type).filter_map(|lt| match lt {
+            _ if !rendering.rendering.show_line_ending => None,
+            LineType::Port {
+                escaped_line_ending: Some(line_ending),
+            } => Some(Span::styled(Cow::Borrowed(line_ending.as_str()), dark_gray)),
+            LineType::Port {
+                escaped_line_ending: None,
+            } => None,
+            // TODO?
+            LineType::User { .. } => None,
+            #[cfg(feature = "defmt")]
+            LineType::PortDefmt { .. } => None,
+        });
 
         let spans = timestamp;
 
@@ -401,9 +403,7 @@ impl BufLine {
         #[cfg(feature = "defmt")]
         let spans = spans.chain(defmt_level);
 
-        let spans= spans.chain(borrowed_spans)
-            // .chain(line_ending)
-        ;
+        let spans = spans.chain(borrowed_spans).chain(line_ending);
 
         #[cfg(feature = "defmt")]
         let spans = spans.chain(defmt_location);

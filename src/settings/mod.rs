@@ -117,7 +117,7 @@ pub struct Rendering {
     pub show_line_ending: bool,
 
     #[serde(default)]
-    /// Show invalid byte sequences in \xFF notation.
+    /// Show invalid UTF-8 byte sequences in \xFF notation.
     // TODO figure out if I want to make this show things like \r \n as well?
     // maybe rename to "Escape Invisible/Unprintable bytes?"
     // or "Show" instead of Escape?
