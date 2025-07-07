@@ -55,8 +55,10 @@ pub enum MacroCategorySelection<'a> {
     Category(&'a str),
 }
 
-// TODO sensitive macros
-//      (log sensitive macros option?)
+#[derive(Debug, thiserror::Error)]
+#[error("Macro not found!")]
+pub struct MacroNotFound;
+
 pub struct Macros {
     pub all: BTreeMap<MacroNameTag, MacroContent>,
 

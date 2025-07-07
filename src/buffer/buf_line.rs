@@ -387,8 +387,14 @@ impl BufLine {
             LineType::Port {
                 escaped_line_ending: None,
             } => None,
-            // TODO?
-            LineType::User { .. } => None,
+            LineType::User {
+                escaped_line_ending: Some(line_ending),
+                ..
+            } => Some(Span::styled(Cow::Borrowed(line_ending.as_str()), dark_gray)),
+            LineType::User {
+                escaped_line_ending: None,
+                ..
+            } => None,
             #[cfg(feature = "defmt")]
             LineType::PortDefmt { .. } => None,
         });

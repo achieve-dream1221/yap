@@ -107,7 +107,6 @@ pub struct SerialWorker {
     buffer_tx: Sender<Vec<u8>>,
     port: TakeablePort,
     last_signal_check: Instant,
-    // settings: PortSettings,
     scan_snapshot: Vec<SerialPortInfo>,
     rx_buffer: Vec<u8>,
     shared_status: Arc<ArcSwap<PortStatus>>,
@@ -145,12 +144,8 @@ impl SerialWorker {
     // should kill the __whole app__ if encountered.
     pub fn work_loop(&mut self) -> Result<(), WorkerError> {
         loop {
-            // TODO consider sleeping here for a moment with a read_timeout?
-            // or have some kind of cooldown after a 0-size serial read
-            // (maybe use port.bytes_to_read() ?)
-            // not sure if the barrage is what's causing weird unix issues with the ESP32-S3, need to test further
-
-            // TODO toy with the timeouts when writing to see if i can tell if im hitting the S3's ring buffer limit
+            // I wonder if I can toy with the timeouts when writing
+            // to see if I can tell if I'm hitting the S3's ring buffer limit
             let sleep_time = if self.port.is_some() {
                 Duration::from_millis(10)
             } else {
@@ -381,7 +376,7 @@ impl SerialWorker {
                 // actual firmware to notice anything present and drain it before it hits the cap)
                 // So this might need to be a throttle toggle,
                 // maybe on by default since its not too bad?
-                let slow_writes = true;
+                let slow_writes = self.shared_settings.load().limit_tx_speed;
 
                 let max_bytes = 8;
 
@@ -393,8 +388,12 @@ impl SerialWorker {
                     };
                     match port.write(&buf[..write_size]) {
                         Ok(0) => {
-                            // return Err(Error::WRITE_ALL_EOF);
-                            todo!("serialport write returned Ok(0)???");
+                            self.unhealthy_disconnection();
+                            self.event_tx.send(
+                                SerialDisconnectReason::Error("Unexpected EOF on write".into())
+                                    .into(),
+                            )?;
+                            return Ok(());
                         }
                         Ok(n) => {
                             // info!("buf n: {n}");
@@ -548,12 +547,7 @@ impl SerialWorker {
     }
 
     fn scan_for_serial_ports(&self) -> Result<Vec<SerialPortInfo>, serialport::Error> {
-        // TODO error handling
         let mut ports = serialport::available_ports()?;
-        ports.push(SerialPortInfo {
-            port_name: MOCK_PORT_NAME.to_owned(),
-            port_type: SerialPortType::Unknown,
-        });
 
         // ports
         //     .iter()
@@ -569,14 +563,16 @@ impl SerialWorker {
             SerialPortType::UsbPort(usb) if usb.vid == 0x28DE && usb.pid == 0x2102 => false,
 
             SerialPortType::UsbPort(usb) => !self.ignored_devices.usb.iter().any(|ig| ig == usb),
-            // TODO filters for other types
             _ => true,
         });
 
         // TODO: Add filters for this in UI
         #[cfg(unix)]
-        ports.retain(|port| {
-            !(port.port_type == SerialPortType::Unknown && !port.port_name.eq(MOCK_PORT_NAME))
+        ports.retain(|port| !(port.port_type == SerialPortType::Unknown));
+
+        ports.push(SerialPortInfo {
+            port_name: MOCK_PORT_NAME.to_owned(),
+            port_type: SerialPortType::Unknown,
         });
 
         // info!("Serial port scanning found {} ports", ports.len());
@@ -672,12 +668,12 @@ impl SerialWorker {
 
         use std::{borrow::Cow, fs};
 
-        use compact_str::{CompactString, ToCompactString};
+        use compact_str::ToCompactString;
         use espflash::flasher::{FlashData, FlashSettings};
         use serialport::UsbPortInfo;
 
         use crate::{
-            serial::esp::{EspRestartType, FlashProgress, ProgressPropagator},
+            serial::esp::{EspRestartType, ProgressPropagator},
             tui::esp::EspProfile,
         };
 
@@ -830,7 +826,6 @@ impl SerialWorker {
                     );
 
                     if let Err(e) = flasher.write_bins_to_flash(&rom_segs, &mut propagator) {
-                        // TODO show on UI
                         self.event_tx
                             .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
                         error!("Error during flashing: {e}");
@@ -882,7 +877,6 @@ impl SerialWorker {
 
                     if elf.ram {
                         if let Err(e) = flasher.load_elf_to_ram(&elf_data, &mut propagator) {
-                            // TODO show on UI
                             self.event_tx
                                 .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
                             error!("Error during RAM load: {e}");
@@ -922,7 +916,6 @@ impl SerialWorker {
                             if let Err(e) =
                                 flasher.load_image_to_flash(&mut propagator, format.into())
                             {
-                                // TODO show on UI
                                 self.event_tx
                                     .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
                                 error!("Error during flashing: {e}");

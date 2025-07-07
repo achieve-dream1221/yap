@@ -93,7 +93,7 @@ impl<'a> AsRef<[u8]> for RangeSlice<'a> {
 }
 
 impl<'a> RangeSlice<'a> {
-    /// Create a [RangeSlice] from a parent buffer (likely a `Vec<u8>`)
+    /// Create a [`RangeSlice`] from a parent buffer (likely a `Vec<u8>`)
     /// and a child slice (`&[u8]`) from within the parent buffer,
     /// populating the `range` field with the child slice's start and end indices.
     ///
@@ -111,7 +111,6 @@ impl<'a> RangeSlice<'a> {
         // Fail-fast checks
         debug_assert!(!parent.is_empty());
         debug_assert!(!child.is_empty());
-        // TODO make debug_assert?
         debug_assert!(
             child.len() <= parent.len(),
             "child can't be larger than parent"
@@ -120,7 +119,6 @@ impl<'a> RangeSlice<'a> {
         let child_range = child.as_ptr_range();
 
         // Ensure child pointers lies within parent pointer bounds
-        // TODO make debug_assert?
         debug_assert!(
             child_range.start >= parent_range.start,
             "child_range.start must be >= parent_range.start",
@@ -697,7 +695,7 @@ pub enum UserEcho {
 // }
 
 impl Buffer {
-    // TODO lower sources of truth for all this.
+    // TODO lower sources of truth for all these settings structs.
     // Rc<Something> with the settings that's shared around?
     pub fn build(
         line_ending: &[u8],

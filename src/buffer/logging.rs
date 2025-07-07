@@ -26,7 +26,7 @@ use crate::settings::Defmt;
 use crate::{
     app::Event,
     buffer::LineType,
-    changed,
+    changed, config_adjacent_path,
     errors::HandleResult,
     serial::ReconnectType,
     settings::{self, Logging, LoggingType},
@@ -435,7 +435,6 @@ impl LoggingWorker {
                     LoggingLineType::TxLine { line_ending },
                 )?;
             }
-            // LoggingCommand::LineEndingChange(whole_raw_buffer, new_ending) => todo!(),
             LoggingCommand::LineEndingChange(new_ending) => self.line_ending = new_ending,
 
             LoggingCommand::Settings(new) => {
@@ -794,11 +793,10 @@ impl LoggingWorker {
         started_at: DateTime<Local>,
         port_info: &SerialPortInfo,
     ) -> Result<(), LoggingError> {
-        let logs_dir = PathBuf::from("logs/");
+        let logs_dir = config_adjacent_path("logs/");
         match logs_dir.try_exists() {
-            Ok(true) if logs_dir.is_dir() => (),
-            Ok(true) => todo!("handle not a dir?"),
-            Ok(false) => fs::create_dir_all("logs/")?,
+            Ok(true) => (),
+            Ok(false) => fs::create_dir_all(logs_dir)?,
             Err(e) => {
                 error!("Error checking for logs dir!");
                 Err(e)?;

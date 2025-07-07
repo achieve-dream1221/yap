@@ -36,8 +36,6 @@ pub struct ElfWatchHandle {
     command_tx: Sender<ElfWatchCommand>,
 }
 
-// TODO make a bespoke error type to use around the work loop
-
 impl ElfWatchHandle {
     pub fn build(event_tx: Sender<Event>) -> Result<(Self, JoinHandle<()>), notify::Error> {
         let (command_tx, command_rx) = bounded(1);

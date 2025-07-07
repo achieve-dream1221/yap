@@ -177,8 +177,6 @@ impl SerialHandle {
         Ok(())
     }
 
-    // TODO maybe just shut down when we lose all Tx handles?
-    // Would still want to detect a locked thread and handle it though
     /// Tells the worker thread to shutdown, blocking for up to three seconds before aborting.
     pub fn shutdown(&self) -> Result<(), ()> {
         let (shutdown_tx, shutdown_rx) = crossbeam::channel::bounded(0);

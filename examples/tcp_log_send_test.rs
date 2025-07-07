@@ -4,5 +4,5 @@ use std::{io::Write, net::TcpStream};
 // https://youtu.be/Yr9qy9reLCc?t=261
 fn main() {
     let mut stream = TcpStream::connect("127.0.0.1:7331").unwrap();
-    stream.write("meow?\n".as_bytes()).unwrap();
+    stream.write_all("meow?\n".as_bytes()).unwrap();
 }

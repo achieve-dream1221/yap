@@ -160,23 +160,6 @@ pub enum AppAction {
     ShowDefmtSelect(ShowDefmtSelect),
 }
 
-// // TODO replace this
-// impl AppAction {
-//     pub fn discriminant(&self) -> u8 {
-//         match self {
-//             Self::Base(_) => 0,
-//             Self::Popup(_) => 1,
-//             Self::Port(_) => 2,
-//             #[cfg(feature = "macros")]
-//             Self::Macros(_) => 3,
-//             #[cfg(feature = "espflash")]
-//             Self::Esp(_) => 5,
-//             #[cfg(feature = "logging")]
-//             Self::Logging(_) => 6,
-//         }
-//     }
-// }
-
 impl fmt::Display for AppAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

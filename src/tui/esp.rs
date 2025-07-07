@@ -1,4 +1,4 @@
-use std::{borrow::Cow, f32::consts::PI, path::PathBuf};
+use std::borrow::Cow;
 
 use camino::Utf8PathBuf;
 use compact_str::CompactString;
@@ -6,7 +6,7 @@ use espflash::{flasher::DeviceInfo, target::Chip};
 use fs_err as fs;
 use ratatui::{
     prelude::*,
-    widgets::{Block, Clear, Gauge, Row, Table, TableState},
+    widgets::{Block, Clear, Gauge, Row, Table},
 };
 use ratatui_macros::{line, vertical};
 use tracing::debug;
@@ -45,6 +45,13 @@ impl EspProfile {
             }) => Some(path.to_owned()),
 
             _ => None,
+        }
+    }
+    pub fn name(&self) -> &str {
+        match self {
+            EspProfile::Bins(EspBins { name, .. }) | EspProfile::Elf(EspElf { name, .. }) => {
+                name.as_ref()
+            }
         }
     }
 }
@@ -356,7 +363,7 @@ pub struct EspFlashHelper {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum DefmtRecentError {
+pub enum EspProfileError {
     #[error("failed deserializing espflash profiles: {0}")]
     Deser(#[from] toml::de::Error),
     // #[error("failed serializing espflash profiles: {0}")]
@@ -366,7 +373,7 @@ pub enum DefmtRecentError {
 }
 
 impl EspFlashHelper {
-    pub fn build() -> Result<Self, DefmtRecentError> {
+    pub fn build() -> Result<Self, EspProfileError> {
         let meow = fs::read_to_string(config_adjacent_path(ESP_PROFILES_PATH))?;
         let SerializedEspFiles { bins, elfs } = toml::from_str(&meow)?;
 
@@ -376,7 +383,7 @@ impl EspFlashHelper {
             elfs,
         })
     }
-    pub fn reload(&mut self) -> color_eyre::Result<()> {
+    pub fn reload(&mut self) -> Result<(), EspProfileError> {
         self.reset_popup();
 
         let meow = fs::read_to_string(config_adjacent_path(ESP_PROFILES_PATH))?;

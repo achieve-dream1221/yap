@@ -9,6 +9,20 @@
 
 # Note: hidden/censored contents are still saved to log files raw.
 
+# Example: Regex, color all instances of "lorem" cyan, case-insensitive
+# [[regex]]
+# rule = '(?i)lorem'
+# color = "cyan"
+
+# Example: Literal, color entire line red if "STOP" is found, case-sensitive.
+# [[literal]]
+# rule = "STOP"
+# color = "Red"
+# line = true
+
+# Supported colors can be seen here:
+# https://docs.rs/ratatui/latest/ratatui/style/enum.Color.html
+
 [[regex]]
 rule = '^\[\s*\d+\]\[D\]\[[^\]:]+(?::\d+)?\]'
 color = "blue"

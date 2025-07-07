@@ -71,6 +71,9 @@ pub struct Misc {
     #[serde_inline_default(String::from("debug"))]
     #[derivative(Default(value = "String::from(\"debug\")"))]
     pub log_level: String,
+    // #[serde_inline_default(String::from("127.0.0.1:7331"))]
+    // #[derivative(Default(value = "String::from(\"127.0.0.1:7331\")"))]
+    // pub log_tcp_socket: String,
 }
 
 // TODO allow setting nicknames to devices?????
@@ -306,10 +309,10 @@ pub struct Behavior {
     /// Persist changes to Port Settings made while connected across sessions.
     pub retain_port_setting_changes: bool,
 
-    #[serde(default)]
-    /// Persist Fake Shell's command history across sessions (TODO).
-    pub retain_history: bool,
-
+    // #[serde(default)]
+    // /// Persist Fake Shell's command history across sessions (TODO).
+    // pub retain_history: bool,
+    //
     #[serde_inline_default(Duration::from_millis(500))]
     #[derivative(Default(value = "Duration::from_millis(500)"))]
     #[table(allow_unknown_values)]
@@ -512,6 +515,11 @@ pub struct PortSettings {
     #[serde_inline_default(true)]
     pub dtr_on_connect: bool,
 
+    /// Limit output to 8kbps, regardless of baud.
+    #[table(rename = "DTR on Connect")]
+    #[serde_inline_default(true)]
+    pub limit_tx_speed: bool,
+
     /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB device/COM port.
     #[table(values = Reconnections::VARIANTS)]
     #[serde_inline_default(Reconnections::LooseChecks)]
@@ -575,6 +583,7 @@ impl Default for PortSettings {
             #[cfg(feature = "macros")]
             macro_line_ending: MacroTxLineEnding::InheritTx,
             dtr_on_connect: true,
+            limit_tx_speed: true,
             reconnections: Reconnections::LooseChecks,
         }
     }

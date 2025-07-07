@@ -84,7 +84,7 @@ use crate::buffer::defmt::elf_watcher::ElfWatchEvent;
 #[cfg(feature = "macros")]
 use crate::{
     config_adjacent_path,
-    macros::{MacroNameTag, Macros},
+    macros::{MacroNameTag, MacroNotFound, Macros},
     tui::ALWAYS_PRESENT_SELECTOR_COUNT,
 };
 
@@ -99,13 +99,13 @@ use crate::tui::logging::toggle_logging_button;
 use crate::{buffer::LoggingEvent, keybinds::LoggingAction};
 
 #[cfg(feature = "espflash")]
-use crate::keybinds::EspAction;
-#[cfg(feature = "espflash")]
 use crate::serial::esp::{EspEvent, EspRestartType};
 #[cfg(feature = "espflash")]
 use crate::tui::esp::espflash_buttons;
 #[cfg(feature = "espflash")]
 use crate::tui::esp::{self, EspFlashHelper};
+#[cfg(feature = "espflash")]
+use crate::{errors::HandleResult, keybinds::EspAction};
 
 #[derive(Clone, Debug)]
 pub enum CrosstermEvent {
@@ -265,14 +265,22 @@ pub const DEFAULT_BAUD: u32 = {
 
 const FAILED_SEND_VISUAL_TIME: Duration = Duration::from_millis(750);
 
+#[derive(Debug, thiserror::Error)]
+enum NoSenders {
+    #[error("Serial Buffer sender has hung up unexpectedly!")]
+    SerialRx,
+    #[error("All event senders have hung up unexpectedly!")]
+    Events,
+}
+
 // Maybe have the buffer in a TUI struct?
 
 pub struct App {
     state: RunningState,
     menu: Menu,
 
-    tx: Sender<Event>,
-    rx: Receiver<Event>,
+    event_tx: Sender<Event>,
+    event_rx: Receiver<Event>,
     serial_buf_rx: Receiver<Vec<u8>>,
 
     table_state: TableState,
@@ -324,7 +332,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(tx: Sender<Event>, rx: Receiver<Event>) -> Self {
+    pub fn new(event_tx: Sender<Event>, event_rx: Receiver<Event>) -> Self {
         let exe_path = std::env::current_exe().unwrap();
         let config_path = exe_path.with_extension("toml");
 
@@ -379,14 +387,14 @@ impl App {
 
         let (event_carousel, carousel_thread) = CarouselHandle::new();
         let (serial_handle, serial_thread) = SerialHandle::build(
-            tx.clone(),
+            event_tx.clone(),
             serial_buf_tx,
             settings.last_port_settings.clone(),
             settings.ignored.clone(),
         )
         .expect("Failed to build serial worker!");
 
-        let tick_tx = tx.clone();
+        let tick_tx = event_tx.clone();
         event_carousel
             .add_repeating(
                 "PerSecond",
@@ -403,7 +411,7 @@ impl App {
         #[cfg(feature = "defmt")]
         let mut defmt_meow = DefmtHelpers::build(
             #[cfg(feature = "defmt_watch")]
-            tx.clone(),
+            event_tx.clone(),
         )
         .unwrap();
 
@@ -413,7 +421,7 @@ impl App {
             #[cfg(feature = "logging")]
             settings.logging.clone(),
             #[cfg(feature = "logging")]
-            tx.clone(),
+            event_tx.clone(),
             #[cfg(feature = "defmt")]
             settings.defmt.clone(),
         )
@@ -495,9 +503,9 @@ impl App {
             scratch: settings.clone(),
             settings,
             keybinds,
-            notifs: Notifications::new(tx.clone()),
-            tx,
-            rx,
+            notifs: Notifications::new(event_tx.clone()),
+            event_tx,
+            event_rx,
             serial_buf_rx,
 
             #[cfg(feature = "espflash")]
@@ -518,7 +526,7 @@ impl App {
         let mut max_draw = Duration::default();
         let mut max_rx_handle = Duration::default();
         let mut max_event_handle = Duration::default();
-        while self.is_running() {
+        let final_app_result = loop {
             let start = Instant::now();
             // TODO performance widget?
             self.draw(&mut terminal)?;
@@ -535,7 +543,7 @@ impl App {
             // So Serial RX buffers have their own channel, and when either wakes up the Select,
             // we check both channels, draw, and wait again.
             let mut channel_notifier = Select::new();
-            channel_notifier.recv(&self.rx);
+            channel_notifier.recv(&self.event_rx);
             channel_notifier.recv(&self.serial_buf_rx);
             // Waiting...
             let _ready_index = channel_notifier.ready();
@@ -545,16 +553,20 @@ impl App {
             match self.serial_buf_rx.try_recv() {
                 Ok(buf) => self.handle_event(Event::RxBuffer(buf), &mut terminal)?,
                 Err(crossbeam::channel::TryRecvError::Empty) => (),
-                Err(crossbeam::channel::TryRecvError::Disconnected) => todo!(),
+                Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                    return Err(NoSenders::SerialRx)?;
+                }
             }
 
             let end2 = start2.elapsed();
             let start3 = Instant::now();
 
-            match self.rx.try_recv() {
+            match self.event_rx.try_recv() {
                 Ok(event) => self.handle_event(event, &mut terminal)?,
                 Err(crossbeam::channel::TryRecvError::Empty) => (),
-                Err(crossbeam::channel::TryRecvError::Disconnected) => todo!(),
+                Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                    return Err(NoSenders::Events)?;
+                }
             }
 
             let end3 = start3.elapsed();
@@ -569,9 +581,9 @@ impl App {
             // Don't wait for another loop iteration to start shutting down workers.
             // TODO convert into a loop {}, but see if clippy notices first (when i dont have 170+ warnings)
             if !self.is_running() {
-                break;
+                break Ok(());
             }
-        }
+        };
         // Shutting down worker threads, with timeouts
         debug!("Shutting down Serial worker");
         if self.serial.shutdown().is_ok() {
@@ -587,7 +599,7 @@ impl App {
                 error!("Carousel thread closed with an error!");
             }
         }
-        Ok(())
+        final_app_result
     }
     fn handle_event(&mut self, event: Event, terminal: &mut Terminal<impl Backend>) -> Result<()> {
         match event {
@@ -777,7 +789,7 @@ impl App {
                 self.popup_hint_scroll += 1;
 
                 if self.popup.is_some() {
-                    let tx = self.tx.clone();
+                    let tx = self.event_tx.clone();
                     self.carousel
                         .add_oneshot(
                             "ScrollText",
@@ -795,7 +807,7 @@ impl App {
             Event::Tick(Tick::Notification) => {
                 // debug!("notif!");
                 if let Some(notif) = &self.notifs.inner {
-                    let tx = self.tx.clone();
+                    let tx = self.event_tx.clone();
                     let emerging = notif.shown_for() <= EMERGE_TIME;
                     let collapsing = notif.shown_for() >= PAUSE_TIME;
                     let sleep_time = if emerging || collapsing {
@@ -866,23 +878,13 @@ impl App {
         &mut self,
         macro_ref: MacroNameTag,
         key_combo_opt: Option<KeyCombination>,
-    ) -> Result<(), ()> {
-        // let serial_healthy = self.serial.port_status.load().inner.is_healthy();
-
-        // if !serial_healthy {
-        //     //     self.macros_tx_queue.clear();
-        //     return Ok(());
-        // }
-        // let Some((key_combo_opt, macro_ref)) = self.macros_tx_queue.pop_front() else {
-        //     return;
-        // };
-
+    ) -> Result<(), MacroNotFound> {
         let (macro_tag, macro_content) = self
             .macros
             .all
             .iter()
             .find(|(tag, _string)| &&macro_ref == tag)
-            .ok_or(())?;
+            .ok_or(MacroNotFound)?;
 
         let italic = Style::new().italic();
 
@@ -1058,7 +1060,7 @@ impl App {
                     key!(del) | key!(backspace) if self.user_input.all_text_selected => (),
 
                     // TODO move into UserInput impl?
-                    _ => match self
+                    _text_input if self.settings.behavior.fake_shell => match self
                         .user_input
                         .input_box
                         .handle_event(&ratatui::crossterm::event::Event::Key(key))
@@ -1076,6 +1078,16 @@ impl App {
                         }
                         _ => (),
                     },
+
+                    _terminal_input => {
+                        // if let Ok(term_event) = terminput_crossterm::to_terminput(
+                        //     crokey::crossterm::event::Event::Key(key),
+                        // ) {
+                        //     let mut buf = [0; 16];
+                        //     term_event.encode(&mut buf, terminput::Encoding::Xterm);
+                        // }
+                    }
+
                     _ => (),
                 }
             }
@@ -1179,7 +1191,9 @@ impl App {
             // KeyCode::Tab => self.tab_pressed(),
             key!(ctrl - r) if self.popup == Some(Popup::CurrentKeybinds) => {
                 // TODO make into an action?
-                self.keybinds = match fs::read_to_string(crate::keybinds::CONFIG_TOML_PATH) {
+                self.keybinds = match fs::read_to_string(config_adjacent_path(
+                    crate::keybinds::CONFIG_TOML_PATH,
+                )) {
                     Ok(keybinds_input) => match Keybinds::load(&keybinds_input) {
                         Ok(kb) => kb,
                         Err(e) => {
@@ -1234,7 +1248,7 @@ impl App {
     }
     fn queue_action_set(
         &mut self,
-        mut actions: Vec<Action>,
+        actions: Vec<Action>,
         key_combo_opt: Option<KeyCombination>,
     ) -> Result<()> {
         assert!(
@@ -1242,16 +1256,10 @@ impl App {
             "should never be asked to queue no actions"
         );
 
-        // Don't bother queuing if it's just one action, send it.
-        if actions.len() == 1 {
-            self.action_dispatch(actions.pop().unwrap(), key_combo_opt)?;
-            return Ok(());
-        }
-
         self.action_queue
             .extend(actions.into_iter().map(|a| (key_combo_opt, a)));
 
-        self.tx.send(Tick::Action.into())?;
+        self.event_tx.send(Tick::Action.into())?;
 
         Ok(())
     }
@@ -1310,7 +1318,7 @@ impl App {
         match port_status_guard {
             InnerPortStatus::Connected => (),
             InnerPortStatus::LentOut => {
-                let tx = self.tx.clone();
+                let tx = self.event_tx.clone();
                 self.carousel
                     .add_oneshot(
                         "ActionQueue",
@@ -1321,10 +1329,14 @@ impl App {
                 return Ok(());
             }
             InnerPortStatus::Idle | InnerPortStatus::PrematureDisconnect => {
-                let text = format!(
-                    "Port isn't ready, clearing {} queued actions.",
-                    self.action_queue.len()
-                );
+                let text = if self.action_queue.len() == 1 {
+                    "Port isn't ready! Not running action...".into()
+                } else {
+                    format!(
+                        "Port isn't ready! Clearing {} queued actions...",
+                        self.action_queue.len()
+                    )
+                };
                 self.notifs.notify_str(text, Color::Red);
                 self.action_queue.clear();
                 return Ok(());
@@ -1340,7 +1352,7 @@ impl App {
 
         let next_action_delay =
             pause_duration_opt.unwrap_or(self.settings.behavior.action_chain_delay);
-        let tx = self.tx.clone();
+        let tx = self.event_tx.clone();
         self.carousel
             .add_oneshot(
                 "ActionQueue",
@@ -1364,19 +1376,26 @@ impl App {
             Action::Pause(duration) => return Ok(Some(duration)),
             #[cfg(feature = "macros")]
             Action::MacroInvocation(name_tag) => {
-                self.send_one_macro(name_tag, key_combo_opt).unwrap()
+                if let Err(MacroNotFound) = self.send_one_macro(name_tag, key_combo_opt) {
+                    todo!()
+                }
             }
             #[cfg(feature = "espflash")]
-            // TODO show name of flashing profile
             Action::EspFlashProfile(profile) => {
-                let profile = self.espflash.profile_from_name(&profile).unwrap();
+                let Some(profile) = self.espflash.profile_from_name(&profile) else {
+                    todo!()
+                };
+                self.notifs.notify_str(
+                    format!("espflash profile: {}", profile.name()),
+                    Color::LightBlue,
+                );
                 self.esp_flash_profile(profile)?;
             }
         }
         Ok(None)
     }
     #[cfg(feature = "espflash")]
-    fn esp_flash_profile(&mut self, profile: esp::EspProfile) -> Result<()> {
+    fn esp_flash_profile(&mut self, profile: esp::EspProfile) -> HandleResult<()> {
         #[cfg(feature = "defmt")]
         let profile_defmt_path = profile.defmt_elf_path();
 
@@ -1414,38 +1433,36 @@ impl App {
             A::Popup(popup) => self.show_popup_menu(popup),
 
             A::Port(PortAction::ToggleDtr) => {
-                self.serial.toggle_signals(true, false).unwrap();
+                self.serial.toggle_signals(true, false)?;
             }
             A::Port(PortAction::ToggleRts) => {
-                self.serial.toggle_signals(false, true).unwrap();
+                self.serial.toggle_signals(false, true)?;
             }
             A::Port(PortAction::AssertDtr) => {
-                self.serial.write_signals(Some(true), None).unwrap();
+                self.serial.write_signals(Some(true), None)?;
             }
             A::Port(PortAction::DeassertDtr) => {
-                self.serial.write_signals(Some(false), None).unwrap();
+                self.serial.write_signals(Some(false), None)?;
             }
             A::Port(PortAction::AssertRts) => {
-                self.serial.write_signals(None, Some(true)).unwrap();
+                self.serial.write_signals(None, Some(true))?;
             }
             A::Port(PortAction::DeassertRts) => {
-                self.serial.write_signals(None, Some(false)).unwrap();
+                self.serial.write_signals(None, Some(false))?;
             }
             A::Port(PortAction::AttemptReconnectStrict) => {
                 self.serial
-                    .request_reconnect(Some(Reconnections::StrictChecks))
-                    .unwrap();
+                    .request_reconnect(Some(Reconnections::StrictChecks))?;
             }
             A::Port(PortAction::AttemptReconnectLoose) => {
                 self.serial
-                    .request_reconnect(Some(Reconnections::LooseChecks))
-                    .unwrap();
+                    .request_reconnect(Some(Reconnections::LooseChecks))?;
             }
             A::Base(BaseAction::ToggleTextwrap) => {
                 let state = pretty_bool(self.settings.rendering.wrap_text.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
-                self.settings.save().unwrap();
+                self.settings.save()?;
                 self.notifs
                     .notify_str(format!("Toggled Text Wrapping {state}"), Color::Gray);
             }
@@ -1453,7 +1470,7 @@ impl App {
                 let state = pretty_bool(self.settings.rendering.timestamps.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
-                self.settings.save().unwrap();
+                self.settings.save()?;
                 self.notifs
                     .notify_str(format!("Toggled Timestamps {state}"), Color::Gray);
             }
@@ -1512,8 +1529,7 @@ impl App {
                 };
                 self.buffer
                     .log_handle
-                    .request_log_start(port_info.clone())
-                    .unwrap();
+                    .request_log_start(port_info.clone())?;
                 self.notifs
                     .notify_str("Requested logging start!", Color::Green);
             }
@@ -1521,7 +1537,7 @@ impl App {
             #[cfg(feature = "logging")]
             A::Logging(LoggingAction::Stop) => {
                 if self.buffer.log_handle.logging_active() {
-                    self.buffer.log_handle.request_log_stop().unwrap();
+                    self.buffer.log_handle.request_log_stop()?;
                 } else {
                     self.notifs
                         .notify_str("No logging session active to stop!", Color::Yellow);
@@ -1539,31 +1555,29 @@ impl App {
 
             #[cfg(feature = "espflash")]
             A::Esp(EspAction::EspHardReset) => {
-                self.serial.esp_restart(EspRestartType::UserCode).unwrap();
+                self.serial.esp_restart(EspRestartType::UserCode)?;
             }
 
             #[cfg(feature = "espflash")]
             A::Esp(EspAction::EspBootloader) => {
                 self.serial
-                    .esp_restart(EspRestartType::Bootloader { active: true })
-                    .unwrap();
+                    .esp_restart(EspRestartType::Bootloader { active: true })?;
             }
 
             #[cfg(feature = "espflash")]
             A::Esp(EspAction::EspBootloaderUnchecked) => {
                 self.serial
-                    .esp_restart(EspRestartType::Bootloader { active: false })
-                    .unwrap();
+                    .esp_restart(EspRestartType::Bootloader { active: false })?;
             }
 
             #[cfg(feature = "espflash")]
             A::Esp(EspAction::EspDeviceInfo) => {
-                self.serial.esp_device_info().unwrap();
+                self.serial.esp_device_info()?;
             }
 
             #[cfg(feature = "espflash")]
             A::Esp(EspAction::EspEraseFlash) => {
-                self.serial.esp_erase_flash().unwrap();
+                self.serial.esp_erase_flash()?;
             }
             #[cfg(feature = "espflash")]
             A::Esp(EspAction::ReloadProfiles) => {
@@ -2281,7 +2295,7 @@ impl App {
                 } else {
                     self.failed_send_at = Some(Instant::now());
                     // Temporarily show text on red background when trying to send while unhealthy
-                    let tx = self.tx.clone();
+                    let tx = self.event_tx.clone();
                     self.carousel
                         .add_oneshot(
                             "UnhealthyTxUi",
@@ -2931,44 +2945,13 @@ impl App {
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"));
 
-        // let content_length = match popup {
-        //     PopupMenu::Macros => self.macros.visible_len(),
-        //     // TODO find more clear way than checking this length
-        //     PopupMenu::PortSettings => PortSettings::VISIBLE_FIELDS,
-        //     PopupMenu::BehaviorSettings => Behavior::VISIBLE_FIELDS,
-        //     PopupMenu::RenderingSettings => Rendering::VISIBLE_FIELDS,
-        //     #[cfg(feature = "espflash")]
-        //     // TODO proper scrollbar for espflash profiles
-        //     PopupMenu::EspFlash => 4,
-        //     #[cfg(feature = "logging")]
-        //     PopupMenu::Logging => Logging::VISIBLE_FIELDS,
-        // };
-
         let height = settings_area.height;
-
-        // self.popup_scrollbar_state = self
-        //     .popup_scrollbar_state
-        //     .content_length(content_length.saturating_sub(height as usize));
-        // self.popup_scrollbar_state = self
-        //     .popup_scrollbar_state
-        //     .position(self.popup_table_state.offset());
-
-        // self.popup_scrollbar_state = self.popup_scrollbar_state.position();
-
-        // let shared_table_state: TableState = {
-        //     let mut table_state = TableState::new();
-
-        //     table_state
-        // };
 
         match popup {
             SettingsMenu::SerialPort => {
                 let selected = self.get_corrected_popup_index();
                 self.popup_table_state.select(selected);
                 self.popup_table_state.select_first_column();
-                // let mut table_state = TableState::new()
-                //     .with_selected_column(0)
-                //     .with_selected(selected);
 
                 frame.render_stateful_widget(
                     self.scratch.last_port_settings.as_table(),
@@ -4146,9 +4129,9 @@ impl App {
         self.popup = Some(popup);
         self.refresh_scratch();
         self.popup_hint_scroll = -2;
-        self.popup_menu_scroll = 0;
+        self.popup_menu_scroll = 1;
 
-        self.tx
+        self.event_tx
             .send(Tick::Scroll.into())
             .map_err(|e| e.to_string())
             .unwrap();
