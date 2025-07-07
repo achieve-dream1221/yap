@@ -8,11 +8,11 @@ use ratatui::{
     text::Line,
 };
 use regex::bytes::Regex;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::traits::{LineHelpers, LineMutator};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ColorRules {
     regex_lines: Vec<(RegexRule, RuleType)>,
     regex_words: Vec<(RegexRule, RuleType)>,
@@ -55,7 +55,9 @@ struct SerializedRule {
 #[derive(Debug, thiserror::Error)]
 pub enum ColorRuleError {
     #[error("error reading color rules file: {0}")]
-    File(#[from] std::io::Error),
+    FileRead(#[source] std::io::Error),
+    #[error("error saving color rules file: {0}")]
+    FileWrite(#[source] std::io::Error),
     #[error("error deserializing color rules: {0}")]
     Deser(#[from] toml::de::Error),
     #[error("rule must either be hiding, censoring, or coloring")]
@@ -68,8 +70,20 @@ pub enum ColorRuleError {
 
 impl ColorRules {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, ColorRuleError> {
-        // TODO check for missing file and fill with commented example contents
-        let buffer = fs::read_to_string(path.as_ref())?;
+        let path = path.as_ref();
+
+        if !path.exists() {
+            info!("Color rules file not found at specified path, saving example file.");
+            fs::write(
+                path,
+                include_bytes!("../../example_configs/yap_colors.toml.blank"),
+            )
+            .map_err(ColorRuleError::FileWrite)?;
+
+            return Ok(Self::default());
+        }
+
+        let buffer = fs::read_to_string(path).map_err(ColorRuleError::FileRead)?;
         let ColorRulesFile { regex, literal } = toml::from_str(&buffer)?;
 
         let mut regex_lines = Vec::new();
