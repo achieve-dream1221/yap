@@ -1,26 +1,22 @@
 use std::{
-    borrow::Cow,
-    collections::{BTreeMap, BTreeSet, HashMap},
-    f32::consts::PI,
-    fmt,
-    fs::FileType,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
 };
 
 use bstr::ByteVec;
 use camino::Utf8PathBuf;
-use compact_str::{CompactString, format_compact};
+use compact_str::CompactString;
 use crokey::KeyCombination;
-use fs_err::{self as fs, DirEntry};
+use fs_err::{self as fs};
 use indexmap::IndexMap;
 use itertools::Either;
 use ratatui::{
     layout::Constraint,
     style::{Style, Stylize},
     text::Text,
-    widgets::{Cell, HighlightSpacing, Row, ScrollbarState, Table},
+    widgets::{Row, Table},
 };
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 use tui_input::Input;
 
 use crate::{

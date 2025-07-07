@@ -7,7 +7,6 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
 };
-use tracing::debug;
 
 use crate::buffer::LineEnding;
 

@@ -2,21 +2,19 @@ use std::{sync::Arc, thread::JoinHandle, time::Duration};
 
 use arc_swap::ArcSwap;
 use bstr::ByteVec;
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::Sender;
 use serialport::SerialPortInfo;
 use tracing::{debug, error};
 
 use crate::{
     app::Event,
     errors::HandleResult,
-    serial::{ReconnectType, Reconnections},
+    serial::Reconnections,
     settings::{Ignored, PortSettings},
 };
 
 #[cfg(feature = "espflash")]
 use super::esp::EspCommand;
-#[cfg(feature = "espflash")]
-use crate::tui::esp::EspBins;
 
 use super::worker::{PortStatus, SerialWorker};
 

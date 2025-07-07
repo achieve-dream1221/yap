@@ -1,9 +1,6 @@
-#[cfg(feature = "defmt")]
-use std::time::Instant;
 use std::{
     borrow::Cow,
-    io::{Seek, SeekFrom, Write},
-    path::PathBuf,
+    io::Write,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -12,12 +9,9 @@ use std::{
     time::Duration,
 };
 
-use bstr::ByteSlice;
 use chrono::{DateTime, Local};
-use compact_str::CompactString;
 use crossbeam::channel::{Receiver, RecvError, SendError, Sender};
 use fs_err as fs;
-use ratatui::text::Line;
 use serialport::SerialPortInfo;
 use tracing::{error, warn};
 
@@ -25,7 +19,6 @@ use tracing::{error, warn};
 use crate::settings::Defmt;
 use crate::{
     app::Event,
-    buffer::LineType,
     changed, config_adjacent_path,
     errors::HandleResult,
     serial::ReconnectType,
@@ -33,7 +26,7 @@ use crate::{
     traits::ByteSuffixCheck,
 };
 
-use super::{LineEnding, buf_line::BufLine, line_ending_iter};
+use super::{LineEnding, line_ending_iter};
 
 pub struct LoggingHandle {
     command_tx: Sender<LoggingCommand>,

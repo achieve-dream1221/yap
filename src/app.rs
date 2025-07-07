@@ -7,27 +7,26 @@ use std::{
     time::{Duration, Instant},
 };
 
-use arboard::Clipboard;
 use bstr::ByteVec;
 #[cfg(feature = "defmt")]
 use camino::Utf8Path;
-use color_eyre::{eyre::Result, owo_colors::OwoColorize};
+use color_eyre::eyre::Result;
 use compact_str::{CompactString, ToCompactString};
 use crokey::{KeyCombination, key};
 use crossbeam::channel::{Receiver, Select, Sender};
 use enum_rotate::EnumRotate;
 use fs_err as fs;
-use itertools::Itertools;
+
 use ratatui::{
     Frame, Terminal,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::{Constraint, Layout, Margin, Offset, Rect, Size},
     prelude::Backend,
     style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span, Text, ToLine, ToSpan},
+    text::{Line, Span, ToLine},
     widgets::{
         Block, Borders, Clear, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Table, TableState, Widget, Wrap,
+        ScrollbarState, Table, TableState,
     },
 };
 #[cfg(feature = "defmt")]
@@ -37,23 +36,20 @@ use serialport::{SerialPortInfo, SerialPortType};
 use struct_table::{ArrowKey, StructTable};
 use strum::{VariantArray, VariantNames};
 use takeable::Takeable;
-use tinyvec::tiny_vec;
-use tracing::{debug, error, info, instrument, warn};
+
+use tracing::{debug, error, info};
 use tui_big_text::{BigText, PixelSize};
 use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
-use unicode_width::UnicodeWidthStr;
 
 #[cfg(feature = "defmt")]
 #[cfg(feature = "logging")]
 use crate::buffer::LoggingHandle;
 use crate::{
     buffer::Buffer,
-    event_carousel::{self, CarouselHandle},
-    history::{History, UserInput},
+    event_carousel::CarouselHandle,
+    history::UserInput,
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
-    notifications::{
-        EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notification, Notifications, PAUSE_TIME,
-    },
+    notifications::{EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notifications, PAUSE_TIME},
     serial::{
         PrintablePortInfo, ReconnectType, Reconnections, SerialDisconnectReason, SerialEvent,
         handle::SerialHandle,
@@ -64,9 +60,7 @@ use crate::{
     tui::{
         centered_rect_size,
         defmt::DefmtRecentError,
-        prompts::{
-            AttemptReconnectPrompt, DisconnectPrompt, PromptKeybind, PromptTable, centered_rect,
-        },
+        prompts::{AttemptReconnectPrompt, DisconnectPrompt, PromptKeybind, PromptTable},
         show_keybinds,
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
@@ -99,8 +93,7 @@ use crate::{buffer::LoggingEvent, keybinds::LoggingAction};
 
 #[cfg(feature = "espflash")]
 use crate::serial::esp::{EspEvent, EspRestartType};
-#[cfg(feature = "espflash")]
-use crate::tui::esp::espflash_buttons;
+
 #[cfg(feature = "espflash")]
 use crate::tui::esp::{self, EspFlashHelper};
 #[cfg(feature = "espflash")]

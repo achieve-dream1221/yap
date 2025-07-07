@@ -1,6 +1,6 @@
 use arboard::Clipboard;
 use itertools::Itertools;
-use tracing::{debug, warn};
+use tracing::warn;
 use tui_input::Input;
 
 use crate::traits::LastIndex as _;

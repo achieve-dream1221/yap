@@ -1,16 +1,15 @@
 // Since I can't rely on prefix from strum
 #![allow(clippy::enum_variant_names)]
 
-use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
 use compact_str::{CompactString, ToCompactString};
 use crokey::KeyCombination;
 use fs_err as fs;
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 #[cfg(feature = "macros")]
 use crate::macros::MacroNameTag;

@@ -1,18 +1,12 @@
-use compact_str::{CompactString, ToCompactString};
-use crossbeam::channel::{Receiver, Sender};
+use compact_str::CompactString;
+use crossbeam::channel::Sender;
 use espflash::{flasher::DeviceInfo, target::ProgressCallbacks};
-use std::time::Duration;
-use tracing::debug;
 
 use super::{
     SerialEvent,
     handle::{PortCommand, SerialHandle, SerialWorkerCommand},
 };
-use crate::{
-    app::Event,
-    errors::HandleResult,
-    tui::esp::{EspBins, EspProfile},
-};
+use crate::{app::Event, errors::HandleResult, tui::esp::EspProfile};
 
 #[derive(Debug)]
 pub enum EspCommand {

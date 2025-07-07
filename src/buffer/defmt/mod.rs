@@ -1,15 +1,7 @@
-use camino::{Utf8Path, Utf8PathBuf};
-use chrono::{DateTime, Local};
-use defmt_decoder::{DecodeError, Frame, Location, Locations, StreamDecoder, Table};
-use defmt_parser::Level;
+use camino::Utf8PathBuf;
+use defmt_decoder::{DecodeError, Locations, Table};
 use fs_err as fs;
-use ratatui::{
-    style::{Color, Style},
-    text::Span,
-};
-use tracing::{debug, warn};
-
-use crate::buffer::{buf_line::BufLine, tui::defmt::defmt_level_bracketed};
+use tracing::warn;
 
 // #[ouroboros::self_referencing]
 pub struct DefmtDecoder {

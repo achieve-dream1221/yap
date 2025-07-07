@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 
-use bstr::ByteSlice;
 use chrono::{DateTime, Local};
 use compact_str::{CompactString, ToCompactString, format_compact};
 use ratatui::{
@@ -8,8 +7,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
-use ratatui_macros::{line, span};
-use tracing::debug;
 
 #[cfg(feature = "defmt")]
 use defmt_parser::Level;
@@ -19,7 +16,7 @@ use crate::settings::Defmt;
 use crate::{
     buffer::{LineEnding, RangeSlice},
     settings::Rendering,
-    traits::{ByteSuffixCheck, FirstChars, LineHelpers},
+    traits::LineHelpers,
 };
 
 #[derive(Debug, Clone)]

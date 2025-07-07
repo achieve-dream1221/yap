@@ -7,20 +7,18 @@ use bstr::{ByteSlice, ByteVec};
 use buf_line::{BufLine, LineType};
 use chrono::{DateTime, Local};
 use compact_str::{CompactString, ToCompactString};
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::Sender;
 use itertools::{Either, Itertools};
 use memchr::memmem::Finder;
 use ratatui::{
-    layout::{Rect, Size},
-    style::{Color, Style, Stylize, palette::material::PINK},
-    symbols,
+    layout::Size,
+    style::{Color, Style, Stylize},
     text::{Line, Span},
     widgets::ScrollbarState,
 };
 use ratatui_macros::span;
-use serialport::SerialPortInfo;
 use takeable::Takeable;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 #[cfg(feature = "defmt")]
 use crate::buffer::defmt::DefmtDecoder;

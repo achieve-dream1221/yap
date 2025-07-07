@@ -1,14 +1,7 @@
-use std::{borrow::Cow, iter::repeat_n};
+use std::iter::repeat_n;
 
 use num_integer::Integer;
-use ratatui::{
-    prelude::*,
-    text::Line,
-    widgets::{Row, TableState},
-};
-use ratatui_macros::line;
-use tracing::debug;
-use unicode_width::UnicodeWidthStr;
+use ratatui::{prelude::*, text::Line, widgets::TableState};
 
 use crate::traits::{LastIndex, LineHelpers};
 

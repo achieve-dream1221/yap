@@ -1,16 +1,15 @@
 use std::{
-    path::Path,
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
-use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounded};
+use crossbeam::channel::{Receiver, Sender, TryRecvError, bounded};
 use notify::{
     EventKind, RecommendedWatcher, Watcher,
     event::{ModifyKind, RenameMode},
 };
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info};
 
 use crate::{app::Event, errors::HandleResult};
 

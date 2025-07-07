@@ -9,7 +9,6 @@ use ratatui::{
 };
 use ratatui_macros::{row, span};
 use strum::{EnumProperty, VariantArray, VariantNames};
-use unicode_width::UnicodeWidthStr;
 
 pub trait PromptKeybind: Clone + strum::VariantArray + strum::EnumProperty {
     fn from_key_code(value: KeyCode) -> Option<Self> {

@@ -8,7 +8,7 @@ use ratatui::{
     text::Line,
 };
 use regex::bytes::Regex;
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::traits::{LineHelpers, LineMutator};
 
