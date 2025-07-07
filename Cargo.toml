@@ -73,7 +73,7 @@ regex = "1.11.1"
 rolling-file = "0.2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde-inline-default = "0.2.3"
-serialport = { version = "4.7.0", features = ["serde"] }
+serialport = { version = "4.7.2", features = ["serde"] }
 strip-ansi-escapes = "0.2.1"
 struct-table = { path = "struct-table" }
 strum = { version = "0.27", features = ["derive"] }

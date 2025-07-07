@@ -50,6 +50,22 @@ impl TakeablePort {
         }
     }
     fn drop(&mut self) {
+        if let Some(port) = self.as_mut_port() {
+            debug!(
+                "Input buffer len: {:?}, Output buffer len: {:?}",
+                port.bytes_to_read(),
+                port.bytes_to_write()
+            );
+            // This is needed mostly for *nix,
+            // since phantom bytes can appear in `bytes_to_write`,
+            // and cause the close() operation to block for ~30s.
+            _ = port.clear(serialport::ClearBuffer::All);
+            // Using port.flush() can also block for the ~30s period,
+            // since close() and flush() both call `tcdrain` which give the connected device a
+            // chance to drain the buffer before continuing.
+            // Calling port.clear() calls `tcflush` instead, which just dumps the data instantly,
+            // which will let close() run without waiting for a device that won't do anything.
+        }
         *self = TakeablePort::None;
     }
     fn take_native(&mut self) -> Option<NativePort> {
@@ -143,10 +159,9 @@ impl SerialWorker {
             // TODO Fuzz testing with this + buffer
             match self.command_rx.recv_timeout(sleep_time) {
                 Ok(SerialWorkerCommand::Shutdown(shutdown_tx)) => {
-                    if let Some(port) = self.port.as_mut_port() {
-                        _ = port.flush();
-                    }
+                    debug!("Got shutdown request, dropping port!");
                     self.port.drop();
+
                     self.shared_status
                         .store(Arc::new(PortStatus::new_idle(&PortSettings::default())));
 
