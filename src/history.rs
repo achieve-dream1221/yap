@@ -132,7 +132,7 @@ impl History {
             return;
         }
         // Checking if the given string exists at the end of our buffer
-        if self.inner.last().map_or(false, |s| s.eq(entry)) {
+        if self.inner.last().is_some_and(|s| s.eq(entry)) {
             return;
         }
         // If it's instead further up the history, let's move it down to the bottom instead

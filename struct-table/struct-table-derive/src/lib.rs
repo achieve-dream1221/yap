@@ -19,7 +19,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
     // panic!("{ast:#?}");
 
     // Extracting the 'struct-global' attributes
-    let struct_attrs: StructTableAttributes = deluxe::extract_attributes(&mut ast)?;
+    let _struct_attrs: StructTableAttributes = deluxe::extract_attributes(&mut ast)?;
     // panic!("{ast:#?}");
     // Vec of each processed field, in order of declaration
     let field_attrs: Vec<StructField> = extract_field_attrs(&mut ast)?;
@@ -241,7 +241,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
         #[automatically_derived]
         impl #impl_generics ::struct_table::StructTable for #ident #type_generics #where_cause {
             #[automatically_derived]
-            fn handle_input(&mut self, input: ::struct_table::ArrowKey, field_index: usize) -> ::core::result::Result<bool, ()> {
+            fn handle_input(&mut self, input: ::struct_table::ArrowKey, field_index: usize) -> ::core::result::Result<bool, ::struct_table::InvalidFieldIndex> {
                 let mut self_changed = false;
                 let final_field_index: usize = #final_field_index;
                 // Assuming left/right only here
@@ -258,7 +258,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                         #field_arms;
                         self_changed = true;
                        }, )*
-                    _ => return Err(()),
+                    _ => return Err(::struct_table::InvalidFieldIndex),
                 }
 
                 Ok(self_changed)
@@ -553,7 +553,7 @@ struct StructFieldAttributes {
 #[derive(deluxe::ExtractAttributes)]
 #[deluxe(attributes(table))]
 struct StructTableAttributes {
-    #[deluxe(default)]
-    no_wrap: bool,
+    // #[deluxe(default)]
+    // no_wrap: bool,
     // skip_field_case_conversion: bool
 }

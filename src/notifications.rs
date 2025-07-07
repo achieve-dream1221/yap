@@ -93,7 +93,7 @@ impl Widget for &Notifications {
         };
 
         let center_area = {
-            let mut top_lines = area.clone();
+            let mut top_lines = area;
             top_lines.height = 2;
             // new_area.width = area.width.saturating_div(2);
             let [_, centered_area, _] = if area.width > MIN_NOTIF_WIDTH {
@@ -113,7 +113,7 @@ impl Widget for &Notifications {
             new_area
         };
         let expand_area = {
-            let mut new_area = center_area.clone();
+            let mut new_area = center_area;
             if new_area.width != area.width {
                 new_area.width = center_area.width + 2;
             }
@@ -136,9 +136,9 @@ impl Widget for &Notifications {
 
         let block_area = {
             let mut area = if notification.replaced && expand {
-                expand_area.clone()
+                expand_area
             } else {
-                center_area.clone()
+                center_area
             };
             if !expand {
                 area.height = meow_height;

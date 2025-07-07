@@ -44,10 +44,7 @@ impl TakeablePort {
         !self.is_none()
     }
     fn is_available(&self) -> bool {
-        match self {
-            TakeablePort::Native(_) | TakeablePort::Loopback(_) => true,
-            _ => false,
-        }
+        matches!(self, TakeablePort::Native(_) | TakeablePort::Loopback(_))
     }
     fn drop(&mut self) {
         if let Some(port) = self.as_mut_port() {
@@ -160,7 +157,7 @@ impl SerialWorker {
                     self.shared_status
                         .store(Arc::new(PortStatus::new_idle(&PortSettings::default())));
 
-                    if let Err(_) = shutdown_tx.send(()) {
+                    if shutdown_tx.send(()).is_err() {
                         error!("Failed to reply to shutdown request!");
                         break Err(WorkerError::ShutdownReply);
                     } else {
@@ -253,7 +250,7 @@ impl SerialWorker {
             last_status
                 // Ensure we keep around the old SerialPortInfo to use
                 // as a reference for reconnections!
-                .to_unhealthy()
+                .into_unhealthy()
         };
         self.shared_status.store(Arc::new(disconnected_status));
         // Disconnection Event TX should be done by caller.
@@ -278,7 +275,7 @@ impl SerialWorker {
                 let previous_status = { self.shared_status.load().as_ref().clone() };
 
                 self.shared_status
-                    .store(Arc::new(previous_status.to_idle(&*settings)));
+                    .store(Arc::new(previous_status.into_idle(&settings)));
                 self.port.drop();
                 self.event_tx
                     .send(SerialDisconnectReason::Intentional.into())?;
@@ -474,7 +471,7 @@ impl SerialWorker {
             // Sleeping to give the device some time to intialize with Windows
             // (Otherwise Access Denied errors can occur from trying to connect too quick)
             std::thread::sleep(Duration::from_secs(1));
-            self.connect_to_port(&port, Some(ReconnectType::PerfectMatch))?;
+            self.connect_to_port(port, Some(ReconnectType::PerfectMatch))?;
             return Ok(());
         };
 
@@ -495,7 +492,7 @@ impl SerialWorker {
                     port.port_name
                 );
                 std::thread::sleep(Duration::from_secs(1));
-                self.connect_to_port(&port, Some(ReconnectType::UsbStrict))?;
+                self.connect_to_port(port, Some(ReconnectType::UsbStrict))?;
                 return Ok(());
             };
 
@@ -521,7 +518,7 @@ impl SerialWorker {
                         port.port_name
                     );
                     std::thread::sleep(Duration::from_secs(1));
-                    self.connect_to_port(&port, Some(ReconnectType::UsbLoose))?;
+                    self.connect_to_port(port, Some(ReconnectType::UsbLoose))?;
                     return Ok(());
                 };
             }
@@ -536,7 +533,7 @@ impl SerialWorker {
             {
                 info!("Last ditch connect attempt on: {}", port.port_name);
                 std::thread::sleep(Duration::from_secs(1));
-                self.connect_to_port(&port, Some(ReconnectType::LastDitch))?;
+                self.connect_to_port(port, Some(ReconnectType::LastDitch))?;
                 return Ok(());
             }
         }
@@ -777,7 +774,7 @@ impl SerialWorker {
                     bins.upload_baud,
                 )?;
 
-                let matches = bins.expected_chip.map_or(true, |expected| {
+                let chip_matches_expected = bins.expected_chip.is_none_or(|expected| {
                     if expected == flasher.chip() {
                         true
                     } else {
@@ -786,7 +783,7 @@ impl SerialWorker {
                     }
                 });
 
-                if matches {
+                if chip_matches_expected {
                     use espflash::image_format::Segment;
                     use itertools::Itertools;
 
@@ -853,7 +850,7 @@ impl SerialWorker {
                     elf.upload_baud,
                 )?;
 
-                let matches = elf.expected_chip.map_or(true, |expected| {
+                let chip_matches_expected = elf.expected_chip.is_none_or(|expected| {
                     if expected == flasher.chip() {
                         true
                     } else {
@@ -862,7 +859,7 @@ impl SerialWorker {
                     }
                 });
 
-                if matches {
+                if chip_matches_expected {
                     if let Some(baud) = elf.upload_baud {
                         flasher.change_baud(baud)?;
                     }
@@ -881,45 +878,42 @@ impl SerialWorker {
                                 .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
                             error!("Error during RAM load: {e}");
                         }
-                    } else {
-                        if let Ok(esp_info) = flasher.device_info() {
-                            use espflash::image_format::idf::IdfBootloaderFormat;
+                    } else if let Ok(esp_info) = flasher.device_info() {
+                        use espflash::image_format::idf::IdfBootloaderFormat;
 
-                            // TODO? dunno tbh
-                            let min_chip_rev = 0;
-                            let mmu_page_size = None;
-                            let flash_data = FlashData::new(
-                                // Not sure how important it is I populate the other fields (or any at all?)
-                                FlashSettings::new(None, Some(esp_info.flash_size), None),
-                                min_chip_rev,
-                                mmu_page_size,
-                                esp_info.chip,
-                                esp_info.crystal_frequency,
-                            );
+                        // TODO? dunno tbh
+                        let min_chip_rev = 0;
+                        let mmu_page_size = None;
+                        let flash_data = FlashData::new(
+                            // Not sure how important it is I populate the other fields (or any at all?)
+                            FlashSettings::new(None, Some(esp_info.flash_size), None),
+                            min_chip_rev,
+                            mmu_page_size,
+                            esp_info.chip,
+                            esp_info.crystal_frequency,
+                        );
 
-                            let format_res = IdfBootloaderFormat::new(
-                                &elf_data,
-                                &flash_data,
-                                elf.partition_table.as_ref().map(AsRef::as_ref),
-                                elf.bootloader.as_ref().map(AsRef::as_ref),
-                                None,
-                                None,
-                            );
+                        let format_res = IdfBootloaderFormat::new(
+                            &elf_data,
+                            &flash_data,
+                            elf.partition_table.as_ref().map(AsRef::as_ref),
+                            elf.bootloader.as_ref().map(AsRef::as_ref),
+                            None,
+                            None,
+                        );
 
-                            let format = match format_res {
-                                Ok(f) => f,
-                                Err(e) => {
-                                    return Err(WorkerError::ImageFormat(e));
-                                }
-                            };
-
-                            if let Err(e) =
-                                flasher.load_image_to_flash(&mut propagator, format.into())
-                            {
-                                self.event_tx
-                                    .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
-                                error!("Error during flashing: {e}");
+                        let format = match format_res {
+                            Ok(f) => f,
+                            Err(e) => {
+                                return Err(WorkerError::ImageFormat(e));
                             }
+                        };
+
+                        if let Err(e) = flasher.load_image_to_flash(&mut propagator, format.into())
+                        {
+                            self.event_tx
+                                .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
+                            error!("Error during flashing: {e}");
                         }
                     }
 
@@ -1089,14 +1083,14 @@ impl PortStatus {
         }
     }
     /// Used when a port disconnects without the user's stated intent to do so.
-    fn to_unhealthy(self) -> Self {
+    fn into_unhealthy(self) -> Self {
         Self {
             inner: InnerPortStatus::PrematureDisconnect,
             ..self
         }
     }
     /// Used when the user chooses to disconnect from the serial port
-    fn to_idle(self, settings: &PortSettings) -> Self {
+    fn into_idle(self, settings: &PortSettings) -> Self {
         Self {
             inner: InnerPortStatus::Idle,
             current_port: None,
@@ -1104,7 +1098,6 @@ impl PortStatus {
                 dtr: settings.dtr_on_connect,
                 ..Default::default()
             },
-            ..self
         }
     }
 

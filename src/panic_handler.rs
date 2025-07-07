@@ -12,14 +12,14 @@ pub fn initialize_panic_handler() -> Result<()> {
         .into_hooks();
     eyre_hook.install()?;
     std::panic::set_hook(Box::new(move |panic_info| {
-        _ = ratatui::restore();
+        ratatui::restore();
         _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
 
         let msg = format!("{}", panic_hook.panic_report(panic_info));
         #[cfg(not(debug_assertions))]
         {
             eprintln!("{msg}");
-            use human_panic::{handle_dump, print_msg, Metadata};
+            use human_panic::{Metadata, handle_dump, print_msg};
             let author = format!("authored by {}", env!("CARGO_PKG_AUTHORS"));
             let support = format!(
                 "You can open a support request at {}",

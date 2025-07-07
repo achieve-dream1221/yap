@@ -67,12 +67,12 @@ pub enum DefmtLoadError {
 
 impl DefmtDecoder {
     fn from_elf_bytes(bytes: &[u8]) -> Result<(Table, Option<Locations>), DefmtTableError> {
-        let table = Table::parse(&bytes)
+        let table = Table::parse(bytes)
             .map_err(|e| DefmtTableError::ParseFail(e.to_string()))?
-            .ok_or_else(|| DefmtTableError::DataMissing)?;
+            .ok_or(DefmtTableError::DataMissing)?;
 
         let locs = table
-            .get_locations(&bytes)
+            .get_locations(bytes)
             .map_err(|_| DefmtTableError::Locations)?;
 
         // TODO notify in UI
@@ -94,8 +94,7 @@ impl DefmtDecoder {
         let path = path.as_ref().to_owned();
         let bytes = fs::read(&path)?;
 
-        let elf_path = Utf8PathBuf::from_path_buf(path)
-            .map_err(|original| DefmtLoadError::NonUtf8Path(original))?;
+        let elf_path = Utf8PathBuf::from_path_buf(path).map_err(DefmtLoadError::NonUtf8Path)?;
 
         let elf_data = bytes.to_owned();
 

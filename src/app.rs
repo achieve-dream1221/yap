@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::{
     borrow::Cow,
     collections::VecDeque,
-    i32,
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -226,6 +225,7 @@ pub enum ToolMenu {
     Macros,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq, Eq)]
 enum Popup {
     SettingsMenu(SettingsMenu),
@@ -428,11 +428,11 @@ impl App {
         .unwrap();
 
         #[cfg(feature = "defmt")]
-        if let Some(last_elf) = defmt_meow.recent_elfs.last()
+        if let Some(last_elf) = defmt_meow.recent_elfs.last().map(ToOwned::to_owned)
             && last_elf.is_file()
         {
             match try_load_defmt_elf(
-                &last_elf.to_owned(),
+                &last_elf,
                 &mut buffer.defmt_decoder,
                 &mut defmt_meow.recent_elfs,
                 #[cfg(feature = "logging")]
@@ -588,14 +588,14 @@ impl App {
         debug!("Shutting down Serial worker");
         if self.serial.shutdown().is_ok() {
             let serial_thread = self.serial_thread.take();
-            if let Err(_) = serial_thread.join() {
+            if serial_thread.join().is_err() {
                 error!("Serial thread closed with an error!");
             }
         }
         debug!("Shutting down event carousel");
         if self.carousel.shutdown().is_ok() {
             let carousel = self.carousel_thread.take();
-            if let Err(_) = carousel.join() {
+            if carousel.join().is_err() {
                 error!("Carousel thread closed with an error!");
             }
         }
@@ -605,8 +605,8 @@ impl App {
         match event {
             Event::Quit => self.shutdown(),
 
-            Event::RxBuffer(mut data) => {
-                self.buffer.fresh_rx_bytes(&mut data);
+            Event::RxBuffer(data) => {
+                self.buffer.fresh_rx_bytes(&data);
                 self.buffer.scroll_by(0);
 
                 self.repeating_line_flip.flip();
@@ -676,11 +676,9 @@ impl App {
                     panic!("Was told about a port connection but no current port exists!");
                 }
 
-                match &self.menu {
-                    Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) => {
-                        self.menu = Menu::Terminal(TerminalPrompt::None);
-                    }
-                    _ => (),
+                // Dismiss attempt reconnect prompt if visible.
+                if let Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) = &self.menu {
+                    self.menu = Menu::Terminal(TerminalPrompt::None);
                 }
 
                 self.buffer.scroll_by(0);
@@ -740,7 +738,7 @@ impl App {
                     .notify_str(format!("{chip} flash erased!"), Color::Green),
                 EspEvent::HardResetAttempt => self
                     .notifs
-                    .notify_str(format!("Attempted ESP hard reset!"), Color::LightYellow),
+                    .notify_str("Attempted ESP hard reset!", Color::LightYellow),
                 EspEvent::Error(e) => {
                     self.notifs.notify_str(&e, Color::Red);
                     self.action_queue.clear();
@@ -1087,8 +1085,6 @@ impl App {
                         //     term_event.encode(&mut buf, terminput::Encoding::Xterm);
                         // }
                     }
-
-                    _ => (),
                 }
             }
             Menu::Terminal(TerminalPrompt::None) => (),
@@ -1277,7 +1273,7 @@ impl App {
 
         #[cfg(feature = "espflash")]
         // Try to find esp profile by exact name match.
-        if let Some(_) = self.espflash.profile_from_name(action) {
+        if self.espflash.profile_from_name(action).is_some() {
             return Some(Action::EspFlashProfile(action.to_owned()));
         }
 
@@ -1509,14 +1505,13 @@ impl App {
                 self.macros
                     .load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))
                     .unwrap();
-                self.notifs
-                    .notify_str(format!("Reloaded Macros!"), Color::Green);
+                self.notifs.notify_str("Reloaded Macros!", Color::Green);
             }
 
             A::Base(BaseAction::ReloadColors) => {
                 self.buffer.reload_color_rules().unwrap();
                 self.notifs
-                    .notify_str(format!("Reloaded Color Rules!"), Color::Green);
+                    .notify_str("Reloaded Color Rules!", Color::Green);
             }
 
             #[cfg(feature = "logging")]
@@ -1976,10 +1971,11 @@ impl App {
         if self.popup.is_some() {
             return;
         }
-        if matches!(self.menu, Menu::PortSelection(_)) && self.baud_selection_state.active {
-            if self.baud_selection_state.next() >= COMMON_BAUD.len() {
-                self.baud_selection_state.select(0);
-            }
+        if matches!(self.menu, Menu::PortSelection(_))
+            && self.baud_selection_state.active
+            && self.baud_selection_state.next() >= COMMON_BAUD.len()
+        {
+            self.baud_selection_state.select(0);
         }
     }
     fn enter_pressed(&mut self, ctrl_pressed: bool, shift_pressed: bool) {
@@ -2252,7 +2248,7 @@ impl App {
                     self.settings.save().unwrap();
 
                     self.serial
-                        .connect(&info, self.scratch.last_port_settings.clone())
+                        .connect(info, self.scratch.last_port_settings.clone())
                         .unwrap();
 
                     self.menu = Menu::Terminal(TerminalPrompt::None);
@@ -2667,7 +2663,7 @@ impl App {
             Some(Popup::ToolMenu(_)) => self.render_popup_menus(frame, area),
             Some(Popup::CurrentKeybinds) => {
                 let mut scroll: u16 = self.popup_menu_scroll as u16;
-                show_keybinds(&self.keybinds, &mut scroll, frame, area, &self);
+                show_keybinds(&self.keybinds, &mut scroll, frame, area, self);
                 self.popup_menu_scroll = scroll as usize;
             }
             Some(Popup::ErrorMessage(_)) => todo!(),
@@ -2765,7 +2761,7 @@ impl App {
         .with_space_padding(true);
 
         let menu_category_selector_area = {
-            let mut line = center_area.clone();
+            let mut line = center_area;
             line.height = 1;
             line
         };
@@ -2880,7 +2876,7 @@ impl App {
         // }
 
         let setting_menu_selector =
-            SingleLineSelector::new(<SettingsMenu as VariantNames>::VARIANTS.iter().map(|s| *s))
+            SingleLineSelector::new(<SettingsMenu as VariantNames>::VARIANTS.iter().copied())
                 .with_next_symbol(">")
                 .with_prev_symbol("<")
                 .with_space_padding(true);
@@ -2963,7 +2959,7 @@ impl App {
                     .popup_table_state
                     .selected()
                     .map(|i| PortSettings::DOCSTRINGS[i])
-                    .unwrap_or(&"");
+                    .unwrap_or("");
                 render_scrolling_line(
                     text,
                     frame,
@@ -2991,7 +2987,7 @@ impl App {
                     .popup_table_state
                     .selected()
                     .map(|i| Behavior::DOCSTRINGS[i])
-                    .unwrap_or(&"");
+                    .unwrap_or("");
                 render_scrolling_line(
                     text,
                     frame,
@@ -3019,7 +3015,7 @@ impl App {
                     .popup_table_state
                     .selected()
                     .map(|i| Rendering::DOCSTRINGS[i])
-                    .unwrap_or(&"");
+                    .unwrap_or("");
                 render_scrolling_line(
                     text,
                     frame,
@@ -3038,14 +3034,14 @@ impl App {
                 let new_seperator = {
                     let mut area = center_inner_area;
                     area.height = 1;
-                    area.y = area.y + 2;
+                    area.y += 2;
                     area
                 };
                 let button_area = settings_area;
                 let settings_area = {
                     let mut area = settings_area;
                     area.height = area.height.saturating_sub(2);
-                    area.y = area.y + 2;
+                    area.y += 2;
                     area
                 };
                 let line_block = Block::new()
@@ -3114,7 +3110,7 @@ impl App {
                         .popup_table_state
                         .selected()
                         .map(|i| Logging::DOCSTRINGS[i])
-                        .unwrap_or(&"");
+                        .unwrap_or("");
                     render_scrolling_line(
                         text,
                         frame,
@@ -3234,7 +3230,7 @@ impl App {
                         .popup_table_state
                         .selected()
                         .map(|i| Defmt::DOCSTRINGS[i])
-                        .unwrap_or(&"");
+                        .unwrap_or("");
                     render_scrolling_line(
                         text,
                         frame,
@@ -3361,7 +3357,7 @@ impl App {
         // let title_lines = ;
 
         let popup_menu_title_selector =
-            SingleLineSelector::new(<ToolMenu as VariantNames>::VARIANTS.iter().map(|s| *s))
+            SingleLineSelector::new(<ToolMenu as VariantNames>::VARIANTS.iter().copied())
                 .with_next_symbol(">")
                 .with_prev_symbol("<")
                 .with_space_padding(true);
@@ -3413,7 +3409,7 @@ impl App {
         let macros_table_area = {
             let mut area = center_inner_area;
             area.height = area.height.saturating_sub(5);
-            area.y = area.y + 3;
+            area.y += 3;
             area
         };
 
@@ -3444,13 +3440,13 @@ impl App {
                 let new_seperator = {
                     let mut area = center_inner_area;
                     area.height = 1;
-                    area.y = area.y + 2;
+                    area.y += 2;
                     area
                 };
                 let categories_area = {
                     let mut area = center_inner_area;
                     area.height = 1;
-                    area.y = area.y + 1;
+                    area.y += 1;
                     area
                 };
                 frame.render_widget(
@@ -3463,7 +3459,7 @@ impl App {
                 if self.macros.search_input.value().is_empty() {
                     let categories_iter = ["Has Bytes", "Strings Only", "All Macros"]
                         .iter()
-                        .map(|s| *s)
+                        .copied()
                         .map(String::from)
                         .map(Line::raw)
                         .chain(self.macros.categories().map(String::from).map(Line::raw));
@@ -3557,18 +3553,16 @@ impl App {
                         scrolling_text_area,
                         &mut self.popup_hint_scroll,
                     );
+                } else if self.macros.is_empty() {
+                    frame.render_widget(
+                        Line::raw("No macros! Try making one!").centered(),
+                        scrolling_text_area,
+                    );
                 } else {
-                    if self.macros.is_empty() {
-                        frame.render_widget(
-                            Line::raw("No macros! Try making one!").centered(),
-                            scrolling_text_area,
-                        );
-                    } else {
-                        frame.render_widget(
-                            Line::raw("Select a macro to preview.").centered(),
-                            scrolling_text_area,
-                        );
-                    }
+                    frame.render_widget(
+                        Line::raw("Select a macro to preview.").centered(),
+                        scrolling_text_area,
+                    );
                 }
             }
             #[cfg(feature = "espflash")]
@@ -3712,7 +3706,7 @@ impl App {
         );
     }
 
-    pub fn terminal_menu<'a>(
+    pub fn terminal_menu(
         &mut self,
         frame: &mut Frame,
         area: Rect,
@@ -3908,8 +3902,7 @@ impl App {
                 .map(CompactString::as_str)
                 .unwrap_or_else(|| "UNBOUND");
             let input_hint = Line::raw(format!(
-                " Input goes here. `{key}` for port settings.",
-                key = port_settings_combo
+                " Input goes here. `{port_settings_combo}` for port settings.",
             ))
             .style(input_style)
             .dark_gray()
@@ -4297,7 +4290,7 @@ pub fn render_scrolling_line<'a, T: Into<Line<'a>>>(
     mut area: Rect,
     scroll: &mut i32,
 ) {
-    let orig_area = area.clone();
+    let orig_area = area;
     assert_eq!(area.height, 1, "Scrolling line expects a height of 1 only.");
 
     let line: Line = text.into();
@@ -4313,19 +4306,11 @@ pub fn render_scrolling_line<'a, T: Into<Line<'a>>>(
             match scroll {
                 _pause if *scroll <= 0 => (0, 0),
                 to_left if *scroll <= overflow_amount as i32 => (*to_left as u16, 0),
-                _left_pause if *scroll <= (overflow_amount as i32) + 3 => {
-                    (overflow_amount as u16, 0)
-                }
-                to_right
-                    if *scroll
-                        <= (overflow_amount as i32) + 3 + (overflow_amount as i32) as i32 =>
-                {
-                    (
-                        (overflow_amount as u16)
-                            - ((*to_right as u16) - ((overflow_amount as u16) + 3)),
-                        0,
-                    )
-                }
+                _left_pause if *scroll <= (overflow_amount as i32) + 3 => (overflow_amount, 0),
+                to_right if *scroll <= (overflow_amount as i32) + 3 + (overflow_amount as i32) => (
+                    (overflow_amount) - ((*to_right as u16) - ((overflow_amount) + 3)),
+                    0,
+                ),
                 scroll_reset
                     if *scroll > (overflow_amount as i32) + 3 + (overflow_amount as i32) =>
                 {
@@ -4350,7 +4335,7 @@ pub fn render_scrolling_line<'a, T: Into<Line<'a>>>(
         }
     };
     // debug!("scroll_x: {scroll_x}, offset_x: {offset_x}");
-    let para = Paragraph::new(line).scroll((0, if offset_x > 0 { 0 } else { scroll_x as u16 }));
+    let para = Paragraph::new(line).scroll((0, if offset_x > 0 { 0 } else { scroll_x }));
     if offset_x > 0 {
         area.width = u16::min(offset_x, area.width);
     }

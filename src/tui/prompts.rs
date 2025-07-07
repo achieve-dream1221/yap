@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthStr;
 pub trait PromptKeybind: Clone + strum::VariantArray + strum::EnumProperty {
     fn from_key_code(value: KeyCode) -> Option<Self> {
         Self::VARIANTS
-            .into_iter()
+            .iter()
             .find(|v| {
                 let Some(variant_binding) = v.get_str("keybind") else {
                     return false;
@@ -110,11 +110,9 @@ pub trait PromptTable: VariantNames + VariantArray + EnumProperty + Into<u8> + T
             })
             .collect();
 
-        let option_table = Table::new(rows, [Constraint::Percentage(100)])
+        Table::new(rows, [Constraint::Percentage(100)])
             .row_highlight_style(selected_style)
-            .highlight_symbol(">> ");
-
-        option_table
+            .highlight_symbol(">> ")
     }
     fn prompt_table_block<'a>(
         top: Option<&'a str>,

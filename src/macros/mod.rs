@@ -185,13 +185,12 @@ impl Macros {
             .map(|(m, k)| Row::new([Text::raw(m), Text::raw(k).italic()]));
 
         let widths = [Constraint::Fill(4), Constraint::Fill(1)];
-        let table = Table::new(filtered, widths).row_highlight_style(Style::new().reversed());
-        table
+        Table::new(filtered, widths).row_highlight_style(Style::new().reversed())
     }
     pub fn has_no_category_macros(&self) -> bool {
         self.all.iter().any(|(tag, string)| tag.category.is_none())
     }
-    pub fn categories<'a>(&'a self) -> impl DoubleEndedIterator<Item = &'a str> {
+    pub fn categories(&self) -> impl DoubleEndedIterator<Item = &str> {
         let no_category = std::iter::once("No Category").filter(|_| self.has_no_category_macros());
 
         let categories: BTreeSet<&str> = self
@@ -200,13 +199,9 @@ impl Macros {
             .filter_map(|(tag, string)| tag.category.as_deref())
             .collect();
 
-        no_category.chain(categories.into_iter())
+        no_category.chain(categories)
     }
-    pub fn get_by_string<'a>(
-        &'a self,
-        query: &str,
-        fuzzy_macro_name_match: bool,
-    ) -> Option<MacroNameTag> {
+    pub fn get_by_string(&self, query: &str, fuzzy_macro_name_match: bool) -> Option<MacroNameTag> {
         let query_nametag: MacroNameTag = query.parse().ok()?;
 
         let find_result = self

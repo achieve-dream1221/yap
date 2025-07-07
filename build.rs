@@ -12,11 +12,11 @@ fn main() {
 
     for file in &items_to_copy {
         copy_to_output(file, &env::var("PROFILE").unwrap())
-            .expect(&format!("Could not copy {file}"));
+            .unwrap_or_else(|_| panic!("Could not copy {file}"));
     }
 
     // Invalidate the build if the files change
     for file in &items_to_copy {
-        println!("cargo:rerun-if-changed={}", file);
+        println!("cargo:rerun-if-changed={file}");
     }
 }

@@ -91,18 +91,13 @@ impl PrintablePortInfo for SerialPortInfo {
             SerialPortType::BluetoothPort => "Bluetooth".to_owned(),
         };
         let port = &self.port_name;
+
         match (baud_rate, extra_info.is_empty()) {
             (Some(baud), false) => format!("{port} @ {baud} | {extra_info}"),
             (Some(baud), true) => format!("{port} @ {baud}"),
             (None, false) => format!("{port} | {extra_info}"),
-            (None, true) => format!("{port}"),
+            (None, true) => port.to_owned(),
         }
-
-        // if extra_info.is_empty() {
-        //     format!("{}", self.port_name)
-        // } else {
-        //     format!("{} | {extra_info}", self.port_name)
-        // }
     }
 }
 

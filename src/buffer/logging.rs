@@ -70,12 +70,12 @@ pub enum LoggingCommand {
 }
 
 enum LoggingLineType {
-    RxLine,
-    TxLine {
+    Rx,
+    Tx {
         line_ending: Vec<u8>,
     },
     #[cfg(feature = "defmt")]
-    DefmtRxLine,
+    DefmtRx,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -294,7 +294,7 @@ impl LoggingWorker {
             match self.command_rx.recv() {
                 Ok(LoggingCommand::Shutdown(shutdown_tx)) => {
                     self.close_files(true)?;
-                    if let Err(_) = shutdown_tx.send(()) {
+                    if shutdown_tx.send(()).is_err() {
                         error!("Failed to reply to shutdown request!");
                         break Err(LoggingError::ShutdownReply);
                     } else {
@@ -382,7 +382,7 @@ impl LoggingWorker {
                                 text_file,
                                 &self.line_ending,
                                 // self.settings.timestamps,
-                                LoggingLineType::RxLine,
+                                LoggingLineType::Rx,
                             )?;
                         }
                         DefmtSupport::FramedRzcobs
@@ -407,7 +407,7 @@ impl LoggingWorker {
                         text_file,
                         &self.line_ending,
                         // self.settings.timestamps,
-                        LoggingLineType::RxLine,
+                        LoggingLineType::Rx,
                     )?;
                 };
             }
@@ -432,7 +432,7 @@ impl LoggingWorker {
                     text_file,
                     &self.line_ending,
                     // self.settings.timestamps,
-                    LoggingLineType::TxLine { line_ending },
+                    LoggingLineType::Tx { line_ending },
                 )?;
             }
             LoggingCommand::LineEndingChange(new_ending) => self.line_ending = new_ending,
@@ -540,7 +540,7 @@ impl LoggingWorker {
             };
 
             let mut text = format!("defmt table missing, can't decode ({defmt_encoding}): ");
-            text.extend(unconsumed_buf.into_iter().map(|b| format!("{b:X}")));
+            text.extend(unconsumed_buf.iter().map(|b| format!("{b:X}")));
 
             if !self.last_rx_completed {
                 write_line_ending(text_file)?;
@@ -554,7 +554,7 @@ impl LoggingWorker {
                 true,
                 text_file,
                 &LineEnding::None,
-                LoggingLineType::DefmtRxLine,
+                LoggingLineType::DefmtRx,
             )?;
             write_line_ending(text_file)?;
 
@@ -589,7 +589,7 @@ impl LoggingWorker {
                             self.last_rx_completed,
                             text_file,
                             &LineEnding::None,
-                            LoggingLineType::DefmtRxLine,
+                            LoggingLineType::DefmtRx,
                         )?;
 
                         break;
@@ -618,7 +618,7 @@ impl LoggingWorker {
                             self.last_rx_completed,
                             text_file,
                             &LineEnding::None,
-                            LoggingLineType::DefmtRxLine,
+                            LoggingLineType::DefmtRx,
                         )?;
 
                         unconsumed_buf.drain(..unconsumed_len - rest.len());
@@ -644,7 +644,7 @@ impl LoggingWorker {
                                 true,
                                 text_file,
                                 &LineEnding::None,
-                                LoggingLineType::DefmtRxLine,
+                                LoggingLineType::DefmtRx,
                             )?;
 
                             unconsumed_buf.drain(..unconsumed_len - rest.len());
@@ -677,7 +677,7 @@ impl LoggingWorker {
                                     self.last_rx_completed,
                                     text_file,
                                     &LineEnding::None,
-                                    LoggingLineType::DefmtRxLine,
+                                    LoggingLineType::DefmtRx,
                                 )?;
 
                                 unconsumed_buf.drain(..unconsumed_len - rest.len());
@@ -703,7 +703,7 @@ impl LoggingWorker {
                                         self.last_rx_completed,
                                         text_file,
                                         &LineEnding::None,
-                                        LoggingLineType::DefmtRxLine,
+                                        LoggingLineType::DefmtRx,
                                     )?;
 
                                     unconsumed_buf.drain(..unconsumed_len - rest.len());
@@ -719,7 +719,7 @@ impl LoggingWorker {
                                 self.last_rx_completed,
                                 text_file,
                                 &self.line_ending,
-                                LoggingLineType::RxLine,
+                                LoggingLineType::Rx,
                             )?;
                         }
                         DelimitedSlice::DefmtRaw(_) => unreachable!(),
@@ -834,10 +834,10 @@ impl LoggingWorker {
         match self.settings.log_file_type {
             LoggingType::Both => {
                 if self.raw_file.is_none() {
-                    self.raw_file = Some(make_binary_log().map(Into::into)?);
+                    self.raw_file = Some(make_binary_log()?);
                 }
                 if self.text_file.is_none() {
-                    self.text_file = Some(make_text_log(port_info).map(Into::into)?);
+                    self.text_file = Some(make_text_log(port_info)?);
                 }
             }
             LoggingType::Binary => {
@@ -847,7 +847,7 @@ impl LoggingWorker {
                     text_file.sync_all()?;
                 }
                 if self.raw_file.is_none() {
-                    self.raw_file = Some(make_binary_log().map(Into::into)?);
+                    self.raw_file = Some(make_binary_log()?);
                 }
             }
             LoggingType::Text => {
@@ -857,7 +857,7 @@ impl LoggingWorker {
                     raw_file.sync_all()?;
                 }
                 if self.text_file.is_none() {
-                    self.text_file = Some(make_text_log(port_info).map(Into::into)?);
+                    self.text_file = Some(make_text_log(port_info)?);
                 }
             }
         }
@@ -911,7 +911,7 @@ fn write_header_to_text_file(
 
 /// Output a line ending, not for rendering [`LineEndings`].
 fn write_line_ending(file: &mut fs::File) -> Result<(), std::io::Error> {
-    file.write_all(&[b'\n'])
+    file.write_all(b"\n")
 }
 
 fn write_buffer_to_text_file(
@@ -924,8 +924,8 @@ fn write_buffer_to_text_file(
     // with_timestamp: bool,
     line_type: LoggingLineType,
 ) -> Result<bool, std::io::Error> {
-    let is_tx_line = matches!(&line_type, LoggingLineType::TxLine { .. });
-    let appendable_text = matches!(&line_type, LoggingLineType::RxLine);
+    let is_tx_line = matches!(&line_type, LoggingLineType::Tx { .. });
+    let appendable_text = matches!(&line_type, LoggingLineType::Rx);
     let timestamp_string = if timestamp_fmt.trim().is_empty() {
         None
     } else {
@@ -938,7 +938,7 @@ fn write_buffer_to_text_file(
                 let line_capacity = orig.len();
                 let mut output = String::with_capacity(line_capacity);
                 if let Some(timestamp_str) = &timestamp_string {
-                    output.push_str(&timestamp_str);
+                    output.push_str(timestamp_str);
                     output.push_str(": ");
                 }
                 if is_tx_line {
@@ -962,7 +962,7 @@ fn write_buffer_to_text_file(
         for c in orig.escape_ascii() {
             text_file.write_all(&[c])?;
         }
-        if let LoggingLineType::TxLine { line_ending } = &line_type {
+        if let LoggingLineType::Tx { line_ending } = &line_type {
             for c in line_ending.escape_ascii() {
                 text_file.write_all(&[c])?;
             }
@@ -984,7 +984,7 @@ fn write_defmt_frame_to_text_file(
     timestamp_fmt: &str,
     frame: &defmt_decoder::Frame,
     table: &super::defmt::DefmtDecoder,
-    mut last_line_was_completed: bool,
+    last_line_was_completed: bool,
     text_file: &mut fs::File,
 ) -> Result<bool, std::io::Error> {
     let timestamp_string = if timestamp_fmt.trim().is_empty() {
@@ -999,7 +999,7 @@ fn write_defmt_frame_to_text_file(
         let mut output = String::new();
 
         if let Some(timestamp_str) = &timestamp_string {
-            output.push_str(&timestamp_str);
+            output.push_str(timestamp_str);
             output.push_str(": ");
         }
 

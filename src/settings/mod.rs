@@ -528,19 +528,19 @@ pub struct PortSettings {
     /// Line endings for RX'd data.
     #[table(display = ["\\n", "\\r", "\\r\\n", "None"])]
     #[table(rename = "RX Line Ending")]
-    #[table(values = [RxLineEnding::Preset("\\n", &[b'\n']), RxLineEnding::Preset("\\r", &[b'\r']), RxLineEnding::Preset("\\r\\n", &[b'\r', b'\n']), RxLineEnding::Preset("", &[])])]
+    #[table(values = [RxLineEnding::Preset("\\n", b"\n"), RxLineEnding::Preset("\\r", b"\r"), RxLineEnding::Preset("\\r\\n", b"\\r\\n"), RxLineEnding::Preset("", b"")])]
     #[table(allow_unknown_values)]
     #[serde(
         serialize_with = "serialize_as_string",
         deserialize_with = "deserialize_from_str"
     )]
-    #[serde_inline_default(RxLineEnding::Preset("\\n", &[b'\n']))]
+    #[serde_inline_default(RxLineEnding::Preset("\\n", b"\\n"))]
     pub rx_line_ending: RxLineEnding,
 
     /// Line endings for TX'd data.
     #[table(display = ["Inherit RX", "\\n", "\\r", "\\r\\n", "None"])]
     #[table(rename = "TX Line Ending")]
-    #[table(values = [TxLineEnding::InheritRx, TxLineEnding::Preset("\\n", &[b'\n']), TxLineEnding::Preset("\\r", &[b'\r']), TxLineEnding::Preset("\\r\\n", &[b'\r', b'\n']), TxLineEnding::Preset("", &[])])]
+    #[table(values = [TxLineEnding::InheritRx, TxLineEnding::Preset("\\n", b"\\n"), TxLineEnding::Preset("\\r", b"\\r"), TxLineEnding::Preset("\\r\\n", b"\\r\\n"), TxLineEnding::Preset("", b"")])]
     #[table(allow_unknown_values)]
     #[serde(
         serialize_with = "serialize_as_string",
@@ -552,7 +552,7 @@ pub struct PortSettings {
     #[cfg(feature = "macros")]
     /// Default line ending for sent macros.
     #[table(display = ["Inherit TX", "Inherit RX", "\\n", "\\r", "\\r\\n", "None"])]
-    #[table(values = [MacroTxLineEnding::InheritTx, MacroTxLineEnding::InheritRx, MacroTxLineEnding::Preset("\\n", &[b'\n']), MacroTxLineEnding::Preset("\\r", &[b'\r']), MacroTxLineEnding::Preset("\\r\\n", &[b'\r', b'\n']), MacroTxLineEnding::Preset("", &[])])]
+    #[table(values = [MacroTxLineEnding::InheritTx, MacroTxLineEnding::InheritRx, MacroTxLineEnding::Preset("\\n", b"\\n"), MacroTxLineEnding::Preset("\\r", b"\\r"), MacroTxLineEnding::Preset("\\r\\n", b"\\r\\n"), MacroTxLineEnding::Preset("", b"")])]
     #[table(allow_unknown_values)]
     #[serde(
         serialize_with = "serialize_as_string",
@@ -592,8 +592,10 @@ impl Default for PortSettings {
 impl Settings {
     pub fn load(path: &Path, required: bool) -> color_eyre::Result<Self> {
         if !path.exists() && !required {
-            let mut default = Settings::default();
-            default.path = path.into();
+            let default = Settings {
+                path: path.into(),
+                ..Default::default()
+            };
             default.save()?;
             return Ok(default);
         } else if !path.exists() && required {

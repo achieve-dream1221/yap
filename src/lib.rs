@@ -107,7 +107,7 @@ fn run_inner() -> color_eyre::Result<()> {
                     MouseEventKind::ScrollDown => {
                         send_event(CrosstermEvent::MouseScroll { up: false })?;
                     }
-                    MouseEventKind::Down(button) if matches!(button, MouseButton::Right) => {
+                    MouseEventKind::Down(MouseButton::Right) => {
                         send_event(CrosstermEvent::RightClick)?;
                     }
                     _ => (),
@@ -144,9 +144,8 @@ fn run_inner() -> color_eyre::Result<()> {
     // if let Err(e) = crokey::Combiner::default().enable_combining() {
     //     error!("Failed to enable key combining! {e}");
     // };
-    let result = App::new(tx, rx).run(terminal);
 
-    result
+    App::new(tx, rx).run(terminal)
 }
 
 pub fn initialize_logging(max_level: Level) -> color_eyre::Result<WorkerGuard> {

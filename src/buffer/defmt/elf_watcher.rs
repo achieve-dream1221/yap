@@ -161,7 +161,7 @@ impl ElfWatchWorker {
 
             match self.command_rx.try_recv() {
                 Ok(ElfWatchCommand::Shutdown(shutdown_tx)) => {
-                    if let Err(_) = shutdown_tx.send(()) {
+                    if shutdown_tx.send(()).is_err() {
                         error!("Failed to reply to shutdown request!");
                         break Err(ElfWatchError::ShutdownReply);
                     } else {

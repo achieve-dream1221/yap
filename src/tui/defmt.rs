@@ -55,7 +55,7 @@ impl Drop for DefmtHelpers {
         debug!("Shutting down file watcher");
         if self.watcher_handle.shutdown().is_ok() {
             let watcher = self.watcher_join_handle.take();
-            if let Err(_) = watcher.join() {
+            if watcher.join().is_err() {
                 error!("File watcher thread closed with an error!");
             }
         }

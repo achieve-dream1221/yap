@@ -2,8 +2,8 @@ use bstr::{ByteSlice, ByteVec};
 use compact_str::{CompactString, ToCompactString};
 use std::{convert::Infallible, str::FromStr};
 
-pub const PRESET_LINE_ENDINGS: &[&'static str] = &["\n", "\r", "\r\n", ""];
-pub const PRESET_LINE_ENDINGS_ESCAPED: &[&'static str] = &["\\n", "\\r", "\\r\\n", ""];
+pub const PRESET_LINE_ENDINGS: &[&str] = &["\n", "\r", "\r\n", ""];
+pub const PRESET_LINE_ENDINGS_ESCAPED: &[&str] = &["\\n", "\\r", "\\r\\n", ""];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RxLineEnding {
@@ -15,7 +15,7 @@ impl RxLineEnding {
     pub fn preview(&self) -> &str {
         match self {
             RxLineEnding::Preset(preset, _) => preset,
-            RxLineEnding::Custom(custom, _) => &custom,
+            RxLineEnding::Custom(custom, _) => custom,
         }
     }
     pub fn as_bytes(&self) -> &[u8] {
@@ -85,7 +85,7 @@ impl TxLineEnding {
         match self {
             TxLineEnding::InheritRx => rx.preview(),
             TxLineEnding::Preset(preset, _) => preset,
-            TxLineEnding::Custom(custom, _) => &custom,
+            TxLineEnding::Custom(custom, _) => custom,
         }
     }
     pub fn as_bytes<'a>(&'a self, rx: &'a RxLineEnding) -> &'a [u8] {
@@ -161,7 +161,7 @@ impl MacroTxLineEnding {
             MacroTxLineEnding::InheritRx => rx.preview(),
             MacroTxLineEnding::InheritTx => tx.preview(rx),
             MacroTxLineEnding::Preset(preset, _) => preset,
-            MacroTxLineEnding::Custom(custom, _) => &custom,
+            MacroTxLineEnding::Custom(custom, _) => custom,
         }
     }
     pub fn as_bytes<'a>(&'a self, rx: &'a RxLineEnding, tx: &'a TxLineEnding) -> &'a [u8] {

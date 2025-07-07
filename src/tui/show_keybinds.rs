@@ -152,7 +152,7 @@ pub fn show_keybinds(
         //         (_,ActionOption::Unrecognized(_)) => unreachable!(),
         //     }
         // })
-        .map(|(kc, action_opt)| {
+        .flat_map(|(kc, action_opt)| {
             let key_combo = kc.to_string();
 
             let mut lines = Vec::new();
@@ -198,7 +198,6 @@ pub fn show_keybinds(
             // last_discriminant = action.discriminant();
             lines
         })
-        .flatten()
         .collect()
         // .partition(|l| !l.spans.iter().any(|s|s.style == Style::new().yellow()))
     ;
@@ -222,57 +221,52 @@ pub fn show_keybinds(
                 .bold()
                 .yellow(),
         );
-        rows.extend(unknowns.into_iter());
+        rows.extend(unknowns);
         rows.push(Line::default());
     }
 
-    rows.extend(single_action_binds.into_iter());
+    rows.extend(single_action_binds);
 
     if !all_chains.is_empty() {
         rows.push(Line::default());
         rows.push(Line::raw("Action Chain Keybinds:").centered().bold());
         rows.push(Line::default());
 
-        let chain_rows = all_chains
-            .into_iter()
-            .map(|(kc, v)| {
-                let key_combo = kc.to_string();
+        let chain_rows = all_chains.into_iter().flat_map(|(kc, v)| {
+            let key_combo = kc.to_string();
 
-                let mut rows = Vec::new();
-                let space = " ";
-                for action in v {
-                    let space_amt = if matches!(action, ActionOption::Recognized(Action::Pause(_)))
-                    {
-                        max_keycombo_length + 1
-                    } else {
-                        max_keycombo_length
-                    };
-
-                    let line = line![
-                        format!("{space:space_amt$} - "),
-                        span!(action_style(&action); "{action}")
-                    ];
-                    max_line_length = max_line_length.max(line.width());
-
-                    rows.push(line);
-                }
-
-                let any_unrecognized = rows
-                    .iter()
-                    .map(|l| l.spans.iter())
-                    .flatten()
-                    .any(|s| s.style == Style::new().yellow());
-                let key_combo_style = if any_unrecognized {
-                    Style::new().yellow()
+            let mut rows = Vec::new();
+            let space = " ";
+            for action in v {
+                let space_amt = if matches!(action, ActionOption::Recognized(Action::Pause(_))) {
+                    max_keycombo_length + 1
                 } else {
-                    Style::new()
+                    max_keycombo_length
                 };
 
-                rows.insert(0, Line::styled(key_combo, key_combo_style));
+                let line = line![
+                    format!("{space:space_amt$} - "),
+                    span!(action_style(&action); "{action}")
+                ];
+                max_line_length = max_line_length.max(line.width());
 
-                rows
-            })
-            .flatten();
+                rows.push(line);
+            }
+
+            let any_unrecognized = rows
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .any(|s| s.style == Style::new().yellow());
+            let key_combo_style = if any_unrecognized {
+                Style::new().yellow()
+            } else {
+                Style::new()
+            };
+
+            rows.insert(0, Line::styled(key_combo, key_combo_style));
+
+            rows
+        });
 
         rows.extend(chain_rows);
     }

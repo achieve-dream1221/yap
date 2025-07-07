@@ -14,12 +14,10 @@ pub fn toggle_logging_button(logging_active: bool) -> Table<'static> {
         Text::raw(toggle_text).centered().italic(),
     ])];
 
-    let option_table = Table::new(
+    Table::new(
         rows,
         [Constraint::Percentage(60), Constraint::Percentage(40)],
     )
     .column_highlight_style(first_column_style)
-    .row_highlight_style(selected_row_style);
-
-    option_table
+    .row_highlight_style(selected_row_style)
 }

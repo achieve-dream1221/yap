@@ -166,7 +166,7 @@ impl ColorRules {
         })
     }
 
-    pub fn apply_onto<'a, 'b>(&self, original: &[u8], mut line: Line<'b>) -> Option<Line<'b>> {
+    pub fn apply_onto<'a>(&self, original: &[u8], mut line: Line<'a>) -> Option<Line<'a>> {
         // Handle mapping between original bytes and visible characters,
         // so that styling with ANSI escapes/arbitrary bytes is handled correctly.
 
@@ -203,7 +203,7 @@ impl ColorRules {
                     // CSI sequences: \x1b[ ... [A-Za-z] (final byte)
                     while esc_end < original.len() {
                         let b = original[esc_end];
-                        if b >= 0x40 && b <= 0x7E {
+                        if (0x40..=0x7E).contains(&b) {
                             esc_end += 1;
                             break;
                         }

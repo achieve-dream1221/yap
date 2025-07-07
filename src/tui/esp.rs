@@ -346,6 +346,7 @@ pub struct Flashing {
     current_action: SegmentAction,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum EspPopup {
     Connecting,
@@ -407,10 +408,7 @@ impl EspFlashHelper {
                     mac_address: mac_address_opt,
                 } = info;
 
-                let mac_address = mac_address_opt
-                    .as_ref()
-                    .map(String::as_str)
-                    .unwrap_or("???");
+                let mac_address = mac_address_opt.as_deref().unwrap_or("???");
 
                 let rows: Vec<Row> = vec![
                     Row::new([
@@ -525,7 +523,7 @@ impl EspFlashHelper {
 
         let border_color = match popup {
             EspPopup::Connected { .. } => Color::Green,
-            EspPopup::Connecting { .. } => Color::Cyan,
+            EspPopup::Connecting => Color::Cyan,
             EspPopup::DeviceInfo { .. } => Color::LightGreen,
             EspPopup::Erasing { .. } => Color::Yellow,
             EspPopup::Flashing { .. } => Color::Blue,
@@ -641,7 +639,6 @@ impl EspFlashHelper {
             EspPopup::DeviceInfo(text) => {
                 frame.render_widget(text, inner_area);
             }
-            _ => (),
         }
     }
     pub fn profiles_table(&self) -> Table {
@@ -659,20 +656,18 @@ impl EspFlashHelper {
                     "Flash BIN!"
                 };
                 Row::new([
-                    Text::raw(format!("{} ", name)).right_aligned(),
+                    Text::raw(format!("{name} ")).right_aligned(),
                     Text::raw(flavor).centered().italic(),
                 ])
             })
             .collect();
 
-        let option_table = Table::new(
+        Table::new(
             rows,
             [Constraint::Percentage(60), Constraint::Percentage(40)],
         )
         .column_highlight_style(first_column_style)
-        .row_highlight_style(selected_row_style);
-
-        option_table
+        .row_highlight_style(selected_row_style)
     }
     pub fn profiles(&self) -> impl DoubleEndedIterator<Item = (&str, bool, bool)> {
         let elf_iter = self.elfs.iter().map(|e| (e.name.as_str(), true, e.ram));
@@ -749,12 +744,10 @@ pub fn espflash_buttons(unchecked_bootloader: bool) -> Table<'static> {
         ]),
     ];
 
-    let option_table = Table::new(
+    Table::new(
         rows,
         [Constraint::Percentage(60), Constraint::Percentage(40)],
     )
     .column_highlight_style(first_column_style)
-    .row_highlight_style(selected_row_style);
-
-    option_table
+    .row_highlight_style(selected_row_style)
 }

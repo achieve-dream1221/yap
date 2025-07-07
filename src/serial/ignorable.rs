@@ -41,8 +41,8 @@ impl std::str::FromStr for IgnoreableUsb {
         let pid = parts.next().ok_or("Missing PID")?;
         let serial = parts.next();
 
-        let vid = u16::from_str_radix(vid, 16).map_err(|e| format!("VID parse error: {}", e))?;
-        let pid = u16::from_str_radix(pid, 16).map_err(|e| format!("PID parse error: {}", e))?;
+        let vid = u16::from_str_radix(vid, 16).map_err(|e| format!("VID parse error: {e}"))?;
+        let pid = u16::from_str_radix(pid, 16).map_err(|e| format!("PID parse error: {e}"))?;
         let serial = serial.map(|s| s.to_string());
 
         Ok(IgnoreableUsb { vid, pid, serial })

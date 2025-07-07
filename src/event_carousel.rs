@@ -138,7 +138,7 @@ impl CarouselWorker {
                     self.events.push(event);
                 }
                 Ok(CarouselCommand::Shutdown(shutdown_tx)) => {
-                    if let Err(_) = shutdown_tx.send(()) {
+                    if shutdown_tx.send(()).is_err() {
                         error!("Failed to reply to shutdown request!");
                         return Err(CarouselError::ShutdownReply);
                     } else {
@@ -179,8 +179,8 @@ impl CarouselWorker {
 
                         ev.interval
                     } else {
-                        let remaining = ev.interval - since_last_send;
-                        remaining
+                        // get the remaining amount of time in our sleep budget
+                        ev.interval - since_last_send
                     };
 
                     shortest.min(until_next_send)

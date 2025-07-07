@@ -28,9 +28,9 @@ fn print_separator() -> Result<(), std::io::Error> {
     let separator: String = format!(
         // ANSI Dark Gray then Reset
         "\x1b[90m{}\x1b[0m",
-        std::iter::repeat("#").take(x as usize).collect::<String>()
+        std::iter::repeat_n("#", x as usize).collect::<String>()
     );
-    println!("{}", separator);
+    println!("{separator}");
     Ok(())
 }
 

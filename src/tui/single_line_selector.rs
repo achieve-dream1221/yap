@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, iter::repeat_n};
 
 use num_integer::Integer;
 use ratatui::{
@@ -148,9 +148,9 @@ impl StatefulWidget for &SingleLineSelector<'_> {
             space_iter
                 .clone()
                 .chain(once(prev_span))
-                .chain(repeat(Span::raw(" ")).take(left.max(1)))
+                .chain(repeat_n(Span::raw(" "), left.max(1)))
                 .chain(borrowed_line)
-                .chain(repeat(Span::raw(" ")).take(right.max(1)))
+                .chain(repeat_n(Span::raw(" "), right.max(1)))
                 .chain(once(next_span))
                 .chain(space_iter)
         };
@@ -165,8 +165,7 @@ impl StatefulWidget for &SingleLineSelector<'_> {
         //     line = line.styl
         // }
 
-        let reset_line =
-            Line::from_iter(repeat(Span::raw(" ").reset()).take(line.width())).centered();
+        let reset_line = Line::from_iter(repeat_n(Span::raw(" ").reset(), line.width())).centered();
         reset_line.render(area, buf);
         line.render(area, buf);
         // if state.content_length == 0 || self.track_length_excluding_arrow_heads(area) == 0 {

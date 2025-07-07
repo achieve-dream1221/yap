@@ -229,7 +229,7 @@ impl BufLine {
             unreachable!();
         };
 
-        if let Some(escaped) = line_ending.escaped_from(&kit.full_range_slice.slice) {
+        if let Some(escaped) = line_ending.escaped_from(kit.full_range_slice.slice) {
             _ = escaped_line_ending.insert(escaped);
         };
 
@@ -312,7 +312,7 @@ impl BufLine {
         fn shorten_file_path(full_file_path: &str) -> &str {
             full_file_path
                 .split(&['/', '\\'])
-                .last()
+                .next_back()
                 .unwrap_or(full_file_path)
         }
 
@@ -335,6 +335,7 @@ impl BufLine {
                 let file = &defmt.show_file;
                 let line_num = defmt.show_line_number;
 
+                #[allow(clippy::single_match)]
                 match (module, file, line_num) {
                     (DefmtLocation::Hidden, DefmtLocation::Hidden, false) => return None,
                     _ => (),
@@ -387,6 +388,7 @@ impl BufLine {
             LineType::Port {
                 escaped_line_ending: None,
             } => None,
+            // TODO figure this out
             LineType::User {
                 escaped_line_ending: Some(line_ending),
                 ..

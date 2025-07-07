@@ -173,6 +173,7 @@ impl UserEcho {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum LineEnding {
     None,
@@ -288,13 +289,11 @@ impl From<&[u8]> for LineEnding {
     fn from(value: &[u8]) -> Self {
         if value.is_empty() {
             LineEnding::None
+        } else if value.len() == 1 {
+            LineEnding::Byte(value[0])
         } else {
-            if value.len() == 1 {
-                LineEnding::Byte(value[0])
-            } else {
-                let finder = Finder::new(value).into_owned();
-                LineEnding::MultiByte(finder)
-            }
+            let finder = Finder::new(value).into_owned();
+            LineEnding::MultiByte(finder)
         }
     }
 }
@@ -468,7 +467,7 @@ impl StyledLines {
             unreachable!()
         };
 
-        for (trunc, orig, indices) in line_ending_iter(slice, &line_ending) {
+        for (trunc, orig, indices) in line_ending_iter(slice, line_ending) {
             // index = self.raw.inner.len();
 
             // if let Some(index) = self.index_of_incomplete_line.take() {
@@ -495,7 +494,7 @@ impl StyledLines {
                 } else {
                     LossyFlavor::replacement_char()
                 };
-                let mut line = match trunc.into_line_lossy(Style::new(), lossy_flavor) {
+                let line = match trunc.into_line_lossy(Style::new(), lossy_flavor) {
                     Ok(line) => line,
                     Err(_) => {
                         error!("ansi-to-tui failed to parse input! Using unstyled text.");
@@ -518,13 +517,13 @@ impl StyledLines {
                         ..kit
                     };
 
-                    last_line.update_line(line, kit, &line_ending);
+                    last_line.update_line(line, kit, line_ending);
                 } else {
                     _ = self.rx.pop();
                     self.last_rx_was_complete = true;
                     // last_line.clear_line();
                 }
-                self.last_rx_was_complete = orig.has_line_ending(&line_ending);
+                self.last_rx_was_complete = orig.has_line_ending(line_ending);
                 continue;
             }
 
@@ -538,7 +537,7 @@ impl StyledLines {
             if let Some(new_bufline) = slice_as_port_text(kit, color_rules, line_ending) {
                 self.rx.push(new_bufline);
             }
-            self.last_rx_was_complete = orig.has_line_ending(&line_ending);
+            self.last_rx_was_complete = orig.has_line_ending(line_ending);
         }
     }
     #[cfg(feature = "defmt")]
@@ -657,7 +656,7 @@ impl Drop for Buffer {
         if self.log_handle.shutdown().is_ok() {
             let log_thread = self.log_thread.take();
 
-            if let Err(_) = log_thread.join() {
+            if log_thread.join().is_err() {
                 error!("Logging thread closed with an error!");
             }
         }
@@ -770,19 +769,18 @@ impl Buffer {
             let text: Span = bytes
                 .iter()
                 .chain(line_ending.iter())
-                .map(|b| format!("\\x{:02X}", b))
+                .map(|b| format!("\\x{b:02X}"))
                 .join("")
                 .into();
-            let text = text.dark_gray().italic().bold();
 
-            text
+            text.dark_gray().italic().bold()
         } else {
             span!(Style::new().dark_gray(); "*".repeat(bytes.len()))
         };
 
         let line = Line::from(vec![user_span, text]);
 
-        let combined: Vec<_> = bytes.iter().chain(line_ending.iter()).map(|b| *b).collect();
+        let combined: Vec<_> = bytes.iter().chain(line_ending.iter()).copied().collect();
         let line_ending: LineEnding = line_ending.into();
 
         // line.spans.insert(0, user_span.clone());
@@ -869,8 +867,7 @@ impl Buffer {
                 line
             } else {
                 let text = span!(Style::new().dark_gray(); "*".repeat(trunc.len()));
-                let line = Line::from(vec![user_span.clone(), text]);
-                line
+                Line::from(vec![user_span.clone(), text])
             };
 
             // let user_buf_line = BufLine::new_with_line(
@@ -923,14 +920,14 @@ impl Buffer {
     }
 
     // Forced to use Vec<u8> for now
-    pub fn fresh_rx_bytes(&mut self, bytes: &mut Vec<u8>) {
+    pub fn fresh_rx_bytes(&mut self, bytes: &[u8]) {
         let now = Local::now();
         // debug!("{lines:?}");
         // debug!("{:#?}", self.lines);
         #[cfg(feature = "logging")]
-        self.log_handle.log_rx_bytes(now, bytes.clone()).unwrap();
+        self.log_handle.log_rx_bytes(now, bytes.to_owned()).unwrap();
 
-        self.raw.feed(&bytes, now);
+        self.raw.feed(bytes, now);
 
         // let meow = std::time::Instant::now();
         self.consume_latest_bytes(now);
@@ -1016,7 +1013,7 @@ impl Buffer {
                             },
                         };
 
-                        match decoder.table.decode(&raw_uncompressed) {
+                        match decoder.table.decode(raw_uncompressed) {
                             Ok((frame, consumed)) => {
                                 self.styled_lines.consume_frame(
                                     kit,
@@ -1144,7 +1141,7 @@ impl Buffer {
             &mut self.raw,
             RawBuffer::with_capacities(orig_buf_len, timestamps_len),
         );
-        let user_echo = self.rendering.echo_user_input.clone();
+        let user_echo = self.rendering.echo_user_input;
 
         // No lines to append to.
         self.styled_lines.last_rx_was_complete = true;
@@ -1365,7 +1362,7 @@ fn slice_as_port_text(
         slice: original,
     } = &kit.full_range_slice;
 
-    let truncated = if original.has_line_ending(&line_ending) {
+    let truncated = if original.has_line_ending(line_ending) {
         &original[..original.len() - line_ending.as_bytes().len()]
     } else {
         original
@@ -1379,13 +1376,9 @@ fn slice_as_port_text(
         }
     };
 
-    let line_opt = color_rules.apply_onto(truncated, line);
-
-    if let Some(line) = line_opt {
-        Some(BufLine::port_text_line(line, kit, &line_ending))
-    } else {
-        None
-    }
+    color_rules
+        .apply_onto(truncated, line)
+        .map(|line| BufLine::port_text_line(line, kit, line_ending))
 }
 
 /// Returns an iterator over the given byte slice, seperated by (and excluding) the given line ending byte slice.
@@ -1443,31 +1436,29 @@ fn _line_ending_iter<'a>(
 
     let mut last_index = 0;
 
-    let slices_iter =
-        line_ending_pos_iter.filter_map(move |(line_ending_index, is_final_entry)| {
-            let result = if is_final_entry && last_index == bytes.len() && bytes.len() != 0 {
-                return None;
-            } else if is_final_entry {
-                (
-                    &bytes[last_index..],
-                    &bytes[last_index..],
-                    (last_index, bytes.len()),
-                )
-            } else {
-                // Copy of `last_index` since we're about to modify it,
-                // but we want to use the unmodified value.
-                let index_copy = last_index;
-                // Adding the length of the line ending to exclude it's presence
-                // from the next line.
-                last_index = line_ending_index + le_len;
-                (
-                    &bytes[index_copy..line_ending_index],
-                    &bytes[index_copy..line_ending_index + le_len],
-                    (index_copy, line_ending_index + le_len),
-                )
-            };
-            Some(result)
-        });
-
-    slices_iter
+    // iter of continuous slices, non-overlapping
+    line_ending_pos_iter.filter_map(move |(line_ending_index, is_final_entry)| {
+        let result = if is_final_entry && last_index == bytes.len() && !bytes.is_empty() {
+            return None;
+        } else if is_final_entry {
+            (
+                &bytes[last_index..],
+                &bytes[last_index..],
+                (last_index, bytes.len()),
+            )
+        } else {
+            // Copy of `last_index` since we're about to modify it,
+            // but we want to use the unmodified value.
+            let index_copy = last_index;
+            // Adding the length of the line ending to exclude it's presence
+            // from the next line.
+            last_index = line_ending_index + le_len;
+            (
+                &bytes[index_copy..line_ending_index],
+                &bytes[index_copy..line_ending_index + le_len],
+                (index_copy, line_ending_index + le_len),
+            )
+        };
+        Some(result)
+    })
 }

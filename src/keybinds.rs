@@ -1,3 +1,6 @@
+// Since I can't rely on prefix from strum
+#![allow(clippy::enum_variant_names)]
+
 use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
@@ -249,7 +252,7 @@ impl FromStr for AppAction {
             return Ok(AppAction::ShowDefmtSelect(defmt_select));
         }
 
-        Err(format!("Unrecognized AppAction variant for string: {}", s))
+        Err(format!("Unrecognized AppAction variant for string: {s}"))
     }
 }
 
@@ -379,13 +382,10 @@ impl Keybinds {
                     return false;
                 }
 
-                if let Ok(AppAction::Popup(ShowPopupAction::ShowPortSettings)) =
-                    actions[0].parse::<AppAction>()
-                {
-                    true
-                } else {
-                    false
-                }
+                matches!(
+                    actions[0].parse::<AppAction>(),
+                    Ok(AppAction::Popup(ShowPopupAction::ShowPortSettings))
+                )
             })
             .map(|(kc, _)| kc.to_compact_string());
     }
@@ -402,9 +402,7 @@ impl Keybinds {
 
         let user_settings: Self = toml::from_str(input)?;
 
-        overridable
-            .keybindings
-            .extend(user_settings.keybindings.into_iter());
+        overridable.keybindings.extend(user_settings.keybindings);
 
         overridable.fill_port_settings_hint();
 

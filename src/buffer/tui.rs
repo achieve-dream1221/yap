@@ -221,7 +221,10 @@ impl Buffer {
             }
             // Scroll down
             x if up < 0 => {
-                self.state.vert_scroll = self.state.vert_scroll.saturating_add(x.abs() as usize);
+                self.state.vert_scroll = self
+                    .state
+                    .vert_scroll
+                    .saturating_add(x.unsigned_abs() as usize);
             }
             _ => unreachable!(),
         }
@@ -422,6 +425,8 @@ impl Buffer {
                     .saturating_sub(1) // space between bytes
                 ;
 
+                #[allow(clippy::mut_range_bound)]
+                // doesn't see the break right there >:C
                 if bytes_per_line != 0 && bytes_per_line % 8 == 0 {
                     if remaining_width < 4 {
                         break;
@@ -601,7 +606,7 @@ impl Buffer {
         if !self.state.stuck_to_bottom {
             let scroll_notice = Line::raw("More... Shift+PgDn to jump to newest").dark_gray();
             let notice_area = {
-                let mut rect = area.clone();
+                let mut rect = area;
                 rect.y = rect.bottom().saturating_sub(1);
                 rect.height = 1;
                 rect
@@ -770,7 +775,7 @@ fn byte_markers(bytes_per_line: u8, area: Rect, buf: &mut ratatui::prelude::Buff
         }
 
         spans.push(ratatui::text::Span::styled(
-            format!("{:02X}", i),
+            format!("{i:02X}"),
             Style::default().dark_gray(),
         ));
     }
@@ -928,7 +933,7 @@ impl Widget for &mut Buffer {
         if !self.state.stuck_to_bottom {
             let scroll_notice = Line::raw("More... Shift+PgDn to jump to newest").dark_gray();
             let notice_area = {
-                let mut rect = area.clone();
+                let mut rect = area;
                 rect.y = rect.bottom().saturating_sub(1);
                 rect.height = 1;
                 rect
