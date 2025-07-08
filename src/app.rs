@@ -697,6 +697,9 @@ impl App {
                 self.buffer.scroll_by(0);
                 self.user_broke_connection = false;
             }
+            Event::Serial(SerialEvent::ConnectionFailed(err)) => {
+                todo!("{err}")
+            }
             Event::Serial(SerialEvent::Disconnected(reason)) => {
                 #[cfg(feature = "espflash")]
                 self.espflash.reset_popup();

@@ -97,13 +97,6 @@ pub fn run() -> color_eyre::Result<()> {
         fs::create_dir_all(root_path)?;
     }
 
-    // TODO remove this
-    // let working_directory = determine_working_directory().unwrap();
-    // if !working_directory.exists() {
-    // fs::create_dir(&working_directory)?;
-    // }
-    // std::env::set_current_dir(&working_directory).expect("Failed to change working directory");
-
     let listener_address: SocketAddr = "127.0.0.1:7331".parse().unwrap();
 
     let mut log_path = config_adjacent_path(get_executable_name());
@@ -201,7 +194,6 @@ fn run_inner(cli_args: YapCli) -> color_eyre::Result<()> {
     }
 
     if let Some(port) = cli_args.port {
-        // TODO use const baud for unwrap
         let mut usb_split = port.split(':');
         let first_part = usb_split.next();
         let second_part = usb_split.next();

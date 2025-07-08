@@ -5,5 +5,5 @@ fn main() -> color_eyre::Result<()> {
 // TODO mouse select in line mode?
 
 // Far future TODOs:
-// TODO Forwarding + Loopback support
+// TODO Serial Forwarding + Loopback support
 // TODO TCP Socket support

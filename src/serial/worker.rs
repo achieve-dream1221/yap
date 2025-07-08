@@ -260,10 +260,14 @@ impl SerialWorker {
     fn handle_worker_command(&mut self, command: SerialWorkerCommand) -> Result<(), WorkerError> {
         match command {
             SerialWorkerCommand::Connect { port, settings } => {
-                // TODO figure out error flow with this and espflash stuff
-                // maybe just put on top level like the others?
                 self.update_settings(settings)?;
-                self.connect_to_port(&port, None)?;
+                match self.connect_to_port(&port, None) {
+                    Ok(()) => (),
+                    Err(WorkerError::SerialPort(e)) => self
+                        .event_tx
+                        .send(SerialEvent::ConnectionFailed(e).into())?,
+                    Err(e) => return Err(e),
+                }
             }
             SerialWorkerCommand::CliConnect {
                 port,
