@@ -217,9 +217,10 @@ fn run_inner(cli_args: YapCli) -> color_eyre::Result<()> {
                 app.try_cli_connect(port_info, cli_args.baud)?;
                 let terminal = ratatui::init();
                 crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-                app.run(terminal)?;
+                let result = app.run(terminal);
                 ratatui::restore();
                 crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+                result
             }
             // assume USB VID:PID[:SERIAL] format
             (Some(vid_str), Some(pid_str), serial) => {
@@ -237,22 +238,22 @@ fn run_inner(cli_args: YapCli) -> color_eyre::Result<()> {
                 app.try_cli_connect(port_info, cli_args.baud)?;
                 let terminal = ratatui::init();
                 crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-                app.run(terminal)?;
+                let result = app.run(terminal);
                 ratatui::restore();
                 crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+                result
             }
             _ => {
                 return Err(color_eyre::eyre::eyre!("Invalid USB address format"));
             }
         }
-        Ok(())
     } else {
         let terminal = ratatui::init();
         crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-        app.run(terminal)?;
+        let result = app.run(terminal);
         ratatui::restore();
         crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
-        Ok(())
+        result
     }
 }
 

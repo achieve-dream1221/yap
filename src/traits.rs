@@ -252,23 +252,51 @@ impl LineMutator for Line<'_> {
                         // Entire span is inside range, style whole span.
                         span.style = style;
                     } else {
-                        let (pre, mid, post) =
-                            split_span_content(&span.content, offset_start, offset_end);
                         let orig_style = span.style;
 
-                        let mut new_spans = Vec::new();
-                        // TODO try to borrow again if already borrowed
-                        // naive attempt with cow:borrowed didn't work due to borrow checkin' nonsense
-                        if !pre.is_empty() {
-                            new_spans.push(Span::styled(Cow::Owned(pre.to_string()), orig_style));
+                        match &span.content {
+                            // Try to borrow again if already borrowed
+                            Cow::Borrowed(borrowed) => {
+                                let (pre, mid, post) =
+                                    split_span_content(borrowed, offset_start, offset_end);
+                                let mut new_spans = Vec::new();
+                                if !pre.is_empty() {
+                                    new_spans.push(Span::styled(Cow::Borrowed(pre), orig_style));
+                                }
+                                if !mid.is_empty() {
+                                    new_spans.push(Span::styled(Cow::Borrowed(mid), style));
+                                }
+                                if !post.is_empty() {
+                                    new_spans.push(Span::styled(Cow::Borrowed(post), orig_style));
+                                }
+                                spans.splice(index..=index, new_spans);
+                            }
+                            // Otherwise, we need to make our own owned versions
+                            // (turned into a match branch here to give the borrow checker more info on the borrows)
+                            Cow::Owned(owned) => {
+                                let (pre, mid, post) =
+                                    split_span_content(owned, offset_start, offset_end);
+
+                                let mut new_spans = Vec::new();
+                                if !pre.is_empty() {
+                                    new_spans.push(Span::styled(
+                                        Cow::Owned(pre.to_string()),
+                                        orig_style,
+                                    ));
+                                }
+                                if !mid.is_empty() {
+                                    new_spans
+                                        .push(Span::styled(Cow::Owned(mid.to_string()), style));
+                                }
+                                if !post.is_empty() {
+                                    new_spans.push(Span::styled(
+                                        Cow::Owned(post.to_string()),
+                                        orig_style,
+                                    ));
+                                }
+                                spans.splice(index..=index, new_spans);
+                            }
                         }
-                        if !mid.is_empty() {
-                            new_spans.push(Span::styled(Cow::Owned(mid.to_string()), style));
-                        }
-                        if !post.is_empty() {
-                            new_spans.push(Span::styled(Cow::Owned(post.to_string()), orig_style));
-                        }
-                        spans.splice(index..=index, new_spans);
                         // Because we changed the spans vector structure, any reference to span is invalid,
                         // so bail out of this function. A re-call would be necessary if the styling range
                         // covers multiple, non-contiguous spans that require additional splitting or updates;
@@ -388,13 +416,13 @@ fn overlap_region(a: (usize, usize), b: (usize, usize)) -> (Option<usize>, Optio
 }
 
 /// Splits the span's content into (pre, mid, post) based on byte offsets.
-/// Assumes offset_start/offset_end are on valid char boundaries.
+///
+/// Assumes offset_start/offset_end are on valid char boundaries, **will panic otherwise!**
 fn split_span_content<'a>(
-    content: &'a Cow<'a, str>,
+    content: &'a str,
     offset_start: usize,
     offset_end: usize,
 ) -> (&'a str, &'a str, &'a str) {
-    let content = content.as_ref();
     let pre = &content[..offset_start];
     let mid = &content[offset_start..offset_end];
     let post = &content[offset_end..];

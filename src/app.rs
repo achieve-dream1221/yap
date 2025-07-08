@@ -593,7 +593,6 @@ impl App {
             // debug!("{msg:?}");
 
             // Don't wait for another loop iteration to start shutting down workers.
-            // TODO convert into a loop {}, but see if clippy notices first (when i dont have 170+ warnings)
             if !self.is_running() {
                 break Ok(());
             }
@@ -1366,7 +1365,10 @@ impl App {
                     .unwrap();
                 return Ok(());
             }
+            // Currently this runs even for action chains that don't need the port,
+            // but that's such a niche/rare thing right now, so meh.
             InnerPortStatus::Idle | InnerPortStatus::PrematureDisconnect => {
+                // InnerPortStatus::Idle | InnerPortStatus::PrematureDisconnect if action.requires_connection() => {
                 let text = if self.action_queue.len() == 1 {
                     "Port isn't ready! Not running action...".into()
                 } else {
@@ -1401,8 +1403,7 @@ impl App {
 
         Ok(())
     }
-    // TODO figure out more error handling
-    // TODO and figure out logic with device connection halting certain actions
+    // Any Err's from here should be considered fatal.
     fn action_dispatch(
         &mut self,
         action: Action,
