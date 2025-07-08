@@ -57,7 +57,7 @@ use crate::{
         worker::{InnerPortStatus, MOCK_PORT_NAME},
     },
     settings::{Behavior, PortSettings, Rendering, Settings},
-    traits::{FirstChars, LastIndex, LineHelpers, ToggleBool},
+    traits::{FirstChars, LastIndex, LineHelpers, RequiresPort, ToggleBool},
     tui::{
         centered_rect_size,
         defmt::DefmtRecentError,
@@ -781,7 +781,7 @@ impl App {
 
                     let reconnections_allowed =
                         self.serial.port_settings.load().reconnections.allowed();
-                    if !port_status.is_healthy()
+                    if !port_status.is_connected()
                         && !port_status.is_lent_out()
                         && reconnections_allowed
                         && !self.user_broke_connection
@@ -1260,13 +1260,37 @@ impl App {
     }
     fn queue_action_set(
         &mut self,
-        actions: Vec<Action>,
+        mut actions: Vec<Action>,
         key_combo_opt: Option<KeyCombination>,
     ) -> Result<()> {
         assert!(
             !actions.is_empty(),
             "should never be asked to queue no actions"
         );
+
+        // If it's just one action, and it's something we can handle now, we should.
+        if actions.len() == 1
+            && let Some(action) = actions.first()
+        {
+            let port_status = &self.serial.port_status.load().inner;
+
+            if action.requires_connection() && !port_status.is_connected() {
+                self.notifs.notify_str(
+                    "Action requires healthy port connection! Not acting...",
+                    Color::Red,
+                );
+                return Ok(());
+            } else if action.requires_terminal_view() && !matches!(self.menu, Menu::Terminal(_)) {
+                self.notifs.notify_str(
+                    "Action requires terminal view active! Not acting...",
+                    Color::Red,
+                );
+                return Ok(());
+            }
+
+            self.action_dispatch(actions.pop().unwrap(), key_combo_opt)?;
+            return Ok(());
+        }
 
         self.action_queue
             .extend(actions.into_iter().map(|a| (key_combo_opt, a)));
@@ -1640,7 +1664,7 @@ impl App {
                 let port_settings_guard = self.serial.port_settings.load();
 
                 if self.user_broke_connection
-                    || (!port_status_guard.inner.is_healthy()
+                    || (!port_status_guard.inner.is_connected()
                         && !port_status_guard.inner.is_lent_out()
                         && !port_settings_guard.reconnections.allowed())
                 {
@@ -2004,7 +2028,7 @@ impl App {
         }
     }
     fn enter_pressed(&mut self, ctrl_pressed: bool, shift_pressed: bool) {
-        let serial_healthy = self.serial.port_status.load().inner.is_healthy();
+        let serial_healthy = self.serial.port_status.load().inner.is_connected();
         let popup_was_some = self.popup.is_some();
         // debug!("{:?}", self.menu);
         use PortSelectionElement as Pse;
@@ -3789,7 +3813,7 @@ impl App {
 
             let port_text = match &port_status_guard.current_port {
                 Some(port_info) => {
-                    if port_state.is_healthy() || port_state.is_lent_out() {
+                    if port_state.is_connected() || port_state.is_lent_out() {
                         let baud_rate = self.serial.port_settings.load().baud_rate;
                         port_info.info_as_string(Some(baud_rate))
                     } else {
@@ -3908,7 +3932,7 @@ impl App {
         };
 
         // TODO have this turn into `§` or something when in bytes mode.
-        let input_symbol = Span::raw(">").style(if port_state.is_healthy() {
+        let input_symbol = Span::raw(">").style(if port_state.is_connected() {
             input_style.not_reversed().green()
         } else {
             input_style.red()

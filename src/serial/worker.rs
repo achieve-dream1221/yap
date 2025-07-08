@@ -1107,22 +1107,13 @@ impl<T> From<crossbeam::channel::SendError<T>> for WorkerError {
 // (between connections and app start)
 // maybe something better will come to me.
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, strum::EnumIs)]
 pub enum InnerPortStatus {
     #[default]
     Idle,
     PrematureDisconnect,
     LentOut,
     Connected,
-}
-
-impl InnerPortStatus {
-    pub fn is_healthy(&self) -> bool {
-        matches!(self, InnerPortStatus::Connected)
-    }
-    pub fn is_lent_out(&self) -> bool {
-        matches!(self, InnerPortStatus::LentOut)
-    }
 }
 
 #[derive(Debug, Clone, Default)]
