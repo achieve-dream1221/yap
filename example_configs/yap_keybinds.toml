@@ -20,13 +20,25 @@ ctrl-r = "show-rendering"
 ctrl-h = "toggle-hex"
 ctrl-l = "show-logging"
 ctrl-k = "show-keybinds"
+ctrl-n = ["Core v2 1.4.0"]
 
 # macros
 F19 = "Restart"
 ctrl-s = "CaiX Vib (ID 12345, 0.5s)"
 ctrl-g = "OpenShock Setup|Echo Off"
-ctrl-j = ["PAUSE_MS:2000", "OpenShock Setup|Factory Reset", "PAUSE_MS:2000", "OpenShock Setup|Factory Reset"]
+ctrl-j = [
+    "PAUSE_MS:2000",
+    "OpenShock Setup|Factory Reset",
+    "PAUSE_MS:2000",
+    "OpenShock Setup|Factory Reset",
+]
 
 # espflash profiles
-F18 = ["Core v2 1.4.0", "pause_ms:1000", "CaiX Vib (ID 12345, 1s)", "Echo Off", "Setup Authtoken and Networks"]
+F18 = [
+    "Core v2 1.4.0",
+    "pause_ms:1000",
+    "CaiX Vib (ID 12345, 1s)",
+    "Echo Off",
+    "Setup Authtoken and Networks",
+]
 shift-F18 = ["esp-erase-flash", "Core v2 1.4.0"]

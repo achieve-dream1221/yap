@@ -2,6 +2,7 @@
 
 use std::{
     net::{SocketAddr, TcpStream},
+    path::Path,
     sync::{Mutex, OnceLock},
     time::Duration,
 };
@@ -9,6 +10,7 @@ use std::{
 use app::{App, CrosstermEvent};
 use camino::Utf8PathBuf;
 
+use clap::Parser;
 use fs_err as fs;
 use panic_handler::initialize_panic_handler;
 use ratatui::crossterm::{
@@ -17,11 +19,15 @@ use ratatui::crossterm::{
     terminal,
 };
 
+use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
 use tracing::{Level, debug, error, info, level_filters::LevelFilter};
 use tracing_appender::non_blocking::WorkerGuard;
 
+use crate::cli::{CliError, YapCli};
+
 mod app;
 mod buffer;
+mod cli;
 mod errors;
 mod event_carousel;
 mod history;
@@ -35,8 +41,7 @@ mod settings;
 mod traits;
 mod tui;
 
-pub static CONFIG_PARENT_PATH_CELL: OnceLock<Utf8PathBuf> = OnceLock::new();
-
+static CONFIG_PARENT_PATH_CELL: OnceLock<Utf8PathBuf> = OnceLock::new();
 pub fn config_adjacent_path<P: Into<Utf8PathBuf>>(path: P) -> Utf8PathBuf {
     let path = path.into();
     let config_path = CONFIG_PARENT_PATH_CELL.get_or_init(|| {
@@ -48,28 +53,73 @@ pub fn config_adjacent_path<P: Into<Utf8PathBuf>>(path: P) -> Utf8PathBuf {
 
     config_path.join(path)
 }
+static EXECUTABLE_FILE_STEM: OnceLock<Utf8PathBuf> = OnceLock::new();
+pub fn get_executable_name() -> Utf8PathBuf {
+    let exec_name = EXECUTABLE_FILE_STEM.get_or_init(|| {
+        let exe_pathbuf = std::env::current_exe().expect("failed to get path of executable");
+        let original = exe_pathbuf.with_extension("toml");
+        let exec_name_str = original
+            .file_stem()
+            .expect("can't have file without name")
+            .to_str()
+            .expect("executable name is not valid utf-8");
 
-/// Wrapper runner so any fatal errors get properly logged.
+        exec_name_str.into()
+    });
+
+    exec_name.to_owned()
+}
+
+/// Wrapper runner so any fatal errors get properly logged, and to
+/// have a clear line between spinning up the whole app and all it's threads,
+/// and just parsing CLI args and possibly exiting early.
 pub fn run() -> color_eyre::Result<()> {
-    initialize_panic_handler()?;
-    let working_directory = determine_working_directory().unwrap();
-    if !working_directory.exists() {
-        fs::create_dir(&working_directory)?;
-    }
-    std::env::set_current_dir(&working_directory).expect("Failed to change working directory");
-    let _log_guard = initialize_logging(Level::TRACE)?;
+    let cli_args = YapCli::parse();
 
-    let result = run_inner();
+    if cli_args.print_actions {
+        keybinds::print_all_actions();
+        return Ok(());
+    }
+
+    // println!("{cli_args:#?}");
+    // return Ok(());
+
+    initialize_panic_handler()?;
+
+    if let Some(path) = &cli_args.config_path {
+        CONFIG_PARENT_PATH_CELL
+            .set(path.to_owned())
+            .expect("expected uninitialized cell");
+    }
+
+    let root_path = config_adjacent_path("");
+    if !root_path.exists() {
+        fs::create_dir_all(root_path)?;
+    }
+
+    // TODO remove this
+    // let working_directory = determine_working_directory().unwrap();
+    // if !working_directory.exists() {
+    // fs::create_dir(&working_directory)?;
+    // }
+    // std::env::set_current_dir(&working_directory).expect("Failed to change working directory");
+
+    let listener_address: SocketAddr = "127.0.0.1:7331".parse().unwrap();
+
+    let mut log_path = config_adjacent_path(get_executable_name());
+    log_path.set_extension("log");
+    println!("{log_path}");
+    let _log_guard = initialize_logging(Level::TRACE, log_path, Some(listener_address))?;
+
+    let result = run_inner(cli_args);
     if let Err(e) = &result {
         error!("Fatal error: {e}");
     }
 
-    ratatui::restore();
-    crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
     result
 }
 
-fn run_inner() -> color_eyre::Result<()> {
+fn run_inner(cli_args: YapCli) -> color_eyre::Result<()> {
     let (tx, rx) = crossbeam::channel::unbounded::<app::Event>();
     let crossterm_tx = tx.clone();
     let crossterm_thread = std::thread::spawn(move || {
@@ -139,30 +189,88 @@ fn run_inner() -> color_eyre::Result<()> {
     //     println!("{p:#?}");
     //     info!("{p:?}");
     // }
-    let terminal = ratatui::init();
-    crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+
     // if let Err(e) = crokey::Combiner::default().enable_combining() {
     //     error!("Failed to enable key combining! {e}");
     // };
 
-    App::new(tx, rx).run(terminal)
+    let mut app = App::new(tx, rx);
+
+    if let Some(defmt_path) = cli_args.defmt_elf {
+        app.try_load_defmt_elf(&defmt_path)?;
+    }
+
+    if let Some(port) = cli_args.port {
+        // TODO use const baud for unwrap
+        let mut usb_split = port.split(':');
+        let first_part = usb_split.next();
+        let second_part = usb_split.next();
+        let third_part = usb_split.next();
+
+        match (first_part, second_part, third_part) {
+            // not a USB address
+            (Some(_), None, None) => {
+                let port_info = SerialPortInfo {
+                    port_name: port,
+                    port_type: SerialPortType::Unknown,
+                };
+                app.try_cli_connect(port_info, cli_args.baud)?;
+                let terminal = ratatui::init();
+                crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+                app.run(terminal)?;
+                ratatui::restore();
+                crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+            }
+            // assume USB VID:PID[:SERIAL] format
+            (Some(vid_str), Some(pid_str), serial) => {
+                let port_info = SerialPortInfo {
+                    port_name: String::new(),
+                    port_type: SerialPortType::UsbPort(UsbPortInfo {
+                        vid: u16::from_str_radix(vid_str, 16).map_err(CliError::VidParse)?,
+                        pid: u16::from_str_radix(pid_str, 16).map_err(CliError::PidParse)?,
+                        serial_number: serial.map(ToOwned::to_owned),
+
+                        manufacturer: None,
+                        product: None,
+                    }),
+                };
+                app.try_cli_connect(port_info, cli_args.baud)?;
+                let terminal = ratatui::init();
+                crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+                app.run(terminal)?;
+                ratatui::restore();
+                crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+            }
+            _ => {
+                return Err(color_eyre::eyre::eyre!("Invalid USB address format"));
+            }
+        }
+        Ok(())
+    } else {
+        let terminal = ratatui::init();
+        crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+        app.run(terminal)?;
+        ratatui::restore();
+        crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+        Ok(())
+    }
 }
 
-pub fn initialize_logging(max_level: Level) -> color_eyre::Result<WorkerGuard> {
+pub fn initialize_logging<P: AsRef<Path>>(
+    max_level: Level,
+    log_file_path: P,
+    log_socket_addr: Option<SocketAddr>,
+) -> color_eyre::Result<WorkerGuard> {
+    let log_file_path = log_file_path.as_ref();
     use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
     // use tracing::info;
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{
         fmt::time::ChronoLocal, layer::SubscriberExt, util::SubscriberInitExt,
     };
-    let log_name = std::env::current_exe()?
-        .with_extension("log")
-        .file_name()
-        .expect("Couldn't build log path!")
-        .to_owned();
     // let console = console_subscriber::spawn();
     let file_appender = BasicRollingFileAppender::new(
-        log_name,
+        log_file_path,
         RollingConditionBasic::new().max_size(1024 * 1024 * 5),
         2,
     )
@@ -188,9 +296,9 @@ pub fn initialize_logging(max_level: Level) -> color_eyre::Result<WorkerGuard> {
         .with(fmt_layer);
 
     // Try to connect to tcp_log_listener
-    let listener_address: SocketAddr = "127.0.0.1:7331".parse().unwrap();
-
-    if let Ok(stream) = TcpStream::connect_timeout(&listener_address, Duration::from_millis(50)) {
+    if let Some(listener_addr) = log_socket_addr
+        && let Ok(stream) = TcpStream::connect_timeout(&listener_addr, Duration::from_millis(50))
+    {
         let tcp_layer = tracing_subscriber::fmt::layer()
             .with_writer(Mutex::new(stream))
             // .pretty()

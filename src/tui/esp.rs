@@ -9,7 +9,7 @@ use ratatui::{
     widgets::{Block, Clear, Gauge, Row, Table},
 };
 use ratatui_macros::{line, vertical};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{
     config_adjacent_path,
@@ -365,24 +365,38 @@ pub struct EspFlashHelper {
 
 #[derive(Debug, thiserror::Error)]
 pub enum EspProfileError {
-    #[error("failed deserializing espflash profiles: {0}")]
+    #[error("failed deserializing espflash profiles")]
     Deser(#[from] toml::de::Error),
     // #[error("failed serializing espflash profiles: {0}")]
     // Ser(#[from] toml::ser::Error),
-    #[error("failed reading espflash profiles: {0}")]
+    #[error("failed reading espflash profiles")]
     File(#[from] std::io::Error),
 }
 
 impl EspFlashHelper {
     pub fn build() -> Result<Self, EspProfileError> {
-        let meow = fs::read_to_string(config_adjacent_path(ESP_PROFILES_PATH))?;
-        let SerializedEspFiles { bins, elfs } = toml::from_str(&meow)?;
+        let toml_path = config_adjacent_path(ESP_PROFILES_PATH);
+        if toml_path.exists() {
+            let profiles_toml = fs::read_to_string(toml_path)?;
+            let SerializedEspFiles { bins, elfs } = toml::from_str(&profiles_toml)?;
 
-        Ok(Self {
-            popup: None,
-            bins,
-            elfs,
-        })
+            Ok(Self {
+                popup: None,
+                bins,
+                elfs,
+            })
+        } else {
+            warn!("espflash profiles file was missing! creating...");
+            fs::write(
+                toml_path,
+                include_str!("../../example_configs/yap_espflash_profiles.toml.blank").as_bytes(),
+            )?;
+            Ok(Self {
+                popup: None,
+                bins: vec![],
+                elfs: vec![],
+            })
+        }
     }
     pub fn reload(&mut self) -> Result<(), EspProfileError> {
         self.reset_popup();

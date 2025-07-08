@@ -73,7 +73,7 @@ enum LoggingLineType {
 
 #[derive(Debug, thiserror::Error)]
 enum LoggingError {
-    #[error("File error: {0}")]
+    #[error("logging file error")]
     File(#[from] std::io::Error),
     #[error("failed to send event to main app")]
     EventSend,
@@ -797,15 +797,15 @@ impl LoggingWorker {
         }
 
         let make_binary_log = || -> Result<fs::File, std::io::Error> {
-            let timestamp = started_at.format("logs/yap-%Y-%m-%d_%H-%M-%S.bin");
+            let timestamped_name = started_at.format("logs/yap-%Y-%m-%d_%H-%M-%S.bin");
 
-            fs::File::create(timestamp.to_string())
+            fs::File::create(config_adjacent_path(format!("logs/{timestamped_name}")))
         };
 
         let make_text_log = |port_info: &SerialPortInfo| -> Result<fs::File, std::io::Error> {
-            let timestamp = started_at.format("logs/yap-%Y-%m-%d_%H-%M-%S.txt");
+            let timestamped_name = started_at.format("logs/yap-%Y-%m-%d_%H-%M-%S.txt");
 
-            fs::File::create(timestamp.to_string())
+            fs::File::create(config_adjacent_path(format!("logs/{timestamped_name}")))
                 .and_then(|mut f| {
                     write_header_to_text_file(
                         &mut f,

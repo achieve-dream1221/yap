@@ -10,12 +10,22 @@ use crokey::KeyCombination;
 use fs_err as fs;
 use indexmap::IndexMap;
 use serde::Deserialize;
+use strum::VariantNames;
 
 #[cfg(feature = "macros")]
 use crate::macros::MacroNameTag;
+use crate::traits::RequiresPort;
 
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    strum::EnumString,
+    strum::Display,
+    strum::AsRefStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
@@ -38,6 +48,15 @@ pub enum ShowPopupAction {
     ShowDefmt,
 }
 
+impl RequiresPort for ShowPopupAction {
+    fn requires_connection(&self) -> bool {
+        false
+    }
+    fn requires_terminal_view(&self) -> bool {
+        self.requires_connection()
+    }
+}
+
 // impl From<ShowPopupAction> for PopupMenu {
 //     fn from(value: ShowPopupAction) -> Self {
 //         match value {
@@ -57,7 +76,15 @@ pub enum ShowPopupAction {
 // }
 
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    strum::EnumString,
+    strum::Display,
+    strum::AsRefStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
@@ -73,8 +100,25 @@ pub enum BaseAction {
     ReloadColors,
 }
 
+impl RequiresPort for BaseAction {
+    fn requires_connection(&self) -> bool {
+        false
+    }
+    fn requires_terminal_view(&self) -> bool {
+        self.requires_connection()
+    }
+}
+
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    strum::EnumString,
+    strum::Display,
+    strum::AsRefStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
@@ -89,19 +133,57 @@ pub enum PortAction {
     AttemptReconnectLoose,
 }
 
+impl RequiresPort for PortAction {
+    fn requires_connection(&self) -> bool {
+        match self {
+            Self::AttemptReconnectLoose | Self::AttemptReconnectStrict => false,
+            _ => true,
+        }
+    }
+    fn requires_terminal_view(&self) -> bool {
+        true
+    }
+}
+
 #[cfg(feature = "macros")]
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    strum::EnumString,
+    strum::Display,
+    strum::AsRefStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
-pub enum MacroAction {
+pub enum MacroBuiltinAction {
     ReloadMacros,
+}
+
+#[cfg(feature = "macros")]
+impl RequiresPort for MacroBuiltinAction {
+    fn requires_connection(&self) -> bool {
+        false
+    }
+    fn requires_terminal_view(&self) -> bool {
+        self.requires_connection()
+    }
 }
 
 #[cfg(feature = "espflash")]
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    strum::EnumString,
+    strum::Display,
+    strum::AsRefStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
@@ -115,9 +197,30 @@ pub enum EspAction {
     EspEraseFlash,
 }
 
+#[cfg(feature = "espflash")]
+impl RequiresPort for EspAction {
+    fn requires_connection(&self) -> bool {
+        match self {
+            Self::ReloadProfiles => false,
+            _ => true,
+        }
+    }
+    fn requires_terminal_view(&self) -> bool {
+        self.requires_connection()
+    }
+}
+
 #[cfg(feature = "logging")]
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    strum::EnumString,
+    strum::Display,
+    strum::AsRefStr,
+    strum::VariantNames,
 )]
 // #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
@@ -130,15 +233,37 @@ pub enum LoggingAction {
     Toggle,
 }
 
+#[cfg(feature = "logging")]
+impl RequiresPort for LoggingAction {
+    fn requires_connection(&self) -> bool {
+        match self {
+            Self::Start => true,
+            _ => false,
+        }
+    }
+    fn requires_terminal_view(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(feature = "defmt")]
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, strum::EnumString, strum::Display, strum::AsRefStr,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    strum::EnumString,
+    strum::Display,
+    strum::AsRefStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 #[repr(u8)]
 // #[strum(prefix = "show-")]
 // nevermind, doesn't work with FromStr :(
-pub enum ShowDefmtSelect {
+pub enum DefmtSelectAction {
     #[strum(serialize = "defmt-select-tui")]
     SelectTui,
     #[strum(serialize = "defmt-select-system")]
@@ -147,19 +272,62 @@ pub enum ShowDefmtSelect {
     SelectRecent,
 }
 
+#[cfg(feature = "defmt")]
+impl RequiresPort for DefmtSelectAction {
+    fn requires_connection(&self) -> bool {
+        false
+    }
+    fn requires_terminal_view(&self) -> bool {
+        self.requires_connection()
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, strum::AsRefStr)]
 pub enum AppAction {
     Base(BaseAction),
     Popup(ShowPopupAction),
     Port(PortAction),
     #[cfg(feature = "macros")]
-    Macros(MacroAction),
+    MacroBuiltin(MacroBuiltinAction),
     #[cfg(feature = "espflash")]
     Esp(EspAction),
     #[cfg(feature = "logging")]
     Logging(LoggingAction),
     #[cfg(feature = "defmt")]
-    ShowDefmtSelect(ShowDefmtSelect),
+    ShowDefmtSelect(DefmtSelectAction),
+}
+
+impl RequiresPort for AppAction {
+    fn requires_connection(&self) -> bool {
+        match self {
+            Self::Base(action) => action.requires_connection(),
+            Self::Popup(action) => action.requires_connection(),
+            Self::Port(action) => action.requires_connection(),
+            #[cfg(feature = "macros")]
+            Self::MacroBuiltin(action) => action.requires_connection(),
+            #[cfg(feature = "espflash")]
+            Self::Esp(action) => action.requires_connection(),
+            #[cfg(feature = "logging")]
+            Self::Logging(action) => action.requires_connection(),
+            #[cfg(feature = "defmt")]
+            Self::ShowDefmtSelect(action) => action.requires_connection(),
+        }
+    }
+    fn requires_terminal_view(&self) -> bool {
+        match self {
+            Self::Base(action) => action.requires_terminal_view(),
+            Self::Popup(action) => action.requires_terminal_view(),
+            Self::Port(action) => action.requires_terminal_view(),
+            #[cfg(feature = "macros")]
+            Self::MacroBuiltin(action) => action.requires_terminal_view(),
+            #[cfg(feature = "espflash")]
+            Self::Esp(action) => action.requires_terminal_view(),
+            #[cfg(feature = "logging")]
+            Self::Logging(action) => action.requires_terminal_view(),
+            #[cfg(feature = "defmt")]
+            Self::ShowDefmtSelect(action) => action.requires_terminal_view(),
+        }
+    }
 }
 
 impl fmt::Display for AppAction {
@@ -169,7 +337,7 @@ impl fmt::Display for AppAction {
             AppAction::Popup(action) => write!(f, "{action}"),
             AppAction::Port(action) => write!(f, "{action}"),
             #[cfg(feature = "macros")]
-            AppAction::Macros(action) => write!(f, "{action}"),
+            AppAction::MacroBuiltin(action) => write!(f, "{action}"),
             #[cfg(feature = "espflash")]
             AppAction::Esp(action) => write!(f, "{action}"),
             #[cfg(feature = "logging")]
@@ -193,9 +361,9 @@ impl From<PortAction> for AppAction {
 }
 
 #[cfg(feature = "macros")]
-impl From<MacroAction> for AppAction {
-    fn from(action: MacroAction) -> Self {
-        AppAction::Macros(action)
+impl From<MacroBuiltinAction> for AppAction {
+    fn from(action: MacroBuiltinAction) -> Self {
+        AppAction::MacroBuiltin(action)
     }
 }
 
@@ -214,8 +382,8 @@ impl From<LoggingAction> for AppAction {
 }
 
 #[cfg(feature = "defmt")]
-impl From<ShowDefmtSelect> for AppAction {
-    fn from(action: ShowDefmtSelect) -> Self {
+impl From<DefmtSelectAction> for AppAction {
+    fn from(action: DefmtSelectAction) -> Self {
         AppAction::ShowDefmtSelect(action)
     }
 }
@@ -239,15 +407,15 @@ impl FromStr for AppAction {
             return Ok(AppAction::Logging(logging));
         }
         #[cfg(feature = "macros")]
-        if let Ok(macros) = s.parse::<MacroAction>() {
-            return Ok(AppAction::Macros(macros));
+        if let Ok(macros) = s.parse::<MacroBuiltinAction>() {
+            return Ok(AppAction::MacroBuiltin(macros));
         }
         #[cfg(feature = "espflash")]
         if let Ok(esp) = s.parse::<EspAction>() {
             return Ok(AppAction::Esp(esp));
         }
         #[cfg(feature = "defmt")]
-        if let Ok(defmt_select) = s.parse::<ShowDefmtSelect>() {
+        if let Ok(defmt_select) = s.parse::<DefmtSelectAction>() {
             return Ok(AppAction::ShowDefmtSelect(defmt_select));
         }
 
@@ -263,6 +431,29 @@ pub enum Action {
     #[cfg(feature = "macros")]
     MacroInvocation(MacroNameTag),
     Pause(Duration),
+}
+
+impl RequiresPort for Action {
+    fn requires_connection(&self) -> bool {
+        match self {
+            Self::AppAction(action) => action.requires_connection(),
+            #[cfg(feature = "espflash")]
+            Self::EspFlashProfile(_) => true,
+            #[cfg(feature = "macros")]
+            Self::MacroInvocation(_) => true,
+            Self::Pause(_) => false,
+        }
+    }
+    fn requires_terminal_view(&self) -> bool {
+        match self {
+            Self::AppAction(action) => action.requires_terminal_view(),
+            #[cfg(feature = "espflash")]
+            Self::EspFlashProfile(_) => true,
+            #[cfg(feature = "macros")]
+            Self::MacroInvocation(_) => true,
+            Self::Pause(_) => false,
+        }
+    }
 }
 
 static OVERRIDABLE_DEFAULTS: &str = r#"
@@ -348,7 +539,7 @@ where
                 map.next_entry::<KeyCombination, SingleOrSeveral<String>>()?
             {
                 let mut tags = match value {
-                    SingleOrSeveral::Single(value) if value.trim().is_empty() => vec![],
+                    SingleOrSeveral::Single(value) if value.trim().is_empty() => continue,
                     SingleOrSeveral::Single(single) => vec![single],
                     SingleOrSeveral::Several(pre_split) => pre_split,
                 };
@@ -435,4 +626,81 @@ mod test {
             Some("Ctrl-.")
         );
     }
+}
+
+pub fn print_all_actions() {
+    use ratatui::crossterm::style::Stylize;
+    fn print_variants<T: VariantNames>(name: &str) {
+        let text = format!("{name}:").red();
+        println!("{text}");
+        for variant in T::VARIANTS {
+            println!("{variant}");
+        }
+        println!("");
+    }
+
+    print_variants::<ShowPopupAction>("Show Popup Actions");
+    print_variants::<BaseAction>("Base Actions");
+    print_variants::<PortAction>("Port Actions");
+
+    #[cfg(feature = "macros")]
+    print_variants::<MacroBuiltinAction>("Macro Actions");
+
+    #[cfg(feature = "espflash")]
+    print_variants::<EspAction>("ESP Actions");
+
+    #[cfg(feature = "logging")]
+    print_variants::<LoggingAction>("Logging Actions");
+
+    #[cfg(feature = "defmt")]
+    print_variants::<DefmtSelectAction>("defmt Selection Actions");
+
+    let tip = "Tip:".green();
+
+    #[cfg(feature = "espflash")]
+    {
+        println!(
+            "\n{tip} espflash profiles can be used as Actions! Invoke a profile to be flashed to the connected device by specifying the full exact name of the profile in your keybind."
+        );
+        let key = "Ctrl-Shift-N".cyan();
+        let profile = "\"OpenShock Core V2 1.4.0\"".green();
+        println!("\nExample: {key} = {profile}");
+        println!("\n")
+    }
+
+    #[cfg(feature = "macros")]
+    {
+        println!(
+            "\n{tip} Macros can be used as Actions! You can invoke a macro by specifying the category and name, delimiting with the pipe (|) character."
+        );
+        let macro_example = "OpenShock|Factory Reset".cyan();
+        println!("\nExample: {macro_example}");
+        println!(
+            "\nIf you often will not have colliding Macro names, you can skip the need to specify category by enabling `fuzzy_macro_match` in yap.toml"
+        );
+        println!(
+            "You can still specify a category when `fuzzy_macro_match` is enabled in case a name collision does occur."
+        );
+        println!("\n")
+    }
+
+    println!(
+        "\n{tip} You can chain Actions together in sequence! In `yap_keybinds.toml` when defining a key, use an array to specify multiple Actions!"
+    );
+    // silly
+    if cfg!(feature = "macros") && cfg!(feature = "espflash") {
+        println!("This includes Macros and espflash profiles!");
+    } else if cfg!(feature = "macros") {
+        println!("This includes Macros!");
+    } else if cfg!(feature = "espflash") {
+        println!("This includes espflash profiles!");
+    }
+
+    let f18 = "F18".cyan();
+    let array = "[\"assert-rts\", \"assert-dtr\", \"deassert-rts\"]".red();
+    println!("\nExample: {f18} = {array}");
+    let pause = "PAUSE_MS:[milliseconds to wait]".cyan();
+    println!(
+        "\n\nA custom delay can be set between actions using {pause}. This will always take precedence over yap.toml's `action_chain_delay`."
+    );
 }

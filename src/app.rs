@@ -10,6 +10,7 @@ use std::{
 use bstr::ByteVec;
 #[cfg(feature = "defmt")]
 use camino::Utf8Path;
+use camino::Utf8PathBuf;
 use color_eyre::eyre::Result;
 use compact_str::{CompactString, ToCompactString};
 use crokey::{KeyCombination, key};
@@ -67,9 +68,9 @@ use crate::{
 };
 
 #[cfg(feature = "defmt")]
-use crate::buffer::defmt::DefmtTableError;
+use crate::buffer::defmt::{DefmtLoadError, DefmtTableError};
 #[cfg(feature = "defmt")]
-use crate::{keybinds::ShowDefmtSelect, settings::Defmt, tui::defmt::DefmtHelpers};
+use crate::{keybinds::DefmtSelectAction, settings::Defmt, tui::defmt::DefmtHelpers};
 
 #[cfg(feature = "defmt_watch")]
 use crate::buffer::defmt::elf_watcher::ElfWatchEvent;
@@ -82,7 +83,7 @@ use crate::{
 };
 
 #[cfg(feature = "macros")]
-use crate::keybinds::MacroAction;
+use crate::keybinds::MacroBuiltinAction;
 
 #[cfg(feature = "logging")]
 use crate::settings::Logging;
@@ -319,7 +320,7 @@ pub struct App {
     espflash: EspFlashHelper,
 
     #[cfg(feature = "defmt")]
-    defmt_meow: DefmtHelpers,
+    defmt_helpers: DefmtHelpers,
     // TODO
     // error_message: Option<String>,
 }
@@ -327,9 +328,18 @@ pub struct App {
 impl App {
     pub fn new(event_tx: Sender<Event>, event_rx: Receiver<Event>) -> Self {
         let exe_path = std::env::current_exe().unwrap();
-        let config_path = exe_path.with_extension("toml");
+        let config_path = {
+            let original = exe_path.with_extension("toml");
+            let config_file_str = original
+                .file_name()
+                .expect("can't have file without name")
+                .to_str()
+                .expect("executable name is not valid utf-8");
 
-        let settings = match Settings::load(&config_path, false) {
+            config_adjacent_path(config_file_str)
+        };
+
+        let settings = match Settings::load(config_path, false) {
             Ok(settings) => settings,
             // Err(RedefaulterError::TomlDe(e)) => {
             //     error!("Settings load failed: {e}");
@@ -349,18 +359,29 @@ impl App {
             }
         };
 
-        let keybinds = match fs::read_to_string(crate::keybinds::CONFIG_TOML_PATH) {
-            Ok(keybinds_input) => match Keybinds::load(&keybinds_input) {
-                Ok(kb) => kb,
+        let keybinds_path = config_adjacent_path(crate::keybinds::CONFIG_TOML_PATH);
+
+        let keybinds = if keybinds_path.exists() {
+            match fs::read_to_string(keybinds_path) {
+                Ok(keybinds_input) => match Keybinds::load(&keybinds_input) {
+                    Ok(kb) => kb,
+                    Err(e) => {
+                        error!("Failed parsing keybinds config! {e}");
+                        Keybinds::overridable_defaults()
+                    }
+                },
                 Err(e) => {
-                    error!("Failed parsing keybinds config! {e}");
+                    error!("Failed reading keybinds config! {e}");
                     Keybinds::overridable_defaults()
                 }
-            },
-            Err(e) => {
-                error!("Failed reading keybinds config! {e}");
-                Keybinds::overridable_defaults()
             }
+        } else {
+            fs::write(
+                keybinds_path,
+                include_str!("../example_configs/yap_keybinds.toml.blank").as_bytes(),
+            )
+            .unwrap();
+            Keybinds::overridable_defaults()
         };
 
         let mut user_input = UserInput::default();
@@ -424,7 +445,7 @@ impl App {
         if let Some(last_elf) = defmt_meow.recent_elfs.last().map(ToOwned::to_owned)
             && last_elf.is_file()
         {
-            match try_load_defmt_elf(
+            match _try_load_defmt_elf(
                 &last_elf,
                 &mut buffer.defmt_decoder,
                 &mut defmt_meow.recent_elfs,
@@ -505,7 +526,7 @@ impl App {
             espflash: EspFlashHelper::build().unwrap(),
 
             #[cfg(feature = "defmt")]
-            defmt_meow,
+            defmt_helpers: defmt_meow,
 
             user_broke_connection: false,
         }
@@ -833,14 +854,14 @@ impl App {
                 if self.settings.defmt.watch_elf_for_changes {
                     info!("ELF File Watch triggered, reloading ELF at {elf_path}");
 
-                    match try_load_defmt_elf(
+                    match _try_load_defmt_elf(
                         &elf_path,
                         &mut self.buffer.defmt_decoder,
-                        &mut self.defmt_meow.recent_elfs,
+                        &mut self.defmt_helpers.recent_elfs,
                         #[cfg(feature = "logging")]
                         &self.buffer.log_handle,
                         #[cfg(feature = "defmt_watch")]
-                        &mut self.defmt_meow.watcher_handle,
+                        &mut self.defmt_helpers.watcher_handle,
                     ) {
                         Ok(()) => {
                             self.notifs
@@ -1014,14 +1035,14 @@ impl App {
 
                         let elf_path: Utf8PathBuf = current.path().to_owned().try_into().unwrap();
 
-                        match try_load_defmt_elf(
+                        match _try_load_defmt_elf(
                             &elf_path,
                             &mut self.buffer.defmt_decoder,
-                            &mut self.defmt_meow.recent_elfs,
+                            &mut self.defmt_helpers.recent_elfs,
                             #[cfg(feature = "logging")]
                             &self.buffer.log_handle,
                             #[cfg(feature = "defmt_watch")]
-                            &mut self.defmt_meow.watcher_handle,
+                            &mut self.defmt_helpers.watcher_handle,
                         ) {
                             Ok(()) => {
                                 self.notifs
@@ -1199,8 +1220,10 @@ impl App {
             }
             #[cfg(feature = "macros")]
             key!(ctrl - r) if self.popup == Some(Popup::ToolMenu(ToolMenu::Macros)) => {
-                self.run_method_from_action(AppAction::Macros(MacroAction::ReloadMacros))
-                    .unwrap();
+                self.run_method_from_action(AppAction::MacroBuiltin(
+                    MacroBuiltinAction::ReloadMacros,
+                ))
+                .unwrap();
             }
             #[cfg(feature = "espflash")]
             key!(ctrl - r) if self.popup == Some(Popup::ToolMenu(ToolMenu::EspFlash)) => {
@@ -1297,6 +1320,8 @@ impl App {
         // Otherwise, it's nothing we recognize.
         None
     }
+    // To be used only when chewing through queued actions.
+    // Refrain from placing single-action keybind logic here.
     fn consume_one_queued_action(&mut self) -> Result<()> {
         let Some((key_combo_opt, action)) = self.action_queue.front() else {
             return Ok(());
@@ -1392,14 +1417,14 @@ impl App {
 
         #[cfg(feature = "defmt")]
         if let Some(elf_path) = profile_defmt_path {
-            match try_load_defmt_elf(
+            match _try_load_defmt_elf(
                 &elf_path,
                 &mut self.buffer.defmt_decoder,
-                &mut self.defmt_meow.recent_elfs,
+                &mut self.defmt_helpers.recent_elfs,
                 #[cfg(feature = "logging")]
                 &self.buffer.log_handle,
                 #[cfg(feature = "defmt_watch")]
-                &mut self.defmt_meow.watcher_handle,
+                &mut self.defmt_helpers.watcher_handle,
             ) {
                 Ok(()) => {
                     self.notifs.notify_str("defmt ELF loaded!", Color::Green);
@@ -1494,7 +1519,7 @@ impl App {
             A::Base(BaseAction::ShowKeybinds) => self.show_popup(Popup::CurrentKeybinds),
 
             #[cfg(feature = "macros")]
-            A::Macros(MacroAction::ReloadMacros) => {
+            A::MacroBuiltin(MacroBuiltinAction::ReloadMacros) => {
                 self.macros
                     .load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))
                     .unwrap();
@@ -1574,15 +1599,15 @@ impl App {
                 self.espflash.reload().unwrap();
             }
             #[cfg(feature = "defmt")]
-            A::ShowDefmtSelect(ShowDefmtSelect::SelectRecent) => {
+            A::ShowDefmtSelect(DefmtSelectAction::SelectRecent) => {
                 self.show_popup(Popup::DefmtRecentElf)
             }
             #[cfg(feature = "defmt")]
-            A::ShowDefmtSelect(ShowDefmtSelect::SelectTui) => {
+            A::ShowDefmtSelect(DefmtSelectAction::SelectTui) => {
                 self.show_popup(Popup::DefmtNewElf(create_file_explorer()?))
             }
             #[cfg(feature = "defmt")]
-            A::ShowDefmtSelect(ShowDefmtSelect::SelectSystem) => {
+            A::ShowDefmtSelect(DefmtSelectAction::SelectSystem) => {
                 todo!("need a system file picker");
             } // unknown => {
               //     warn!("Unknown keybind action: {unknown}");
@@ -1661,8 +1686,11 @@ impl App {
             #[cfg(feature = "defmt")]
             Some(Popup::DefmtRecentElf) => match self.popup_menu_scroll {
                 0 => {
-                    self.popup_menu_scroll =
-                        self.defmt_meow.recent_elfs.recents_len().saturating_sub(1)
+                    self.popup_menu_scroll = self
+                        .defmt_helpers
+                        .recent_elfs
+                        .recents_len()
+                        .saturating_sub(1)
                 }
                 _ => self.popup_menu_scroll -= 1,
             },
@@ -1723,7 +1751,11 @@ impl App {
             #[cfg(feature = "defmt")]
             Some(Popup::DefmtRecentElf) => match self.popup_menu_scroll {
                 _ if self.popup_menu_scroll
-                    == self.defmt_meow.recent_elfs.recents_len().saturating_sub(1) =>
+                    == self
+                        .defmt_helpers
+                        .recent_elfs
+                        .recents_len()
+                        .saturating_sub(1) =>
                 {
                     self.popup_menu_scroll = 0
                 }
@@ -2187,19 +2219,19 @@ impl App {
             Some(Popup::DefmtRecentElf) => {
                 if let Some(selected) = self.popup_table_state.selected() {
                     let elf_path = self
-                        .defmt_meow
+                        .defmt_helpers
                         .recent_elfs
                         .nth_path(selected)
                         .unwrap()
                         .to_owned();
-                    match try_load_defmt_elf(
+                    match _try_load_defmt_elf(
                         &elf_path,
                         &mut self.buffer.defmt_decoder,
-                        &mut self.defmt_meow.recent_elfs,
+                        &mut self.defmt_helpers.recent_elfs,
                         #[cfg(feature = "logging")]
                         &self.buffer.log_handle,
                         #[cfg(feature = "defmt_watch")]
-                        &mut self.defmt_meow.watcher_handle,
+                        &mut self.defmt_helpers.watcher_handle,
                     ) {
                         Ok(()) => {
                             self.notifs
@@ -2461,7 +2493,7 @@ impl App {
     fn current_popup_selectable_item_count(&self) -> usize {
         match &self.popup {
             #[cfg(feature = "defmt")]
-            Some(Popup::DefmtRecentElf) => self.defmt_meow.recent_elfs.recents_len(),
+            Some(Popup::DefmtRecentElf) => self.defmt_helpers.recent_elfs.recents_len(),
             Some(Popup::SettingsMenu(settings)) => match settings {
                 SettingsMenu::SerialPort => PortSettings::VISIBLE_FIELDS,
                 SettingsMenu::Behavior => Behavior::VISIBLE_FIELDS,
@@ -2697,7 +2729,7 @@ impl App {
                 frame.render_widget(Clear, area);
                 frame.render_widget(block, area);
                 frame.render_stateful_widget(
-                    self.defmt_meow.recent_elfs.as_table(),
+                    self.defmt_helpers.recent_elfs.as_table(),
                     inner,
                     &mut self.popup_table_state,
                 );
@@ -4180,26 +4212,59 @@ impl App {
         #[cfg(feature = "macros")]
         self.macros.search_input.reset();
     }
+    pub fn try_cli_connect(
+        &mut self,
+        port_info: SerialPortInfo,
+        baud: Option<u32>,
+    ) -> color_eyre::Result<()> {
+        let connect_result_rx =
+            self.serial
+                .cli_connect(port_info, self.settings.last_port_settings.clone(), baud)?;
+
+        match connect_result_rx.recv_timeout(Duration::from_secs(15)) {
+            // Got a connection result, if it's Ok(()), we'll keep going, otherwise it'll bail early.
+            Ok(connect_result) => connect_result?,
+            Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                color_eyre::eyre::bail!("Connection to supplied port timed out!")
+            }
+            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                color_eyre::eyre::bail!("Serial worker closed unexpectedly!")
+            }
+        };
+
+        self.menu = Menu::Terminal(TerminalPrompt::None);
+
+        Ok(())
+    }
+    pub fn try_load_defmt_elf(&mut self, path: &Utf8Path) -> Result<(), YapLoadDefmtError> {
+        _try_load_defmt_elf(
+            path,
+            &mut self.buffer.defmt_decoder,
+            &mut self.defmt_helpers.recent_elfs,
+            &self.buffer.log_handle,
+            &mut self.defmt_helpers.watcher_handle,
+        )
+    }
 }
 
 #[cfg(feature = "defmt")]
 #[derive(Debug, thiserror::Error)]
-enum TryLoadDefmtError {
-    #[error("recent elfs error: {0}")]
+pub enum YapLoadDefmtError {
+    #[error("error adding elf to recents")]
     Recents(#[from] DefmtRecentError),
-    #[error("failed parsing defmt from elf: {0}")]
-    DefmtParse(#[from] DefmtTableError),
+    #[error("failed parsing defmt from elf")]
+    DefmtLoad(#[from] DefmtLoadError),
 }
 
 #[cfg(feature = "defmt")]
-fn try_load_defmt_elf(
+fn _try_load_defmt_elf(
     path: &Utf8Path,
     decoder_opt: &mut Option<Arc<crate::buffer::defmt::DefmtDecoder>>,
     recent_elfs: &mut crate::tui::defmt::DefmtRecentElfs,
     #[cfg(feature = "logging")] logging: &LoggingHandle,
     #[cfg(feature = "defmt_watch")]
     watcher_handle: &mut crate::buffer::defmt::elf_watcher::ElfWatchHandle,
-) -> Result<(), TryLoadDefmtError> {
+) -> Result<(), YapLoadDefmtError> {
     use crate::buffer::defmt::DefmtDecoder;
 
     let new_decoder = DefmtDecoder::from_elf_path(path);
@@ -4219,6 +4284,7 @@ fn try_load_defmt_elf(
         }
         Err(e) => {
             error!("error loading defmt elf {e}");
+            Err(e)?;
             // self.notifs
             //     .notify_str(format!("defmt Error: {e}"), Color::Red);
         }

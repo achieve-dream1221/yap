@@ -2,7 +2,7 @@ use std::{sync::Arc, thread::JoinHandle, time::Duration};
 
 use arc_swap::ArcSwap;
 use bstr::ByteVec;
-use crossbeam::channel::Sender;
+use crossbeam::channel::{Receiver, Sender, bounded};
 use serialport::SerialPortInfo;
 use tracing::{debug, error};
 
@@ -24,6 +24,12 @@ pub enum SerialWorkerCommand {
     Connect {
         port: SerialPortInfo,
         settings: PortSettings,
+    },
+    CliConnect {
+        port: SerialPortInfo,
+        baud: Option<u32>,
+        settings: PortSettings,
+        oneshot_tx: Sender<Result<(), super::worker::WorkerError>>,
     },
     PortCommand(PortCommand),
     RequestReconnect(Option<Reconnections>),
@@ -101,6 +107,23 @@ impl SerialHandle {
             settings,
         })?;
         Ok(())
+    }
+    pub fn cli_connect(
+        &self,
+        port: SerialPortInfo,
+        settings: PortSettings,
+        baud: Option<u32>,
+    ) -> HandleResult<Receiver<Result<(), super::worker::WorkerError>>> {
+        let (oneshot_tx, oneshot_rx) = bounded(0);
+
+        self.command_tx.send(SerialWorkerCommand::CliConnect {
+            port,
+            baud,
+            settings,
+            oneshot_tx,
+        })?;
+
+        Ok(oneshot_rx)
     }
     pub fn break_connection(&self) -> HandleResult<()> {
         self.command_tx.send(SerialWorkerCommand::Disconnect {

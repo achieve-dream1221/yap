@@ -590,7 +590,8 @@ impl Default for PortSettings {
 }
 
 impl Settings {
-    pub fn load(path: &Path, required: bool) -> color_eyre::Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P, required: bool) -> color_eyre::Result<Self> {
+        let path = path.as_ref();
         if !path.exists() && !required {
             let default = Settings {
                 path: path.into(),

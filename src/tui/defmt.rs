@@ -13,9 +13,9 @@ use fs_err as fs;
 #[cfg(feature = "defmt_watch")]
 use takeable::Takeable;
 
-use crate::app::Event;
 #[cfg(feature = "defmt_watch")]
 use crate::buffer::defmt::elf_watcher::ElfWatchHandle;
+use crate::{app::Event, config_adjacent_path};
 
 const DEFMT_RECENT_PATH: &str = "yap_defmt_recent.toml";
 
@@ -38,6 +38,7 @@ impl From<usize> for DefmtPopupSelection {
     }
 }
 
+/// This intentionally holds no decoders! Those're held by Arcs owned by the Buffer and Logging worker.
 pub struct DefmtHelpers {
     pub recent_elfs: DefmtRecentElfs,
     #[cfg(feature = "defmt_watch")]
@@ -104,17 +105,17 @@ pub struct DefmtRecentElfs {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DefmtRecentError {
-    #[error("failed deserializing recent elfs: {0}")]
+    #[error("failed deserializing recent elfs")]
     Deser(#[from] toml::de::Error),
-    #[error("failed serializing recent elfs: {0}")]
+    #[error("failed serializing recent elfs")]
     Ser(#[from] toml::ser::Error),
-    #[error("failed recent elfs file op: {0}")]
+    #[error("failed recent elfs file op")]
     File(#[from] std::io::Error),
 }
 
 impl DefmtRecentElfs {
     pub fn load() -> Result<Self, DefmtRecentError> {
-        let toml_path = Utf8PathBuf::from(DEFMT_RECENT_PATH);
+        let toml_path = config_adjacent_path(DEFMT_RECENT_PATH);
 
         if toml_path.exists() {
             let recent_toml = fs::read_to_string(toml_path)?;
@@ -122,7 +123,7 @@ impl DefmtRecentElfs {
             toml::from_str(&recent_toml).map_err(Into::into)
         } else {
             fs::write(
-                DEFMT_RECENT_PATH,
+                toml_path,
                 toml::to_string(&DefmtRecentElfs::default())?.as_bytes(),
             )?;
 
@@ -142,7 +143,10 @@ impl DefmtRecentElfs {
 
         let recent_toml = toml::to_string(&self)?;
 
-        fs::write(DEFMT_RECENT_PATH, recent_toml.as_bytes())?;
+        fs::write(
+            config_adjacent_path(DEFMT_RECENT_PATH),
+            recent_toml.as_bytes(),
+        )?;
 
         Ok(())
     }

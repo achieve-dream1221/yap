@@ -448,3 +448,11 @@ where
         (None, None) => None,
     })
 }
+
+/// Simple trait for Keybind Actions to determine whether they should be allowed in certain conditions.
+pub trait RequiresPort {
+    /// Returns `true` if the Action requires an active, healthy connection to the port.
+    fn requires_connection(&self) -> bool;
+    /// Returns `true` if the Action requires at least the terminal view to be active (the port can be lent out or disconnected).
+    fn requires_terminal_view(&self) -> bool;
+}

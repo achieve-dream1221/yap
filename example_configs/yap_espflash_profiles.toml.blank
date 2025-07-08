@@ -1,0 +1,25 @@
+# .bin example
+# [[bin]] ## type of profile (bin/elf)
+# name = "PlatformIO Core v2 Build" ## name in macros and UI
+# 0x0 = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\OpenShock\.pio\build\OpenShock-Core-V2\bootloader.bin' ## provide an offset then a binary
+# 0x8000 = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\OpenShock\.pio\build\OpenShock-Core-V2\partitions.bin'
+# 0xe000 = 'C:\Users\nullstalgia\.platformio\packages\framework-arduinoespressif32\tools\partitions\boot_app0.bin'
+# 0x10000 = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\OpenShock\.pio\build\OpenShock-Core-V2\app.bin'
+# chip = "esp32s3" ## expected chip, required. (set any_chip to true to skip check)
+# upload_baud = 2000000
+# any_chip = false ## (default: false) skip checking connected device matches expected chip
+# no_verify = false ## (default: false) skip verifying checksum of uploaded binaries
+# no_skip = false ## (default: false) don't attempt to skip sending segment by checking on-device flash checksum first
+
+# .elf example
+# [[elf]] ## type of profile (bin/elf)
+# name = "PIO Elf Core v2"
+# path = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\OpenShock\.pio\build\OpenShock-Core-V2\app.elf' ## path to .elf to flash
+# partition_table = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\OpenShock\chips\partitions_4MB_OTA.csv' ## path to partition bin/csv file (optional-ish)
+# bootloader = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\OpenShock\.pio\build\OpenShock-Core-V2\bootloader.bin' ## path to bootloader binary (optional-ish)
+# chip = "esp32s3" ## expected chip, required. (set any_chip to true to skip check)
+# upload_baud = 2000000
+# any_chip = false ## (default: false) skip checking connected device matches expected chip
+# no_verify = false ## (default: false) skip verifying checksum of uploaded binaries
+# no_skip = false ## (default: false) don't attempt to skip sending segment by checking on-device flash checksum first
+# ram = false ## (default: false) load .elf contents into RAM, skipping flash write

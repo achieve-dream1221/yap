@@ -65,7 +65,7 @@ pub struct Macros {
 
 #[derive(Debug, thiserror::Error)]
 pub enum MacrosLoadError {
-    #[error("error reading macro file: {0}")]
+    #[error("error reading macro file")]
     File(#[from] std::io::Error),
 }
 
@@ -374,10 +374,15 @@ impl Macros {
             }
             Ok(())
         }
+        let folder = folder.as_ref();
 
-        let mut new_macros = BTreeMap::new();
-        visit_dir(folder.as_ref(), &mut new_macros)?;
-        self.all = new_macros;
+        if folder.exists() {
+            let mut new_macros = BTreeMap::new();
+            visit_dir(folder.as_ref(), &mut new_macros)?;
+            self.all = new_macros;
+        } else {
+            fs::create_dir_all(folder)?;
+        }
         Ok(())
     }
 }

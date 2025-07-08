@@ -44,9 +44,9 @@ pub enum DefmtTableError {
 pub enum DefmtLoadError {
     #[error(transparent)]
     ElfParse(#[from] DefmtTableError),
-    #[error("error reading elf: {0}")]
+    #[error("error reading elf")]
     File(#[from] std::io::Error),
-    #[error("path to elf is not utf-8: {0:?}")]
+    #[error("path to elf is not utf-8")]
     NonUtf8Path(std::path::PathBuf),
 }
 

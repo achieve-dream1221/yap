@@ -1,0 +1,37 @@
+# use --print-actions (-p) to see all built-in actions!
+
+[keybindings]
+# ctrl-o = "toggle-dtr"
+# ctrl-p = "toggle-rts"
+
+# ctrl-w = "toggle-textwrap"
+# ctrl-t = "toggle-timestamps"
+# ctrl-d = "toggle-indices"
+
+# ctrl-b = "show-behavior"
+# 'ctrl-.' = "show-portsettings"
+
+# ctrl-f = "reload-colors"
+# ctrl-h = "show-keybinds"
+# 'ctrl-/' = "show-keybinds"
+
+# You can also bind Macros to a keybind!
+# F19 = "Restart"
+# ctrl-s = "Shocker Vibrate (ID 12345, 0.5s)"
+# ctrl-g = "OpenShock Setup|Echo Off"
+# ctrl-j = [
+#     "PAUSE_MS:2000",
+#     "OpenShock Setup|Factory Reset",
+#     "PAUSE_MS:2000",
+#     "OpenShock Setup|Factory Reset",
+# ]
+
+# Or espflash profiles!
+# F18 = [
+#     "Core v2 1.4.0",
+#     "pause_ms:1000",
+#     "Shocker Vibrate (ID 12345, 1s)",
+#     "Echo Off",
+#     "Setup Authtoken and Networks",
+# ]
+# shift-F18 = ["esp-erase-flash", "Core v2 1.4.0"]

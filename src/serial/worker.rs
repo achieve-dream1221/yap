@@ -265,6 +265,61 @@ impl SerialWorker {
                 self.update_settings(settings)?;
                 self.connect_to_port(&port, None)?;
             }
+            SerialWorkerCommand::CliConnect {
+                port,
+                baud,
+                mut settings,
+                oneshot_tx,
+            } => {
+                settings.baud_rate = baud.unwrap_or(settings.baud_rate);
+
+                self.update_settings(settings)?;
+
+                // If no port name was supplied, it was likely a USB PID:VID search request
+                let port_info_res = if port.port_name.is_empty() {
+                    let SerialPortInfo {
+                        port_type: SerialPortType::UsbPort(usb_query),
+                        ..
+                    } = port
+                    else {
+                        unreachable!("Should only have USB Query info in here");
+                    };
+
+                    let current_ports = self.scan_for_serial_ports()?;
+
+                    let check_serial_number = usb_query.serial_number.is_some();
+
+                    // Try to find a connected device matching the requested characteristics.
+                    current_ports
+                        .iter()
+                        .find(|p| match &p.port_type {
+                            SerialPortType::UsbPort(usb) => {
+                                if check_serial_number {
+                                    usb.pid == usb_query.pid
+                                        && usb.vid == usb_query.vid
+                                        && usb.serial_number == usb_query.serial_number
+                                } else {
+                                    usb.pid == usb_query.pid && usb.vid == usb_query.vid
+                                }
+                            }
+                            // Ignoring all non-usb devices
+                            _ => false,
+                        })
+                        .cloned()
+                        .ok_or(WorkerError::RequestedUsbMissing)
+                } else {
+                    Ok(port)
+                };
+
+                match port_info_res {
+                    Ok(port_info) => {
+                        oneshot_tx.send(self.connect_to_port(&port_info, None))?;
+                    }
+                    Err(e) => {
+                        oneshot_tx.send(Err(e))?;
+                    }
+                }
+            }
             SerialWorkerCommand::Disconnect {
                 user_wants_break: false,
             } => {
@@ -590,7 +645,8 @@ impl SerialWorker {
 
         if port_info.port_name.eq(MOCK_PORT_NAME) {
             let mut virt_port =
-                virtual_serialport::VirtualPort::loopback(baud_rate, MOCK_DATA.len() as u32)?;
+                virtual_serialport::VirtualPort::loopback(baud_rate, MOCK_DATA.len() as u32)
+                    .map_err(WorkerError::PortConnection)?;
             virt_port.write_all(MOCK_DATA)?;
 
             self.port.return_loopback(virt_port);
@@ -601,7 +657,8 @@ impl SerialWorker {
                 .parity(settings.parity_bits)
                 .stop_bits(settings.stop_bits)
                 .dtr_on_open(dtr_on_open)
-                .open_native()?;
+                .open_native()
+                .map_err(WorkerError::PortConnection)?;
 
             self.port.return_native(port);
         };
@@ -1005,7 +1062,11 @@ impl SerialWorker {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum WorkerError {
-    #[error("serial port error: {0}")]
+    #[error("error during port connection")]
+    PortConnection(#[source] serialport::Error),
+    #[error("requested usb device could not be found")]
+    RequestedUsbMissing,
+    #[error("serial port error")]
     SerialPort(#[from] serialport::Error),
     #[error("no parent app reciever to send to")]
     FailedSend,
@@ -1015,11 +1076,11 @@ pub(crate) enum WorkerError {
     HandleDropped,
 
     #[cfg(feature = "espflash")]
-    #[error("espflash error: {0}")]
+    #[error("espflash error:")]
     EspFlash(#[from] espflash::Error),
 
     #[cfg(feature = "espflash")]
-    #[error("file error: {0}")]
+    #[error("file error")]
     File(#[from] std::io::Error),
 
     #[cfg(feature = "espflash")]
@@ -1027,7 +1088,7 @@ pub(crate) enum WorkerError {
     FileMissingName,
 
     #[cfg(feature = "espflash")]
-    #[error("failed creating FlashData: {0}")]
+    #[error("failed creating FlashData")]
     ImageFormat(#[source] espflash::Error),
 
     #[cfg(feature = "espflash")]
