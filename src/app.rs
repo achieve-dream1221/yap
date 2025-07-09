@@ -124,6 +124,8 @@ pub enum Event {
     Logging(LoggingEvent),
     #[cfg(feature = "defmt_watch")]
     DefmtElfWatch(ElfWatchEvent),
+    #[cfg(feature = "defmt")]
+    DefmtFromFilePicker(Utf8PathBuf),
     Quit,
 }
 
@@ -856,15 +858,7 @@ impl App {
                 if self.settings.defmt.watch_elf_for_changes {
                     info!("ELF File Watch triggered, reloading ELF at {elf_path}");
 
-                    match _try_load_defmt_elf(
-                        &elf_path,
-                        &mut self.buffer.defmt_decoder,
-                        &mut self.defmt_helpers.recent_elfs,
-                        #[cfg(feature = "logging")]
-                        &self.buffer.log_handle,
-                        #[cfg(feature = "defmt_watch")]
-                        &mut self.defmt_helpers.watcher_handle,
-                    ) {
+                    match self.try_load_defmt_elf(&elf_path) {
                         Ok(()) => {
                             self.notifs
                                 .notify_str("defmt ELF reloaded due to file update!", Color::Green);
@@ -881,6 +875,16 @@ impl App {
             Event::DefmtElfWatch(ElfWatchEvent::Error(err)) => {
                 self.notifs.notify_str(err, Color::Red);
             }
+            Event::DefmtFromFilePicker(elf_path) => match self.try_load_defmt_elf(&elf_path) {
+                Ok(()) => {
+                    self.notifs.notify_str("defmt ELF loaded!", Color::Green);
+                }
+                Err(e) => {
+                    let text = format!("defmt ELF load failed! {e}");
+                    error!("{text}");
+                    self.notifs.notify_str(text, Color::Red);
+                }
+            },
         }
         Ok(())
     }
@@ -1037,15 +1041,7 @@ impl App {
 
                         let elf_path: Utf8PathBuf = current.path().to_owned().try_into().unwrap();
 
-                        match _try_load_defmt_elf(
-                            &elf_path,
-                            &mut self.buffer.defmt_decoder,
-                            &mut self.defmt_helpers.recent_elfs,
-                            #[cfg(feature = "logging")]
-                            &self.buffer.log_handle,
-                            #[cfg(feature = "defmt_watch")]
-                            &mut self.defmt_helpers.watcher_handle,
-                        ) {
+                        match self.try_load_defmt_elf(&elf_path) {
                             Ok(()) => {
                                 self.notifs
                                     .notify_str("defmt ELF loaded successfully!", Color::Green);
@@ -1445,15 +1441,7 @@ impl App {
 
         #[cfg(feature = "defmt")]
         if let Some(elf_path) = profile_defmt_path {
-            match _try_load_defmt_elf(
-                &elf_path,
-                &mut self.buffer.defmt_decoder,
-                &mut self.defmt_helpers.recent_elfs,
-                #[cfg(feature = "logging")]
-                &self.buffer.log_handle,
-                #[cfg(feature = "defmt_watch")]
-                &mut self.defmt_helpers.watcher_handle,
-            ) {
+            match self.try_load_defmt_elf(&elf_path) {
                 Ok(()) => {
                     self.notifs.notify_str("defmt ELF loaded!", Color::Green);
                 }
@@ -1636,7 +1624,25 @@ impl App {
             }
             #[cfg(feature = "defmt")]
             A::ShowDefmtSelect(DefmtSelectAction::SelectSystem) => {
-                todo!("need a system file picker");
+                let tx = self.event_tx.clone();
+                std::thread::spawn(move || {
+                    let file_opt_res = native_dialog::DialogBuilder::file()
+                        .add_filter("ELF (Executable and Linkable Format)", &["elf"])
+                        .add_filter("All Files", &[""])
+                        .set_location(&"")
+                        .open_single_file()
+                        .show();
+                    if let Ok(Some(file)) = file_opt_res {
+                        if let Ok(file_utf8) = Utf8PathBuf::from_path_buf(file) {
+                            _ = tx.send(Event::DefmtFromFilePicker(file_utf8));
+                        } else {
+                            // TODO show in UI?
+                            error!("Chosen file has non-UTF-8 path!");
+                        }
+                    } else {
+                        debug!("No file chosen with system file picker?");
+                    }
+                });
             } // unknown => {
               //     warn!("Unknown keybind action: {unknown}");
               //     self.notifs.notify_str(
@@ -2218,10 +2224,22 @@ impl App {
             Some(Popup::SettingsMenu(SettingsMenu::Defmt)) => {
                 if self.popup_menu_scroll == 2 {
                     // open file selector
-
-                    let file_explorer = create_file_explorer().unwrap();
-
-                    self.show_popup(Popup::DefmtNewElf(file_explorer));
+                    if shift_pressed || ctrl_pressed {
+                        self.action_dispatch(
+                            Action::AppAction(AppAction::ShowDefmtSelect(
+                                DefmtSelectAction::SelectSystem,
+                            )),
+                            None,
+                        )
+                    } else {
+                        self.action_dispatch(
+                            Action::AppAction(AppAction::ShowDefmtSelect(
+                                DefmtSelectAction::SelectTui,
+                            )),
+                            None,
+                        )
+                    }
+                    .unwrap();
 
                     return;
                 } else if self.popup_menu_scroll == 3 {
@@ -2252,15 +2270,7 @@ impl App {
                         .nth_path(selected)
                         .unwrap()
                         .to_owned();
-                    match _try_load_defmt_elf(
-                        &elf_path,
-                        &mut self.buffer.defmt_decoder,
-                        &mut self.defmt_helpers.recent_elfs,
-                        #[cfg(feature = "logging")]
-                        &self.buffer.log_handle,
-                        #[cfg(feature = "defmt_watch")]
-                        &mut self.defmt_helpers.watcher_handle,
-                    ) {
+                    match self.try_load_defmt_elf(&elf_path) {
                         Ok(()) => {
                             self.notifs
                                 .notify_str("defmt ELF loaded successfully!", Color::Green);
