@@ -472,7 +472,7 @@ impl StyledLines {
             if can_append_to_line {
                 can_append_to_line = false;
                 let last_line = self.rx.last_mut().expect("can't append to nothing");
-                let last_index = last_line.index_in_buffer();
+                let last_index = last_line.range().start;
                 // assert_eq!(last_index, index);
 
                 // let start = range_slice.range.start;
@@ -1128,7 +1128,7 @@ impl Buffer {
                         reloggable_raw: Vec::new(),
                         escaped_line_ending: None,
                     },
-                    b.raw_buffer_index,
+                    b.range().start,
                     b.timestamp,
                 )
             })
@@ -1243,9 +1243,13 @@ impl Buffer {
         );
         self.styled_lines.rx.windows(2).for_each(|lines| {
             assert!(
-                lines[0].raw_buffer_index < lines[1].raw_buffer_index,
+                lines[0].range().start < lines[1].range().start,
                 "Port lines should be in exact ascending order by index."
-            )
+            );
+            assert!(
+                lines[0].range().end == lines[1].range().start,
+                "Line slice should end where next one begins."
+            );
         });
 
         // Returning variables we stole back to self.
@@ -1271,7 +1275,14 @@ impl Buffer {
         let new = &self.rendering;
         let should_reconsume = changed!(old, new, echo_user_input, escape_invalid_bytes);
 
-        let should_rewrap_lines = changed!(old, new, timestamps, show_indices, show_line_ending);
+        let should_rewrap_lines = changed!(
+            old,
+            new,
+            timestamps,
+            show_indices,
+            indices_as_hex,
+            show_line_ending
+        );
 
         if changed!(old, new, bytes_per_line) {
             self.determine_bytes_per_line(new.bytes_per_line.into());

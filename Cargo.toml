@@ -32,6 +32,7 @@ camino = { version = "1.1.9", features = ["serde1"] }
 chrono = "0.4.39"
 clap = { version = "4.5.40", features = ["derive"] }
 color-eyre = "0.6.3"
+# color-eyre = { path = "/home/tony/git/eyre/color-eyre/" }
 compact_str = { version = "0.9.0", features = ["serde"] }
 crokey = { version = "1.1.2", features = ["serde"] }
 crossbeam = "0.8.4"
@@ -77,6 +78,7 @@ regex = "1.11.1"
 rolling-file = "0.2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde-inline-default = "0.2.3"
+serde_with = "3.14.0"
 serialport = { version = "4.7.2", features = ["serde"] }
 strip-ansi-escapes = "0.2.1"
 struct-table = { path = "struct-table" }
@@ -98,6 +100,14 @@ tui-input = "0.11.1"
 # unescaper = "0.1.5"
 unicode-width = "0.2.0"
 virtual-serialport = "0.1.3"
+
+# *sigh*
+# color-eyre uses this crate to indent error content
+# however, there is a bug (with a fix available since 2022!) that causes
+# newlines to *almost always* be printed with the "error index" as a prefix
+# this [+35, -5] commit fixed it, got approved, and then never merged in!
+[patch.crates-io]
+indenter = { git = "https://github.com/ComunidadAylas/indenter", rev = "d3f419ffcfd1f24d24ddb9c2f65dbe84991dc559" }
 
 [build-dependencies]
 copy_to_output = { git = "https://github.com/dougcooper/copy_to_output", rev = "270cffcb13b6e3716a3309515b20f0d70137561c" }

@@ -23,7 +23,10 @@ use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
 use tracing::{Level, debug, error, info, level_filters::LevelFilter};
 use tracing_appender::non_blocking::WorkerGuard;
 
-use crate::cli::{CliError, YapCli};
+use crate::{
+    cli::{CliError, YapCli},
+    settings::Settings,
+};
 
 mod app;
 mod buffer;
@@ -97,14 +100,21 @@ pub fn run() -> color_eyre::Result<()> {
         fs::create_dir_all(root_path)?;
     }
 
-    let listener_address: SocketAddr = "127.0.0.1:7331".parse().unwrap();
+    let config_path = {
+        let mut exec_name = get_executable_name();
+        exec_name.set_extension("toml");
+        config_adjacent_path(exec_name)
+    };
+
+    let settings = Settings::load(config_path)?;
+
+    let listener_address = settings.misc.log_tcp_socket;
 
     let mut log_path = config_adjacent_path(get_executable_name());
     log_path.set_extension("log");
-    println!("{log_path}");
-    let _log_guard = initialize_logging(Level::TRACE, log_path, Some(listener_address))?;
+    let _log_guard = initialize_logging(settings.get_log_level(), log_path, listener_address)?;
 
-    let result = run_inner(cli_args);
+    let result = run_inner(cli_args, settings);
     if let Err(e) = &result {
         error!("Fatal error: {e}");
     }
@@ -112,7 +122,7 @@ pub fn run() -> color_eyre::Result<()> {
     result
 }
 
-fn run_inner(cli_args: YapCli) -> color_eyre::Result<()> {
+fn run_inner(cli_args: YapCli, app_settings: Settings) -> color_eyre::Result<()> {
     let (tx, rx) = crossbeam::channel::unbounded::<app::Event>();
     let crossterm_tx = tx.clone();
     let crossterm_thread = std::thread::spawn(move || {
@@ -187,7 +197,7 @@ fn run_inner(cli_args: YapCli) -> color_eyre::Result<()> {
     //     error!("Failed to enable key combining! {e}");
     // };
 
-    let mut app = App::new(tx, rx);
+    let mut app = App::build(tx, rx, app_settings)?;
 
     if let Some(defmt_path) = cli_args.defmt_elf {
         app.try_load_defmt_elf(&defmt_path)?;

@@ -48,6 +48,7 @@ use crate::buffer::LoggingHandle;
 use crate::{
     buffer::Buffer,
     event_carousel::CarouselHandle,
+    get_executable_name,
     history::UserInput,
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
     notifications::{EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notifications, PAUSE_TIME},
@@ -328,44 +329,16 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(event_tx: Sender<Event>, event_rx: Receiver<Event>) -> Self {
-        let exe_path = std::env::current_exe().unwrap();
-        let config_path = {
-            let original = exe_path.with_extension("toml");
-            let config_file_str = original
-                .file_name()
-                .expect("can't have file without name")
-                .to_str()
-                .expect("executable name is not valid utf-8");
-
-            config_adjacent_path(config_file_str)
-        };
-
-        let settings = match Settings::load(config_path, false) {
-            Ok(settings) => settings,
-            // Err(RedefaulterError::TomlDe(e)) => {
-            //     error!("Settings load failed: {e}");
-            //     // TODO move human_span formatting into thiserror fmt attr?
-            //     let err_str = e.to_string();
-            //     // Only grabbing the top line since it has the human-readable line and column information
-            //     // (the error's span method is in *bytes*, not lines and columns)
-            //     let human_span = err_str.lines().next().unwrap_or("").to_owned();
-            //     let reason = e.message().to_owned();
-            //     let new_err = RedefaulterError::SettingsLoad { human_span, reason };
-
-            //     settings_load_failed_popup(new_err, lock_file);
-            // }
-            Err(e) => {
-                error!("Settings load failed: {e}");
-                panic!("Settings load failed: {e}");
-            }
-        };
-
+    pub fn build(
+        event_tx: Sender<Event>,
+        event_rx: Receiver<Event>,
+        settings: Settings,
+    ) -> Result<Self> {
         let keybinds_path = config_adjacent_path(crate::keybinds::CONFIG_TOML_PATH);
 
         let keybinds = if keybinds_path.exists() {
             match fs::read_to_string(keybinds_path) {
-                Ok(keybinds_input) => match Keybinds::load(&keybinds_input) {
+                Ok(keybinds_input) => match Keybinds::from_str(&keybinds_input) {
                     Ok(kb) => kb,
                     Err(e) => {
                         error!("Failed parsing keybinds config! {e}");
@@ -422,10 +395,11 @@ impl App {
                 Duration::from_secs(1),
             )
             .unwrap();
+
         let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
 
         #[cfg(feature = "defmt")]
-        let mut defmt_meow = DefmtHelpers::build(
+        let mut defmt_helpers = DefmtHelpers::build(
             #[cfg(feature = "defmt_watch")]
             event_tx.clone(),
         )
@@ -444,17 +418,17 @@ impl App {
         .unwrap();
 
         #[cfg(feature = "defmt")]
-        if let Some(last_elf) = defmt_meow.recent_elfs.last().map(ToOwned::to_owned)
+        if let Some(last_elf) = defmt_helpers.recent_elfs.last().map(ToOwned::to_owned)
             && last_elf.is_file()
         {
             match _try_load_defmt_elf(
                 &last_elf,
                 &mut buffer.defmt_decoder,
-                &mut defmt_meow.recent_elfs,
+                &mut defmt_helpers.recent_elfs,
                 #[cfg(feature = "logging")]
                 &buffer.log_handle,
                 #[cfg(feature = "defmt_watch")]
-                &mut defmt_meow.watcher_handle,
+                &mut defmt_helpers.watcher_handle,
             ) {
                 Ok(()) => (),
                 Err(e) => {
@@ -472,21 +446,8 @@ impl App {
             .load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))
             .unwrap();
 
-        // if let Some(last_path) = defmt_meow.recent_elfs.last()
-        //     && last_path.exists()
-        //     && last_path.is_file()
-        //     && let Ok(decoder) = crate::buffer::defmt::DefmtDecoder::from_elf_bytes(last_path)
-        // {
-        //     let decoder_arc = Arc::new(decoder);
-        //     let _ = buffer.defmt_decoder.insert(decoder_arc.clone());
-        //     buffer
-        //         .log_handle
-        //         .update_defmt_decoder(Some(decoder_arc.clone()))
-        //         .unwrap();
-        // }
-
         // debug!("{buffer:#?}");
-        Self {
+        Ok(Self {
             state: RunningState::Running,
             menu: Menu::PortSelection(PortSelectionElement::Ports),
             popup: None,
@@ -528,10 +489,10 @@ impl App {
             espflash: EspFlashHelper::build().unwrap(),
 
             #[cfg(feature = "defmt")]
-            defmt_helpers: defmt_meow,
+            defmt_helpers,
 
             user_broke_connection: false,
-        }
+        })
     }
     fn is_running(&self) -> bool {
         self.state == RunningState::Running
@@ -1202,7 +1163,7 @@ impl App {
                 self.keybinds = match fs::read_to_string(config_adjacent_path(
                     crate::keybinds::CONFIG_TOML_PATH,
                 )) {
-                    Ok(keybinds_input) => match Keybinds::load(&keybinds_input) {
+                    Ok(keybinds_input) => match Keybinds::from_str(&keybinds_input) {
                         Ok(kb) => kb,
                         Err(e) => {
                             error!("Failed parsing keybinds config! {e}");
@@ -4274,12 +4235,15 @@ impl App {
 
         Ok(())
     }
+    #[cfg(feature = "defmt")]
     pub fn try_load_defmt_elf(&mut self, path: &Utf8Path) -> Result<(), YapLoadDefmtError> {
         _try_load_defmt_elf(
             path,
             &mut self.buffer.defmt_decoder,
             &mut self.defmt_helpers.recent_elfs,
+            #[cfg(feature = "logging")]
             &self.buffer.log_handle,
+            #[cfg(feature = "defmt_watch")]
             &mut self.defmt_helpers.watcher_handle,
         )
     }

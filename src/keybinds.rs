@@ -587,7 +587,7 @@ impl Keybinds {
 
         deserialized
     }
-    pub fn load(input: &str) -> Result<Self, toml::de::Error> {
+    pub fn from_str(input: &str) -> Result<Self, toml::de::Error> {
         let mut overridable = Self::overridable_defaults();
 
         let user_settings: Self = toml::from_str(input)?;
@@ -612,7 +612,7 @@ mod test {
 
     #[test]
     fn test_default_config_deser() {
-        let keybinds = Keybinds::load(include_str!("../example_configs/yap_keybinds.toml"))
+        let keybinds = Keybinds::from_str(include_str!("../example_configs/yap_keybinds.toml"))
             .expect("example configs should be valid");
         assert!(keybinds.keybindings.len() > 0);
 

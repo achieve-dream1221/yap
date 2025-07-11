@@ -263,10 +263,14 @@ impl SerialWorker {
                 self.update_settings(settings)?;
                 match self.connect_to_port(&port, None) {
                     Ok(()) => (),
-                    Err(WorkerError::SerialPort(e)) => self
-                        .event_tx
-                        .send(SerialEvent::ConnectionFailed(e).into())?,
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        error!(
+                            "Error when connecting to {port}! {e}",
+                            port = port.port_name
+                        );
+                        self.event_tx
+                            .send(SerialEvent::ConnectionFailed(e).into())?;
+                    }
                 }
             }
             SerialWorkerCommand::CliConnect {
@@ -312,12 +316,16 @@ impl SerialWorker {
                         .cloned()
                         .ok_or(WorkerError::RequestedUsbMissing)
                 } else {
+                    // Otherwise we're expecting this to be the path to the port
                     Ok(port)
                 };
 
                 match port_info_res {
                     Ok(port_info) => {
-                        oneshot_tx.send(self.connect_to_port(&port_info, None))?;
+                        oneshot_tx.send(
+                            self.connect_to_port(&port_info, None)
+                                .map_err(WorkerError::SerialPort),
+                        )?;
                     }
                     Err(e) => {
                         oneshot_tx.send(Err(e))?;
@@ -639,7 +647,7 @@ impl SerialWorker {
         &mut self,
         port_info: &SerialPortInfo,
         reconnect_type: Option<ReconnectType>,
-    ) -> Result<(), WorkerError> {
+    ) -> Result<(), serialport::Error> {
         let mut port_status: PortStatus = self.shared_status.load().as_ref().clone();
         // If this is a normal connection, then this should be set to settings.dtr_on_open
         // otherwise, if we're reconnecting, then this should match the state of DTR at the time of disconnection
@@ -649,8 +657,7 @@ impl SerialWorker {
 
         if port_info.port_name.eq(MOCK_PORT_NAME) {
             let mut virt_port =
-                virtual_serialport::VirtualPort::loopback(baud_rate, MOCK_DATA.len() as u32)
-                    .map_err(WorkerError::PortConnection)?;
+                virtual_serialport::VirtualPort::loopback(baud_rate, MOCK_DATA.len() as u32)?;
             virt_port.write_all(MOCK_DATA)?;
 
             self.port.return_loopback(virt_port);
@@ -661,8 +668,7 @@ impl SerialWorker {
                 .parity(settings.parity_bits)
                 .stop_bits(settings.stop_bits)
                 .dtr_on_open(dtr_on_open)
-                .open_native()
-                .map_err(WorkerError::PortConnection)?;
+                .open_native()?;
 
             self.port.return_native(port);
         };
@@ -684,9 +690,17 @@ impl SerialWorker {
             port_info.port_name
         );
         // info!("port.baud_rate {}", self.port.as_ref().unwrap().baud_rate()?);
-        self.event_tx
-            .send(SerialEvent::Connected(reconnect_type).into())?;
-        Ok(())
+
+        if let Err(_) = self
+            .event_tx
+            .send(SerialEvent::Connected(reconnect_type).into())
+        {
+            let text = "App handle closed after successful port connection!";
+            error!("{text}");
+            panic!("{text}");
+        } else {
+            Ok(())
+        }
     }
 
     fn read_and_share_serial_signals(&mut self, force_share: bool) -> Result<(), WorkerError> {
@@ -1066,8 +1080,6 @@ impl SerialWorker {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum WorkerError {
-    #[error("error during port connection")]
-    PortConnection(#[source] serialport::Error),
     #[error("requested usb device could not be found")]
     RequestedUsbMissing,
     #[error("serial port error")]

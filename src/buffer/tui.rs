@@ -66,7 +66,7 @@ impl Buffer {
                         .echo_user_input
                         .filter_user_line(&l.line_type)
                 }),
-                |port, user| match port.raw_buffer_index.cmp(&user.raw_buffer_index) {
+                |port, user| match port.range().start.cmp(&user.range().start) {
                     Ordering::Equal => port.timestamp <= user.timestamp,
                     Ordering::Less => true,
                     Ordering::Greater => false,
@@ -338,7 +338,7 @@ impl Buffer {
                 let closest_index = self.state.vert_scroll * self.state.hex_bytes_per_line as usize;
                 let closest_line = self.styled_lines.rx.windows(2).find_position(|w| {
                     let [l, r] = w else { unreachable!() };
-                    l.raw_buffer_index <= closest_index && closest_index <= r.raw_buffer_index
+                    l.range().start <= closest_index && closest_index <= r.range().start
                 });
                 if let Some((index, line)) = closest_line {
                     let lines_up_to: usize = self
@@ -362,7 +362,7 @@ impl Buffer {
                     return;
                 };
 
-                self.state.vert_scroll = (top_visible.raw_buffer_index as f64
+                self.state.vert_scroll = (top_visible.range().start as f64
                     / self.state.hex_bytes_per_line as f64)
                     .floor() as usize
                     // .saturating_sub(self.last_terminal_size.height as usize)

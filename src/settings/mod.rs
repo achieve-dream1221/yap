@@ -1,5 +1,6 @@
 use std::{
     io::{Read, Write},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     path::{Path, PathBuf},
     str::FromStr,
     time::Duration,
@@ -9,6 +10,8 @@ use derivative::Derivative;
 use fs_err::{self as fs};
 use serde::{Deserialize, Serialize};
 use serde_inline_default::serde_inline_default;
+
+use serde_with::{NoneAsEmptyString, serde_as};
 use serialport::{DataBits, FlowControl, Parity, StopBits};
 use struct_table::StructTable;
 use strum::VariantArray;
@@ -37,6 +40,18 @@ use ser::*;
 pub mod line_ending;
 use line_ending::*;
 
+#[cfg(debug_assertions)]
+const DEFAULT_LOG_LEVEL: Level = Level::Trace;
+#[cfg(not(debug_assertions))]
+const DEFAULT_LOG_LEVEL: Level = Level::Debug;
+
+const DEFAULT_LOG_SOCKET: SocketAddr = {
+    let addr = Ipv4Addr::new(127, 0, 0, 1);
+    let port = 7331;
+
+    SocketAddr::new(IpAddr::V4(addr), port)
+};
+
 #[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
 #[derivative(Default)]
@@ -64,16 +79,18 @@ pub struct Settings {
     pub ignored: Ignored,
 }
 
+#[serde_as]
 #[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
 #[derivative(Default)]
 pub struct Misc {
-    #[serde_inline_default(String::from("debug"))]
-    #[derivative(Default(value = "String::from(\"debug\")"))]
-    pub log_level: String,
-    // #[serde_inline_default(String::from("127.0.0.1:7331"))]
-    // #[derivative(Default(value = "String::from(\"127.0.0.1:7331\")"))]
-    // pub log_tcp_socket: String,
+    #[serde_inline_default(DEFAULT_LOG_LEVEL)]
+    #[derivative(Default(value = "DEFAULT_LOG_LEVEL"))]
+    pub log_level: Level,
+    #[serde_inline_default(Some(DEFAULT_LOG_SOCKET))]
+    #[derivative(Default(value = "Some(DEFAULT_LOG_SOCKET)"))]
+    #[serde_as(as = "NoneAsEmptyString")]
+    pub log_tcp_socket: Option<SocketAddr>,
 }
 
 // TODO allow setting nicknames to devices?????
@@ -110,6 +127,10 @@ pub struct Rendering {
     #[serde(default)]
     /// Show buffer index and length next to line.
     pub show_indices: bool,
+
+    #[serde(default)]
+    /// Whether indices for "Show Indices" should be in hex format.
+    pub indices_as_hex: bool,
 
     #[serde(default)]
     /// Wrap text longer than the screen.
@@ -323,6 +344,8 @@ pub struct Behavior {
         serialize_with = "serialize_duration_as_ms",
         deserialize_with = "deserialize_duration_from_ms"
     )]
+    // https://docs.rs/serde_with/3.14.0/serde_with/struct.DurationSecondsWithFrac.html
+    // just found this ^
     /// Default delay between chained Actions in keybinds. Can be overwritten with "pause_ms:XXX" in chains.
     pub action_chain_delay: Duration,
 
@@ -387,6 +410,7 @@ pub enum DefmtLocation {
 )]
 #[strum(serialize_all = "title_case")]
 #[strum(ascii_case_insensitive)]
+// #[serde(try_from = "String")]
 pub enum Level {
     #[default]
     Trace,
@@ -396,6 +420,25 @@ pub enum Level {
     Error,
 }
 
+// Might want to redo this but find some way to keep the
+// "expected one of these variants: []"
+// impl TryFrom<String> for Level {
+//     type Error = strum::ParseError;
+//     fn try_from(value: String) -> Result<Self, strum::ParseError> {
+//         Self::try_from(value.as_str())
+//     }
+// }
+impl From<&Level> for tracing::Level {
+    fn from(level: &Level) -> Self {
+        match level {
+            Level::Trace => tracing::Level::TRACE,
+            Level::Debug => tracing::Level::DEBUG,
+            Level::Info => tracing::Level::INFO,
+            Level::Warn => tracing::Level::WARN,
+            Level::Error => tracing::Level::ERROR,
+        }
+    }
+}
 #[cfg(feature = "defmt")]
 impl From<Level> for defmt_parser::Level {
     fn from(value: Level) -> Self {
@@ -590,24 +633,18 @@ impl Default for PortSettings {
 }
 
 impl Settings {
-    pub fn load<P: AsRef<Path>>(path: P, required: bool) -> color_eyre::Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P) -> color_eyre::Result<Self> {
         let path = path.as_ref();
-        if !path.exists() && !required {
+        if !path.exists() {
             let default = Settings {
                 path: path.into(),
                 ..Default::default()
             };
             default.save()?;
             return Ok(default);
-        } else if !path.exists() && required {
-            // return Err(RedefaulterError::RequiredSettingsMissing);
-            panic!("RequiredSettingsMissing");
         }
-        let mut file = fs::File::open(path)?;
-        let mut buffer = String::new();
-        file.read_to_string(&mut buffer)?;
-        drop(file);
-        let mut config: Settings = toml::from_str(&buffer)?;
+        let settings_toml = fs::read_to_string(path)?;
+        let mut config: Settings = toml::from_str(&settings_toml)?;
         config.path = path.into();
         config.save()?;
         Ok(config)
@@ -617,16 +654,16 @@ impl Settings {
         self.save_at(&self.path)?;
         Ok(())
     }
+    // TODO write all enum variants next to each field?
     fn save_at(&self, config_path: &Path) -> color_eyre::Result<()> {
         let toml_config = toml::to_string(self)?;
-        info!("Serialized config length: {}", toml_config.len());
         let mut file = fs::File::create(config_path)?;
         file.write_all(toml_config.as_bytes())?;
         file.flush()?;
         file.sync_all()?;
         Ok(())
     }
-    pub fn get_log_level(&self) -> LevelFilter {
-        LevelFilter::from_str(&self.misc.log_level).unwrap_or(LevelFilter::DEBUG)
+    pub fn get_log_level(&self) -> tracing::Level {
+        tracing::Level::from(&self.misc.log_level)
     }
 }

@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, ops::Range};
 
 use chrono::{DateTime, Local};
 use compact_str::{CompactString, ToCompactString, format_compact};
@@ -19,12 +19,17 @@ use crate::{
     traits::LineHelpers,
 };
 
+const TIME_FORMAT: &str = "[%H:%M:%S%.3f] ";
+
 #[derive(Debug, Clone)]
 pub struct BufLine {
     pub(super) timestamp: DateTime<Local>,
-    timestamp_str: CompactString,
 
-    index_info: CompactString,
+    // removing for now to see if the smaller bufline size
+    // is worth the extra work needed to make a timestamp each time
+    // timestamp_str: CompactString,
+    //
+    range_in_raw_buffer: Range<usize>,
 
     pub(super) value: Line<'static>,
 
@@ -32,7 +37,6 @@ pub struct BufLine {
     // Truncated from usize, since even the ratatui sizes are capped there.
     rendered_line_height: u16,
 
-    pub raw_buffer_index: usize,
     pub line_type: LineType,
     // #[cfg(feature = "defmt")]
     // defmt_level: Option<Level>,
@@ -138,20 +142,17 @@ pub struct BufLineKit<'a> {
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
     fn new(mut line: Line<'static>, kit: BufLineKit, line_type: LineType) -> Self {
-        let time_format = "[%H:%M:%S%.3f] ";
-
         line.remove_unsavory_chars();
 
-        let index_info = make_index_info(&kit.full_range_slice);
+        // let index_info = make_index_info(&kit.full_range_slice, kit.render.rendering.hex_indices);
 
         let timestamp = kit.timestamp;
 
         let mut bufline = Self {
-            timestamp_str: timestamp.format(time_format).to_compact_string(),
+            // timestamp_str: timestamp.format(TIME_FORMAT).to_compact_string(),
             timestamp,
-            index_info,
+            range_in_raw_buffer: kit.full_range_slice.range,
             value: line,
-            raw_buffer_index: kit.full_range_slice.range.start,
             rendered_line_height: 0,
             line_type,
         };
@@ -214,7 +215,7 @@ impl BufLine {
             }
         );
 
-        self.index_info = make_index_info(&kit.full_range_slice);
+        // self.index_info = make_index_info(&kit.full_range_slice);
 
         self.value = line;
         self.value.remove_unsavory_chars();
@@ -255,17 +256,28 @@ impl BufLine {
 
         let dark_gray = Style::new().dark_gray();
 
-        let indices_and_len = std::iter::once(Span::styled(
-            Cow::Borrowed(self.index_info.as_ref()),
-            dark_gray,
-        ))
-        .filter(|_| rendering.rendering.show_indices);
+        let indices_and_len = std::iter::once(&self.range_in_raw_buffer).filter_map(|i| {
+            if !rendering.rendering.show_indices {
+                return None;
+            }
+            Some(Span::styled(
+                make_index_info(i, rendering.rendering.indices_as_hex),
+                dark_gray,
+            ))
+        });
 
-        let timestamp = std::iter::once(Span::styled(
-            Cow::Borrowed(self.timestamp_str.as_ref()),
-            dark_gray,
-        ))
-        .filter(|_| rendering.rendering.timestamps);
+        let timestamp = std::iter::once(&self.timestamp).filter_map(|t| {
+            if !rendering.rendering.timestamps {
+                return None;
+            }
+            Some(Span::styled(t.format(TIME_FORMAT).to_string(), dark_gray))
+        });
+
+        // let timestamp = std::iter::once(Span::styled(
+        //     Cow::Borrowed(self.timestamp_str.as_ref()),
+        //     dark_gray,
+        // ))
+        // .filter(|_| rendering.rendering.timestamps);
 
         #[cfg(feature = "defmt")]
         let defmt_device_timestamp = std::iter::once(&self.line_type).filter_map(|lt| match lt {
@@ -416,27 +428,20 @@ impl BufLine {
         Line::from_iter(spans)
     }
 
-    pub fn index_in_buffer(&self) -> usize {
-        self.raw_buffer_index
+    pub fn range(&self) -> &Range<usize> {
+        &self.range_in_raw_buffer
     }
 }
 
-fn make_index_info(
-    range: &RangeSlice,
-    // line_type: &LineType,
-) -> CompactString {
-    // if let LineType::User { .. } = line_type {
-    //     format_compact!(
-    //         "({start:06}->{end:06}, {len:3}) ",
-    //         start = start_index,
-    //         end = start_index + full_line_slice.len(),
-    //         len = full_line_slice.len(),
-    //     )
-    // } else {
-    let start = range.range.start;
-    let end = range.range.end;
-    let len = range.slice.len();
-    debug_assert_eq!(end - start, len);
-    format_compact!("({start:06}..{end:06}, {len:3}) ")
-    // }
+// TODO dont show len for user lines wheres its always 0
+fn make_index_info(range: &Range<usize>, hex: bool) -> CompactString {
+    let start = range.start;
+    let end = range.end;
+    let len = end - start;
+
+    if hex {
+        format_compact!("({start:#08X}..{end:#08X}, {len:#4X}) ")
+    } else {
+        format_compact!("({start:06}..{end:06}, {len:3}) ")
+    }
 }
