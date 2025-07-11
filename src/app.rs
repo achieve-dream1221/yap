@@ -38,13 +38,16 @@ use struct_table::{ArrowKey, StructTable};
 use strum::{VariantArray, VariantNames};
 use takeable::Takeable;
 
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 use tui_big_text::{BigText, PixelSize};
 use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 
 #[cfg(feature = "defmt")]
 #[cfg(feature = "logging")]
 use crate::buffer::LoggingHandle;
+#[cfg(feature = "defmt")]
+#[cfg(feature = "defmt_watch")]
+use crate::buffer::defmt::elf_watcher::ElfWatchHandle;
 use crate::{
     buffer::Buffer,
     event_carousel::CarouselHandle,
@@ -69,7 +72,10 @@ use crate::{
 };
 
 #[cfg(feature = "defmt")]
-use crate::buffer::defmt::{DefmtLoadError, DefmtTableError};
+use crate::{
+    buffer::defmt::{DefmtDecoder, DefmtLoadError, DefmtTableError, LocationsError},
+    tui::defmt::DefmtRecentElfs,
+};
 #[cfg(feature = "defmt")]
 use crate::{keybinds::DefmtSelectAction, settings::Defmt, tui::defmt::DefmtHelpers};
 
@@ -299,7 +305,7 @@ pub struct App {
 
     user_input: UserInput,
 
-    buffer: Buffer,
+    pub buffer: Buffer,
     // Tempted to move these into Buffer, or a new BufferState
     // buffer_scroll: usize,
     // buffer_scroll_state: ScrollbarState,
@@ -323,7 +329,7 @@ pub struct App {
     espflash: EspFlashHelper,
 
     #[cfg(feature = "defmt")]
-    defmt_helpers: DefmtHelpers,
+    pub defmt_helpers: DefmtHelpers,
     // TODO
     // error_message: Option<String>,
 }
@@ -354,8 +360,7 @@ impl App {
             fs::write(
                 keybinds_path,
                 include_str!("../example_configs/yap_keybinds.toml.blank").as_bytes(),
-            )
-            .unwrap();
+            )?;
             Keybinds::overridable_defaults()
         };
 
@@ -430,7 +435,10 @@ impl App {
                 #[cfg(feature = "defmt_watch")]
                 &mut defmt_helpers.watcher_handle,
             ) {
-                Ok(()) => (),
+                Ok(None) => (),
+                Ok(Some(locs_err)) => {
+                    Err(locs_err)?;
+                }
                 Err(e) => {
                     let text = format!("loading last defmt ELF failed! {e}");
                     error!("{text}");
@@ -819,33 +827,24 @@ impl App {
                 if self.settings.defmt.watch_elf_for_changes {
                     info!("ELF File Watch triggered, reloading ELF at {elf_path}");
 
-                    match self.try_load_defmt_elf(&elf_path) {
-                        Ok(()) => {
-                            self.notifs
-                                .notify_str("defmt ELF reloaded due to file update!", Color::Green);
-                        }
-                        Err(e) => {
-                            let text = format!("defmt ELF reload failed! {e}");
-                            error!("{text}");
-                            self.notifs.notify_str(text, Color::Red);
-                        }
-                    }
+                    self.try_load_defmt_elf(
+                        &elf_path,
+                        #[cfg(feature = "defmt_watch")]
+                        true,
+                    );
+                } else {
+                    trace!("Ignoring ELF file watch event!");
                 }
             }
             #[cfg(feature = "defmt_watch")]
             Event::DefmtElfWatch(ElfWatchEvent::Error(err)) => {
                 self.notifs.notify_str(err, Color::Red);
             }
-            Event::DefmtFromFilePicker(elf_path) => match self.try_load_defmt_elf(&elf_path) {
-                Ok(()) => {
-                    self.notifs.notify_str("defmt ELF loaded!", Color::Green);
-                }
-                Err(e) => {
-                    let text = format!("defmt ELF load failed! {e}");
-                    error!("{text}");
-                    self.notifs.notify_str(text, Color::Red);
-                }
-            },
+            Event::DefmtFromFilePicker(elf_path) => self.try_load_defmt_elf(
+                &elf_path,
+                #[cfg(feature = "defmt_watch")]
+                false,
+            ),
         }
         Ok(())
     }
@@ -1002,17 +1001,11 @@ impl App {
 
                         let elf_path: Utf8PathBuf = current.path().to_owned().try_into().unwrap();
 
-                        match self.try_load_defmt_elf(&elf_path) {
-                            Ok(()) => {
-                                self.notifs
-                                    .notify_str("defmt ELF loaded successfully!", Color::Green);
-                            }
-                            Err(e) => {
-                                let text = format!("defmt ELF load failed! {e}");
-                                error!("{text}");
-                                self.notifs.notify_str(text, Color::Red);
-                            }
-                        }
+                        self.try_load_defmt_elf(
+                            &elf_path,
+                            #[cfg(feature = "defmt_watch")]
+                            false,
+                        );
 
                         self.dismiss_popup();
                     }
@@ -1402,16 +1395,11 @@ impl App {
 
         #[cfg(feature = "defmt")]
         if let Some(elf_path) = profile_defmt_path {
-            match self.try_load_defmt_elf(&elf_path) {
-                Ok(()) => {
-                    self.notifs.notify_str("defmt ELF loaded!", Color::Green);
-                }
-                Err(e) => {
-                    let text = format!("defmt ELF load failed! {e}");
-                    error!("{text}");
-                    self.notifs.notify_str(text, Color::Red);
-                }
-            }
+            self.try_load_defmt_elf(
+                &elf_path,
+                #[cfg(feature = "defmt_watch")]
+                false,
+            );
         }
         Ok(())
     }
@@ -2231,17 +2219,11 @@ impl App {
                         .nth_path(selected)
                         .unwrap()
                         .to_owned();
-                    match self.try_load_defmt_elf(&elf_path) {
-                        Ok(()) => {
-                            self.notifs
-                                .notify_str("defmt ELF loaded successfully!", Color::Green);
-                        }
-                        Err(e) => {
-                            let text = format!("defmt ELF load failed! {e}");
-                            error!("{text}");
-                            self.notifs.notify_str(text, Color::Red);
-                        }
-                    }
+                    self.try_load_defmt_elf(
+                        &elf_path,
+                        #[cfg(feature = "defmt_watch")]
+                        false,
+                    );
                     self.dismiss_popup();
                 }
             }
@@ -4236,8 +4218,39 @@ impl App {
         Ok(())
     }
     #[cfg(feature = "defmt")]
-    pub fn try_load_defmt_elf(&mut self, path: &Utf8Path) -> Result<(), YapLoadDefmtError> {
-        _try_load_defmt_elf(
+    /// Try to load the given file path as a defmt elf,
+    /// if successful, loads decoder into Buffer and Logger
+    /// and informs the ELF Watcher about this latest file.
+    ///
+    /// If you want to handle any actual errors from this process,
+    /// use `_try_load_defmt_elf`
+    pub fn try_load_defmt_elf(
+        &mut self,
+        path: &Utf8Path,
+        #[cfg(feature = "defmt_watch")] reload: bool,
+    ) {
+        let success_text = {
+            #[cfg(feature = "defmt_watch")]
+            if reload {
+                "defmt ELF reloaded due to file update!"
+            } else {
+                "defmt ELF loaded successfully!"
+            }
+            #[cfg(not(feature = "defmt_watch"))]
+            "defmt ELF loaded successfully!"
+        };
+        let fail_text = {
+            #[cfg(feature = "defmt_watch")]
+            if reload {
+                "defmt ELF auto-reload failed!"
+            } else {
+                "defmt ELF load failed!"
+            }
+            #[cfg(not(feature = "defmt_watch"))]
+            "defmt ELF load failed!"
+        };
+
+        match _try_load_defmt_elf(
             path,
             &mut self.buffer.defmt_decoder,
             &mut self.defmt_helpers.recent_elfs,
@@ -4245,9 +4258,42 @@ impl App {
             &self.buffer.log_handle,
             #[cfg(feature = "defmt_watch")]
             &mut self.defmt_helpers.watcher_handle,
-        )
+        ) {
+            Ok(None) => {
+                self.notifs.notify_str(success_text, Color::Green);
+            }
+            Ok(Some(locs_err)) => {
+                self.notifs.notify_str(
+                    format!("defmt ELF had location data err: {locs_err}"),
+                    Color::Yellow,
+                );
+            }
+            Err(e) => {
+                let text = format!("{fail_text} {e}");
+                error!("{text}");
+                self.notifs.notify_str(text, Color::Red);
+            }
+        }
     }
 }
+// #[cfg(feature = "defmt")]
+// /// Try to load the given file path as a defmt elf,
+// /// if successful, loads decoder into Buffer and Logger
+// /// and informs the ELF Watcher about this latest file.
+// pub fn _try_load_defmt_elf(
+//     &mut self,
+//     path: &Utf8Path,
+// ) -> Result<Option<LocationsError>, YapLoadDefmtError> {
+//     _try_load_defmt_elf(
+//         path,
+//         &mut self.buffer.defmt_decoder,
+//         &mut self.defmt_helpers.recent_elfs,
+//         #[cfg(feature = "logging")]
+//         &self.buffer.log_handle,
+//         #[cfg(feature = "defmt_watch")]
+//         &mut self.defmt_helpers.watcher_handle,
+//     )
+// }
 
 #[cfg(feature = "defmt")]
 #[derive(Debug, thiserror::Error)]
@@ -4259,19 +4305,16 @@ pub enum YapLoadDefmtError {
 }
 
 #[cfg(feature = "defmt")]
-fn _try_load_defmt_elf(
+pub fn _try_load_defmt_elf(
     path: &Utf8Path,
-    decoder_opt: &mut Option<Arc<crate::buffer::defmt::DefmtDecoder>>,
-    recent_elfs: &mut crate::tui::defmt::DefmtRecentElfs,
+    decoder_opt: &mut Option<Arc<DefmtDecoder>>,
+    recent_elfs: &mut DefmtRecentElfs,
     #[cfg(feature = "logging")] logging: &LoggingHandle,
-    #[cfg(feature = "defmt_watch")]
-    watcher_handle: &mut crate::buffer::defmt::elf_watcher::ElfWatchHandle,
-) -> Result<(), YapLoadDefmtError> {
-    use crate::buffer::defmt::DefmtDecoder;
-
+    #[cfg(feature = "defmt_watch")] watcher_handle: &mut ElfWatchHandle,
+) -> Result<Option<LocationsError>, YapLoadDefmtError> {
     let new_decoder = DefmtDecoder::from_elf_path(path);
     match new_decoder {
-        Ok(new_decoder) => {
+        Ok((new_decoder, locations_err_opt)) => {
             let decoder_arc = Arc::new(new_decoder);
             let _ = decoder_opt.insert(decoder_arc.clone());
             // self.notifs
@@ -4283,16 +4326,16 @@ fn _try_load_defmt_elf(
                 .unwrap();
             #[cfg(feature = "defmt_watch")]
             watcher_handle.begin_watch(path).unwrap();
+
+            Ok(locations_err_opt)
         }
         Err(e) => {
             error!("error loading defmt elf {e}");
-            Err(e)?;
+            return Err(e)?;
             // self.notifs
             //     .notify_str(format!("defmt Error: {e}"), Color::Red);
         }
     }
-
-    Ok(())
 }
 
 pub fn repeating_pattern_widget(
@@ -4421,14 +4464,15 @@ fn create_file_explorer() -> Result<FileExplorer, std::io::Error> {
         .with_scroll_padding(1)
         .add_default_title();
 
-    let root_path = std::path::PathBuf::from("/");
+    // let root_path = std::path::PathBuf::from("");
 
-    let base_dirs_opt = directories::BaseDirs::new();
+    // let base_dirs_opt = directories::BaseDirs::new();
 
-    let starting_dir = base_dirs_opt
-        .as_ref()
-        .map(|base_dirs| base_dirs.home_dir())
-        .unwrap_or(&root_path);
+    // let starting_dir = base_dirs_opt
+    //     .as_ref()
+    //     .map(|base_dirs| base_dirs.home_dir())
+    //     .unwrap_or(&root_path);
 
-    FileExplorer::with_theme(explorer_theme).and_then(|mut e| e.set_cwd(starting_dir).map(|_| e))
+    FileExplorer::with_theme(explorer_theme)
+    // .and_then(|mut e| e.set_cwd(starting_dir).map(|_| e))
 }

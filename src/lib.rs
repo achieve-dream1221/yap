@@ -200,7 +200,23 @@ fn run_inner(cli_args: YapCli, app_settings: Settings) -> color_eyre::Result<()>
     let mut app = App::build(tx, rx, app_settings)?;
 
     if let Some(defmt_path) = cli_args.defmt_elf {
-        app.try_load_defmt_elf(&defmt_path)?;
+        match app::_try_load_defmt_elf(
+            &defmt_path,
+            &mut app.buffer.defmt_decoder,
+            &mut app.defmt_helpers.recent_elfs,
+            #[cfg(feature = "logging")]
+            &app.buffer.log_handle,
+            #[cfg(feature = "defmt_watch")]
+            &mut app.defmt_helpers.watcher_handle,
+        ) {
+            Ok(None) => (),
+            Ok(Some(locs_err)) => {
+                Err(locs_err)?;
+            }
+            Err(e) => {
+                Err(e)?;
+            }
+        }
     }
 
     if let Some(port) = cli_args.port {

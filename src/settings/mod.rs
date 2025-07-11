@@ -390,9 +390,9 @@ pub enum DefmtSupport {
     strum::EnumIs,
 )]
 pub enum DefmtLocation {
+    Shortened,
     #[default]
     Full,
-    Shortened,
     Hidden,
 }
 
