@@ -124,7 +124,7 @@ pub struct Rendering {
     pub timestamps: bool,
 
     #[serde(default)]
-    /// Show buffer index and length next to line.
+    /// Show line's buffer index and length next to line.
     pub show_indices: bool,
 
     #[serde(default)]

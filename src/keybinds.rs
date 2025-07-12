@@ -10,7 +10,7 @@ use crokey::KeyCombination;
 use fs_err as fs;
 use indexmap::IndexMap;
 use serde::Deserialize;
-use strum::VariantNames;
+use strum::{EnumMessage, VariantArray, VariantNames};
 
 #[cfg(feature = "macros")]
 use crate::macros::MacroNameTag;
@@ -25,7 +25,8 @@ use crate::traits::RequiresPort;
     strum::EnumString,
     strum::Display,
     strum::AsRefStr,
-    strum::VariantNames,
+    strum::VariantArray,
+    strum::EnumMessage,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
@@ -34,17 +35,24 @@ use crate::traits::RequiresPort;
 // nevermind, doesn't work with FromStr :(
 pub enum ShowPopupAction {
     #[strum(serialize = "show-portsettings")]
+    /// Open the Port Settings menu.
     ShowPortSettings,
+    /// Open the Behavior Settings menu.
     ShowBehavior,
+    /// Open the Rendering Settings menu.
     ShowRendering,
     #[cfg(feature = "macros")]
+    /// Open the Macros menu.
     ShowMacros,
     #[cfg(feature = "espflash")]
     #[strum(serialize = "show-espflash")]
+    /// Open the espflash menu.
     ShowEspFlash,
     #[cfg(feature = "logging")]
+    /// Open the Logging Settings menu.
     ShowLogging,
     #[cfg(feature = "defmt")]
+    /// Open the defmt Settings menu.
     ShowDefmt,
 }
 
@@ -84,19 +92,25 @@ impl RequiresPort for ShowPopupAction {
     strum::EnumString,
     strum::Display,
     strum::AsRefStr,
-    strum::VariantNames,
+    strum::VariantArray,
+    strum::EnumMessage,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum BaseAction {
+    /// Toggle wrapping text longer than the screen.
     ToggleTextwrap,
+    /// Toggle displaying timestamps.
     ToggleTimestamps,
+    /// Toggle displaying line index and length in buffer.
     ToggleIndices,
+    /// Toggle displaying recieved bytes in a Hex+ASCII view.
     ToggleHex,
+    /// Toggle displaying Address+Offset Markers+ASCII label above hex view.
     ToggleHexHeader,
-
+    /// Open menu to show current keybinds.
     ShowKeybinds,
-
+    /// Reload all Color Rules.
     ReloadColors,
 }
 
@@ -118,18 +132,30 @@ impl RequiresPort for BaseAction {
     strum::EnumString,
     strum::Display,
     strum::AsRefStr,
-    strum::VariantNames,
+    strum::VariantArray,
+    strum::EnumMessage,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum PortAction {
+    /// Toggle the state of DTR (Data Terminal Ready).
     ToggleDtr,
+    /// Toggle the state of RTS (Ready To Send).
     ToggleRts,
+
+    /// Set the state of RTS to active.
     AssertRts,
+    /// Set the state of RTS to in-active.
     DeassertRts,
+
+    /// Set the state of DTR to active.
     AssertDtr,
+    /// Set the state of DTR to in-active.
     DeassertDtr,
+
+    /// Attempt to reconnect to device, must match USB info if applicable.
     AttemptReconnectStrict,
+    /// Attempt to reconnect to device, best-effort.
     AttemptReconnectLoose,
 }
 
@@ -155,11 +181,13 @@ impl RequiresPort for PortAction {
     strum::EnumString,
     strum::Display,
     strum::AsRefStr,
-    strum::VariantNames,
+    strum::VariantArray,
+    strum::EnumMessage,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum MacroBuiltinAction {
+    /// Reload all Macros.
     ReloadMacros,
 }
 
@@ -183,17 +211,24 @@ impl RequiresPort for MacroBuiltinAction {
     strum::EnumString,
     strum::Display,
     strum::AsRefStr,
-    strum::VariantNames,
+    strum::VariantArray,
+    strum::EnumMessage,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum EspAction {
     #[strum(serialize = "reload-espflash")]
+    /// Reload all espflash profiles.
     ReloadProfiles,
+    /// Attempt to remotely reset the chip.
     EspHardReset,
+    /// Attempt to reboot into bootloader, retries until success or eventual fail.
     EspBootloader,
+    /// Attempt to reboot into bootloader, doesn't check for success.
     EspBootloaderUnchecked,
+    /// Query ESP for Flash Size, MAC Address, etc.
     EspDeviceInfo,
+    /// Erase all ESP flash contents.
     EspEraseFlash,
 }
 
@@ -220,12 +255,14 @@ impl RequiresPort for EspAction {
     strum::EnumString,
     strum::Display,
     strum::AsRefStr,
-    strum::VariantNames,
+    strum::VariantArray,
+    strum::EnumMessage,
 )]
 // #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum LoggingAction {
     #[strum(serialize = "logging-sync")]
+    /// Sync any active log files with entire buffer content, current settings, and defmt table if loaded.
     Sync,
 }
 
@@ -252,7 +289,8 @@ impl RequiresPort for LoggingAction {
     strum::EnumString,
     strum::Display,
     strum::AsRefStr,
-    strum::VariantNames,
+    strum::VariantArray,
+    strum::EnumMessage,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
@@ -261,10 +299,13 @@ impl RequiresPort for LoggingAction {
 // nevermind, doesn't work with FromStr :(
 pub enum DefmtSelectAction {
     #[strum(serialize = "defmt-select-tui")]
+    /// Select a defmt ELF with an in-app file explorer.
     SelectTui,
     #[strum(serialize = "defmt-select-system")]
+    /// Select a defmt ELF with the system file explorer.
     SelectSystem,
     #[strum(serialize = "defmt-select-recent")]
+    /// Select a recently-used defmt ELF.
     SelectRecent,
 }
 
@@ -626,11 +667,21 @@ mod test {
 
 pub fn print_all_actions() {
     use ratatui::crossterm::style::Stylize;
-    fn print_variants<T: VariantNames>(name: &str) {
+    fn print_variants<T: VariantArray + EnumMessage + fmt::Display>(name: &str) {
+        use ratatui::crossterm::style::Stylize;
+
         let text = format!("{name}:").red();
         println!("{text}");
         for variant in T::VARIANTS {
-            println!("{variant}");
+            let mut doc_comment = String::from(" - ");
+            doc_comment.push_str(
+                variant
+                    .get_documentation()
+                    .unwrap_or_else(|| panic!("AppAction {variant} missing doc comment")),
+            );
+            let styled_doc = doc_comment.dark_grey();
+
+            println!("{variant}{styled_doc}");
         }
         println!("");
     }
