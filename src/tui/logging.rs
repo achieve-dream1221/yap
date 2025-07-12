@@ -3,15 +3,13 @@ use ratatui::{
     widgets::{Row, Table},
 };
 
-pub fn toggle_logging_button(logging_active: bool) -> Table<'static> {
+pub fn sync_logs_button() -> Table<'static> {
     let selected_row_style = Style::new().reversed();
     let first_column_style = Style::new().reset();
 
-    let toggle_text = if logging_active { "Stop!" } else { "Start!" };
-
     let rows: Vec<Row> = vec![Row::new([
-        Text::raw("Start/Stop Logging to file(s) ").right_aligned(),
-        Text::raw(toggle_text).centered().italic(),
+        Text::raw("Sync Buffer to File(s) ").right_aligned(),
+        Text::raw("Sync!").centered().italic(),
     ])];
 
     Table::new(

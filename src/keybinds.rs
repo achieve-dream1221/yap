@@ -225,24 +225,20 @@ impl RequiresPort for EspAction {
 // #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum LoggingAction {
-    #[strum(serialize = "logging-start")]
-    Start,
-    #[strum(serialize = "logging-stop")]
-    Stop,
-    #[strum(serialize = "logging-toggle")]
-    Toggle,
+    #[strum(serialize = "logging-sync")]
+    Sync,
 }
 
 #[cfg(feature = "logging")]
 impl RequiresPort for LoggingAction {
     fn requires_connection(&self) -> bool {
-        match self {
-            Self::Start => true,
-            _ => false,
-        }
+        false
     }
     fn requires_terminal_view(&self) -> bool {
-        false
+        match self {
+            Self::Sync => true,
+            // _ => false,
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    io::Write,
+    io::{Seek, Write},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -13,7 +13,7 @@ use chrono::{DateTime, Local};
 use crossbeam::channel::{Receiver, RecvError, SendError, Sender};
 use fs_err as fs;
 use serialport::SerialPortInfo;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 #[cfg(feature = "defmt")]
 use crate::settings::Defmt;
@@ -22,7 +22,7 @@ use crate::{
     changed, config_adjacent_path,
     errors::HandleResult,
     serial::ReconnectType,
-    settings::{self, Logging, LoggingType},
+    settings::{self, Logging},
     traits::ByteSuffixCheck,
 };
 
@@ -39,20 +39,21 @@ pub const DEFAULT_TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.9f";
 // Log to file: true/false
 // Log to socket: true/false (later)
 
+pub struct TxPayload {
+    pub timestamp: DateTime<Local>,
+    pub bytes: Vec<u8>,
+    pub line_ending: Vec<u8>,
+}
+
 pub enum LoggingCommand {
     PortConnected(DateTime<Local>, SerialPortInfo, Option<ReconnectType>),
     PortDisconnect {
         timestamp: DateTime<Local>,
         intentional: bool,
     },
-    RequestStart(DateTime<Local>, SerialPortInfo),
-    RequestStop,
+    BeginRelogging(Receiver<Relogging>),
     RxBytes(DateTime<Local>, Vec<u8>),
-    TxBytes {
-        timestamp: DateTime<Local>,
-        bytes: Vec<u8>,
-        line_ending: Vec<u8>,
-    },
+    TxBytes(TxPayload),
     LineEndingChange(LineEnding),
     Settings(Logging),
     #[cfg(feature = "defmt")]
@@ -60,6 +61,12 @@ pub enum LoggingCommand {
     #[cfg(feature = "defmt")]
     DefmtDecoder(Option<Arc<super::defmt::DefmtDecoder>>),
     Shutdown(Sender<()>),
+}
+
+pub enum Relogging {
+    RxBatch(Vec<(DateTime<Local>, Vec<u8>)>),
+    TxBatch(Vec<TxPayload>),
+    Done,
 }
 
 enum LoggingLineType {
@@ -91,8 +98,7 @@ impl<T> From<SendError<T>> for LoggingError {
 
 #[derive(Debug)]
 pub enum LoggingEvent {
-    Started,
-    Stopped { error: Option<String> },
+    FinishedReconsumption,
     Error(String),
 }
 
@@ -114,8 +120,7 @@ struct LoggingWorker {
     line_ending: LineEnding,
     last_rx_completed: bool,
 
-    //????
-    last_known_port: Option<SerialPortInfo>,
+    current_port: Option<SerialPortInfo>,
 
     #[cfg(feature = "defmt")]
     defmt: DefmtKit,
@@ -152,7 +157,7 @@ impl LoggingHandle {
             started_logging_at: None,
             session_open: session_open.clone(),
             last_rx_completed: true,
-            last_known_port: None,
+            current_port: None,
             #[cfg(feature = "defmt")]
             defmt: DefmtKit {
                 settings: defmt_settings,
@@ -161,9 +166,11 @@ impl LoggingHandle {
         };
 
         let worker = std::thread::spawn(move || {
-            worker
-                .work_loop()
-                .expect("Carousel encountered an unexpected fatal error");
+            if let Err(e) = worker.work_loop() {
+                error!("Logging worker encountered an unexpected fatal error! {e}")
+            } else {
+                debug!("Logging worker closed gracefully.")
+            }
         });
 
         (
@@ -173,23 +180,6 @@ impl LoggingHandle {
             },
             worker,
         )
-    }
-    pub fn logging_active(&self) -> bool {
-        self.session_open.load(Ordering::Acquire)
-    }
-    pub fn request_log_start(&self, port_info: SerialPortInfo) -> HandleResult<()> {
-        self.command_tx
-            .send(LoggingCommand::RequestStart(Local::now(), port_info))?;
-        Ok(())
-    }
-    // pub fn request_log_toggle(&self, port_info: SerialPortInfo) -> WorkerResult<()> {
-    //     self.command_tx
-    //         .send(LoggingCommand::RequestToggle(Local::now(), port_info))?;
-    //     Ok(())
-    // }
-    pub fn request_log_stop(&self) -> HandleResult<()> {
-        self.command_tx.send(LoggingCommand::RequestStop)?;
-        Ok(())
     }
     pub fn log_port_connected(
         &self,
@@ -201,6 +191,11 @@ impl LoggingHandle {
             port_info,
             reconnect_type,
         ))?;
+        Ok(())
+    }
+    pub(super) fn begin_relogging(&self, receiver: Receiver<Relogging>) -> HandleResult<()> {
+        self.command_tx
+            .send(LoggingCommand::BeginRelogging(receiver))?;
         Ok(())
     }
     pub(super) fn log_rx_bytes(
@@ -218,11 +213,11 @@ impl LoggingHandle {
         bytes: Vec<u8>,
         line_ending: Vec<u8>,
     ) -> HandleResult<()> {
-        self.command_tx.send(LoggingCommand::TxBytes {
+        self.command_tx.send(LoggingCommand::TxBytes(TxPayload {
             timestamp,
             bytes,
             line_ending,
-        })?;
+        }))?;
         Ok(())
     }
     // pub(super) fn log_bufline(&self, line: BufLine) -> WorkerResult<()> {
@@ -337,78 +332,88 @@ impl LoggingWorker {
     fn handle_command(&mut self, cmd: LoggingCommand) -> Result<(), LoggingError> {
         match cmd {
             LoggingCommand::PortConnected(timestamp, port_info, reconnect_type) => {
-                // if let Some(reconnect) = reconnect_type {
-                // } else if self.settings.always_begin_on_connect {
-                // }
-                if reconnect_type.is_none() && self.settings.always_begin_on_connect {
-                    self.begin_logging_session(timestamp, &port_info)?;
-                }
+                self.create_and_close_log_files(timestamp, &port_info)?;
                 self.log_connection_event(timestamp, Some(&port_info))?;
-                self.last_known_port = Some(port_info);
+                self.current_port = Some(port_info);
             }
-            LoggingCommand::RequestStart(timestamp, port_info) => {
-                if self.raw_file.is_some() || self.text_file.is_some() {
-                    warn!("Logging Start requested when a file is already owned, not acting.");
+            LoggingCommand::BeginRelogging(receiver) => {
+                let Some(port_info) = &self.current_port else {
+                    self.event_tx.send(
+                        LoggingEvent::Error("Logging worker missing port info, can't sync.".into())
+                            .into(),
+                    )?;
                     return Ok(());
+                };
+                if let Some(text) = &mut self.text_file {
+                    text.set_len(0)?;
+                    text.seek(std::io::SeekFrom::Start(0))?;
+                    write_header_to_text_file(text, port_info)?;
                 }
-                // assert!(self.raw_file.is_none());
-                // assert!(self.text_file.is_none());
-                self.begin_logging_session(timestamp, &port_info)?;
-                self.last_known_port = Some(port_info);
+                if let Some(raw) = &mut self.raw_file {
+                    raw.set_len(0)?;
+                    raw.seek(std::io::SeekFrom::Start(0))?;
+                }
+
+                for msg in receiver.into_iter() {
+                    match msg {
+                        Relogging::RxBatch(rx_batch) => {
+                            for (timestamp, bytes) in rx_batch {
+                                if let Some(raw_file) = &mut self.raw_file {
+                                    raw_file.write_all(&bytes)?;
+                                }
+                                if self.text_file.is_some() {
+                                    self.consume_text_bytes(timestamp, bytes)?;
+                                }
+                            }
+                        }
+                        Relogging::TxBatch(tx_batch) => {
+                            for TxPayload {
+                                timestamp,
+                                bytes,
+                                line_ending,
+                            } in tx_batch
+                            {
+                                let Some(text_file) = &mut self.text_file else {
+                                    warn!("not logging tx bytes, no text file!");
+                                    return Ok(());
+                                };
+                                if !self.settings.log_user_input {
+                                    warn!("not logging tx bytes, user log disabled!");
+                                    return Ok(());
+                                }
+                                self.last_rx_completed = write_buffer_to_text_file(
+                                    timestamp,
+                                    &self.settings.timestamp,
+                                    &bytes,
+                                    self.last_rx_completed,
+                                    text_file,
+                                    &self.line_ending,
+                                    // self.settings.timestamps,
+                                    LoggingLineType::Tx { line_ending },
+                                )?;
+                            }
+                        }
+                        Relogging::Done => {
+                            self.flush_files(false)?;
+                            self.event_tx
+                                .send(LoggingEvent::FinishedReconsumption.into())?;
+                        }
+                    }
+                }
             }
             LoggingCommand::RxBytes(timestamp, buf) => {
                 if let Some(raw_file) = &mut self.raw_file {
                     raw_file.write_all(&buf)?;
-                };
-
-                #[cfg(feature = "defmt")]
-                if let Some(text_file) = &mut self.text_file {
-                    use settings::DefmtSupport;
-
-                    match self.defmt.settings.defmt_parsing {
-                        DefmtSupport::Disabled => {
-                            self.last_rx_completed = write_buffer_to_text_file(
-                                timestamp,
-                                &self.settings.timestamp,
-                                &buf,
-                                self.last_rx_completed,
-                                text_file,
-                                &self.line_ending,
-                                // self.settings.timestamps,
-                                LoggingLineType::Rx,
-                            )?;
-                        }
-                        DefmtSupport::FramedRzcobs
-                        | DefmtSupport::UnframedRzcobs
-                        | DefmtSupport::Raw => {
-                            if let Some((_, existing_buf)) = &mut self.defmt.unconsumed {
-                                existing_buf.extend(buf);
-                            } else {
-                                _ = self.defmt.unconsumed.insert((timestamp, buf));
-                            }
-                            self.consume_with_defmt()?;
-                        }
-                    }
-                };
-                #[cfg(not(feature = "defmt"))]
-                if let Some(text_file) = &mut self.text_file {
-                    self.last_rx_completed = write_buffer_to_text_file(
-                        timestamp,
-                        &self.settings.timestamp,
-                        &buf,
-                        self.last_rx_completed,
-                        text_file,
-                        &self.line_ending,
-                        // self.settings.timestamps,
-                        LoggingLineType::Rx,
-                    )?;
-                };
+                }
+                if self.text_file.is_some() {
+                    self.consume_text_bytes(timestamp, buf)?;
+                }
             }
-            LoggingCommand::TxBytes {
+            LoggingCommand::TxBytes(TxPayload {
                 timestamp,
                 bytes,
                 line_ending,
-            } => {
+            }) => {
                 let Some(text_file) = &mut self.text_file else {
                     warn!("not logging tx bytes, no text file!");
                     return Ok(());
@@ -429,40 +434,12 @@ impl LoggingWorker {
                 )?;
             }
             LoggingCommand::LineEndingChange(new_ending) => self.line_ending = new_ending,
-
             LoggingCommand::Settings(new) => {
-                let old = std::mem::replace(&mut self.settings, new);
-                let new = &self.settings;
+                _ = std::mem::replace(&mut self.settings, new);
+                // let new = &self.settings;
 
-                if changed!(old, new, log_file_type) {
-                    let mut need_binary = false;
-                    let mut need_text = false;
-                    match new.log_file_type {
-                        LoggingType::Binary => need_binary = true,
-                        LoggingType::Text => need_text = true,
-                        LoggingType::Both => {
-                            need_binary = true;
-                            need_text = true;
-                        }
-                    }
-
-                    self.flush_files(false)?;
-
-                    if !need_text && self.text_file.is_some() {
-                        _ = self.text_file.take();
-                    }
-                    if !need_binary && self.raw_file.is_some() {
-                        _ = self.raw_file.take();
-                    }
-
-                    if let Some(port_info) = &self.last_known_port {
-                        if self.session_open.load(Ordering::Relaxed) {
-                            self.create_log_files(
-                                self.started_logging_at.unwrap(),
-                                &port_info.clone(),
-                            )?;
-                        }
-                    }
+                if let Some(current_port) = self.current_port.clone() {
+                    self.create_and_close_log_files(Local::now(), &current_port)?;
                 }
             }
             #[cfg(feature = "defmt")]
@@ -479,11 +456,6 @@ impl LoggingWorker {
             LoggingCommand::DefmtDecoder(decoder) => {
                 self.defmt.decoder = decoder;
             }
-            LoggingCommand::RequestStop => {
-                self.close_files(false)?;
-                self.event_tx
-                    .send(LoggingEvent::Stopped { error: None }.into())?;
-            }
             LoggingCommand::PortDisconnect {
                 timestamp,
                 intentional,
@@ -492,15 +464,61 @@ impl LoggingWorker {
                     return Ok(());
                 }
                 self.log_connection_event(timestamp, None)?;
-                if intentional && !self.settings.keep_log_across_devices {
+                if intentional {
                     self.close_files(false)?;
-                    self.event_tx
-                        .send(LoggingEvent::Stopped { error: None }.into())?;
                 } else {
                     self.flush_files(false)?;
                 }
             }
             LoggingCommand::Shutdown(_) => unreachable!(),
+        }
+        Ok(())
+    }
+
+    fn consume_text_bytes(
+        &mut self,
+        timestamp: DateTime<Local>,
+        buf: Vec<u8>,
+    ) -> Result<(), LoggingError> {
+        #[cfg(feature = "defmt")]
+        if let Some(text_file) = &mut self.text_file {
+            use settings::DefmtSupport;
+
+            match self.defmt.settings.defmt_parsing {
+                DefmtSupport::Disabled => {
+                    self.last_rx_completed = write_buffer_to_text_file(
+                        timestamp,
+                        &self.settings.timestamp,
+                        &buf,
+                        self.last_rx_completed,
+                        text_file,
+                        &self.line_ending,
+                        // self.settings.timestamps,
+                        LoggingLineType::Rx,
+                    )?;
+                }
+                DefmtSupport::FramedRzcobs | DefmtSupport::UnframedRzcobs | DefmtSupport::Raw => {
+                    if let Some((_, existing_buf)) = &mut self.defmt.unconsumed {
+                        existing_buf.extend(buf);
+                    } else {
+                        _ = self.defmt.unconsumed.insert((timestamp, buf));
+                    }
+                    self.consume_with_defmt()?;
+                }
+            }
+        }
+        #[cfg(not(feature = "defmt"))]
+        if let Some(text_file) = &mut self.text_file {
+            self.last_rx_completed = write_buffer_to_text_file(
+                timestamp,
+                &self.settings.timestamp,
+                bytes,
+                self.last_rx_completed,
+                text_file,
+                &self.line_ending,
+                // self.settings.timestamps,
+                LoggingLineType::Rx,
+            )?;
         }
         Ok(())
     }
@@ -725,18 +743,6 @@ impl LoggingWorker {
         Ok(())
     }
 
-    fn begin_logging_session(
-        &mut self,
-        started_at: DateTime<Local>,
-        port_info: &SerialPortInfo,
-    ) -> Result<(), LoggingError> {
-        self.session_open.store(true, Ordering::Release);
-        self.create_log_files(started_at, port_info)?;
-        self.started_logging_at = Some(started_at);
-        self.event_tx.send(LoggingEvent::Started.into())?;
-        Ok(())
-    }
-
     fn flush_files(&mut self, ignore_errors: bool) -> Result<(), std::io::Error> {
         let flush_file = |f: &mut fs::File| -> Result<(), std::io::Error> {
             match f.flush() {
@@ -772,16 +778,15 @@ impl LoggingWorker {
         self.session_open.store(false, Ordering::Release);
 
         self.flush_files(ignore_errors)?;
-
         _ = self.raw_file.take();
         _ = self.text_file.take();
 
-        _ = self.last_known_port.take();
+        _ = self.current_port.take();
 
         Ok(())
     }
 
-    fn create_log_files(
+    fn create_and_close_log_files(
         &mut self,
         started_at: DateTime<Local>,
         port_info: &SerialPortInfo,
@@ -797,61 +802,54 @@ impl LoggingWorker {
         }
 
         let make_binary_log = || -> Result<fs::File, std::io::Error> {
-            let timestamped_name = started_at.format("logs/yap-%Y-%m-%d_%H-%M-%S.bin");
+            let timestamped_name = started_at.format("yap-%Y-%m-%d_%H-%M-%S.bin");
 
             fs::File::create(config_adjacent_path(format!("logs/{timestamped_name}")))
         };
 
         let make_text_log = |port_info: &SerialPortInfo| -> Result<fs::File, std::io::Error> {
-            let timestamped_name = started_at.format("logs/yap-%Y-%m-%d_%H-%M-%S.txt");
+            let timestamped_name = started_at.format("yap-%Y-%m-%d_%H-%M-%S.txt");
 
-            fs::File::create(config_adjacent_path(format!("logs/{timestamped_name}")))
-                .and_then(|mut f| {
-                    write_header_to_text_file(
-                        &mut f,
-                        started_at,
-                        &self.settings.timestamp,
-                        port_info,
-                    )
-                    .map(|_| f)
-                })
-                .and_then(|mut f| write_line_ending(&mut f).map(|_| f))
-
-            // .and_then(|mut f| f.write_all(file_header.as_bytes()).map(|_| f))
+            let path = config_adjacent_path(format!("logs/{timestamped_name}"));
+            fs::File::create(path).and_then(|mut file| {
+                write_header_to_text_file(&mut file, port_info)?;
+                Ok(file)
+            })
         };
 
         if self.text_file.is_none() {
             self.last_rx_completed = true;
         }
 
-        match self.settings.log_file_type {
-            LoggingType::Both => {
-                if self.raw_file.is_none() {
-                    self.raw_file = Some(make_binary_log()?);
-                }
-                if self.text_file.is_none() {
-                    self.text_file = Some(make_text_log(port_info)?);
-                }
+        match (self.settings.log_raw_input_to_file, &mut self.raw_file) {
+            // No action needed
+            (true, Some(_)) | (false, None) => (),
+            // Need to open a file
+            (true, empty_raw @ None) => {
+                let new_raw = make_binary_log()?;
+                _ = empty_raw.insert(new_raw);
             }
-            LoggingType::Binary => {
-                // Raw only, flush and drop text file in case we had one.
-                if let Some(mut text_file) = self.text_file.take() {
-                    text_file.flush()?;
-                    text_file.sync_all()?;
-                }
-                if self.raw_file.is_none() {
-                    self.raw_file = Some(make_binary_log()?);
-                }
+            // Need to close our file
+            (false, raw @ Some(_)) => {
+                let mut raw_file = raw.take().unwrap();
+                raw_file.flush()?;
+                raw_file.sync_all()?;
             }
-            LoggingType::Text => {
-                // Text only, flush and drop raw binary file in case we had one.
-                if let Some(mut raw_file) = self.raw_file.take() {
-                    raw_file.flush()?;
-                    raw_file.sync_all()?;
-                }
-                if self.text_file.is_none() {
-                    self.text_file = Some(make_text_log(port_info)?);
-                }
+        }
+
+        match (self.settings.log_text_to_file, &mut self.text_file) {
+            // No action needed
+            (true, Some(_)) | (false, None) => (),
+            // Need to open a file
+            (true, empty_text @ None) => {
+                let new_text = make_text_log(port_info)?;
+                _ = empty_text.insert(new_text);
+            }
+            // Need to close our file
+            (false, text @ Some(_)) => {
+                let mut text_file = text.take().unwrap();
+                text_file.flush()?;
+                text_file.sync_all()?;
             }
         }
 
@@ -861,8 +859,8 @@ impl LoggingWorker {
 
 fn write_header_to_text_file(
     file: &mut fs::File,
-    started_at: DateTime<Local>,
-    timestamp_fmt: &str,
+    // started_at: DateTime<Local>,
+    // timestamp_fmt: &str,
     port_info: &SerialPortInfo,
 ) -> Result<(), std::io::Error> {
     let port_text = match &port_info.port_type {
@@ -883,21 +881,24 @@ fn write_header_to_text_file(
         }) => Cow::from(format!("USB ({pid:04X}:{vid:04X})")),
     };
 
-    let header_timestamp_format = if timestamp_fmt.trim().is_empty() {
-        DEFAULT_TIMESTAMP_FORMAT
-    } else {
-        timestamp_fmt
-    };
+    // let header_timestamp_format = if timestamp_fmt.trim().is_empty() {
+    //     DEFAULT_TIMESTAMP_FORMAT
+    // } else {
+    //     timestamp_fmt
+    // };
 
-    let header_timestamp = started_at.format(header_timestamp_format);
+    // let header_timestamp = started_at.format(header_timestamp_format);
 
-    let file_header = format!(
-        "{time} | Port: {name} | {port_text}",
-        name = port_info.port_name,
-        time = header_timestamp,
-    );
+    // let file_header = format!(
+    //     "{time} | Port: {name} | {port_text}",
+    //     name = port_info.port_name,
+    //     time = header_timestamp,
+    // );
+
+    let file_header = format!("Port: {name} | {port_text}", name = port_info.port_name,);
 
     file.write_all(file_header.as_bytes())?;
+    write_line_ending(file)?;
 
     Ok(())
 }

@@ -10,7 +10,6 @@ use derivative::Derivative;
 use fs_err::{self as fs};
 use serde::{Deserialize, Serialize};
 use serde_inline_default::serde_inline_default;
-
 use serde_with::{NoneAsEmptyString, serde_as};
 use serialport::{DataBits, FlowControl, Parity, StopBits};
 use struct_table::StructTable;
@@ -256,33 +255,18 @@ impl std::fmt::Display for MaxBytesPerLine {
     }
 }
 
-#[derive(
-    Debug, Default, Clone, PartialEq, Serialize, Deserialize, strum::VariantArray, strum::Display,
-)]
-// #[strum(serialize_all = "title_case")]
-pub enum LoggingType {
-    #[default]
-    #[strum(serialize = "Text Only")]
-    Text,
-    #[strum(serialize = "Binary Only")]
-    Binary,
-    #[strum(serialize = "Text + Binary")]
-    Both,
-}
-
 #[cfg(feature = "logging")]
 #[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
 #[derivative(Default)]
 pub struct Logging {
     #[serde(default)]
-    #[table(values = LoggingType::VARIANTS)]
-    /// Whether to log to a text file, raw binary, or both.
-    pub log_file_type: LoggingType,
+    /// Whether to log the incoming input in a text file.
+    pub log_text_to_file: bool,
 
-    // pub path: PathBuf,
-    /// Automatically begin logging on successful port connection.
-    pub always_begin_on_connect: bool,
+    #[serde(default)]
+    /// Whether to log the incoming input in a raw binary file.
+    pub log_raw_input_to_file: bool,
 
     #[serde_inline_default(String::from(crate::buffer::DEFAULT_TIMESTAMP_FORMAT))]
     #[derivative(Default(value = "String::from(crate::buffer::DEFAULT_TIMESTAMP_FORMAT)"))]
@@ -299,11 +283,6 @@ pub struct Logging {
     #[derivative(Default(value = "true"))]
     /// Record user input in text outputs.
     pub log_user_input: bool,
-
-    #[serde_inline_default(true)]
-    #[derivative(Default(value = "true"))]
-    /// When enabled, active log files persist across devices.
-    pub keep_log_across_devices: bool,
 
     #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]
@@ -483,6 +462,7 @@ pub struct Defmt {
     /// Enable parsing RX'd serial data as defmt packets.
     pub defmt_parsing: DefmtSupport,
 
+    #[serde(default)]
     #[cfg(feature = "defmt_watch")]
     #[table(rename = "Watch ELF for Changes")]
     /// Reload defmt data from ELF when file is updated.
@@ -558,8 +538,8 @@ pub struct PortSettings {
     #[serde_inline_default(true)]
     pub dtr_on_connect: bool,
 
-    /// Limit output to 8kbps, regardless of baud.
-    #[table(rename = "DTR on Connect")]
+    /// Limit output to 8kbps, regardless of baud. Some devices will overwrite unread data if sent too fast.
+    #[table(rename = "Limit TX Speed")]
     #[serde_inline_default(true)]
     pub limit_tx_speed: bool,
 
@@ -609,7 +589,7 @@ pub struct PortSettings {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Ignored {
     #[serde(default)]
-    /// Show invalid byte sequences in \xFF notation.
+    ///
     pub usb: Vec<IgnoreableUsb>,
 }
 

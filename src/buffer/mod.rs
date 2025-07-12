@@ -32,7 +32,8 @@ use crate::{
         tui::COLOR_RULES_PATH,
     },
     changed, config_adjacent_path,
-    settings::{LoggingType, Rendering},
+    errors::HandleResult,
+    settings::Rendering,
     traits::{ByteSuffixCheck, LineHelpers, interleave_by},
     tui::color_rules::{ColorRuleError, ColorRules},
 };
@@ -815,14 +816,10 @@ impl Buffer {
             || (self.raw.inner.is_empty() || self.raw.inner.has_line_ending(&self.line_ending));
 
         #[cfg(feature = "logging")]
-        if self.log_handle.logging_active() {
-            match self.log_settings.log_file_type {
-                LoggingType::Binary => (),
-                LoggingType::Text | LoggingType::Both => self
-                    .log_handle
-                    .log_tx_bytes(now, bytes.to_owned(), line_ending.as_bytes().to_owned())
-                    .unwrap(),
-            }
+        if self.log_settings.log_text_to_file && self.log_settings.log_user_input {
+            self.log_handle
+                .log_tx_bytes(now, bytes.to_owned(), line_ending.as_bytes().to_owned())
+                .expect("Logging worker has disappeared!");
         }
         self.styled_lines.tx.push(user_buf_line);
     }
@@ -900,18 +897,14 @@ impl Buffer {
                 || (self.raw.inner.is_empty() || self.raw.inner.has_line_ending(&self.line_ending));
 
             #[cfg(feature = "logging")]
-            if self.log_handle.logging_active() {
-                match self.log_settings.log_file_type {
-                    LoggingType::Binary => (),
-                    LoggingType::Text | LoggingType::Both => self
-                        .log_handle
-                        .log_tx_bytes(
-                            now,
-                            text.as_bytes().to_owned(),
-                            line_ending.as_bytes().to_owned(),
-                        )
-                        .unwrap(),
-                }
+            if self.log_settings.log_text_to_file && self.log_settings.log_user_input {
+                self.log_handle
+                    .log_tx_bytes(
+                        now,
+                        text.as_bytes().to_owned(),
+                        line_ending.as_bytes().to_owned(),
+                    )
+                    .expect("Logging worker has disappeared!");
             }
             self.styled_lines.tx.push(user_buf_line);
         }
@@ -1257,6 +1250,144 @@ impl Buffer {
         // self.raw.buffer_timestamps = rx_timestamps;
         // self.styled_lines.tx = user_lines;
         self.scroll_by(0);
+    }
+
+    #[cfg(feature = "logging")]
+    /// Relog contents in buffer
+    pub fn relog_buffer(&mut self) -> HandleResult<()> {
+        use crossbeam::channel::unbounded;
+
+        if self.raw.inner.is_empty() {
+            warn!("Can't relog an empty buffer!");
+            return Ok(());
+        }
+
+        // Taking these variables out of `self` temporarily to allow running &mut self methods while holding
+        // references to these.
+        let user_timestamps: Vec<_> = self
+            .styled_lines
+            .tx
+            .iter()
+            .filter(|s| self.log_settings.log_user_input)
+            .map(|b| {
+                let LineType::User { .. } = &b.line_type else {
+                    unreachable!();
+                };
+
+                (b.line_type.clone(), b.range().start, b.timestamp)
+            })
+            .collect();
+        let orig_buf_len = self.raw.inner.len();
+        let timestamps_len = self.raw.buffer_timestamps.len();
+        let user_echo = self.rendering.echo_user_input;
+
+        // No lines to append to.
+        self.styled_lines.last_rx_was_complete = true;
+
+        #[cfg(feature = "defmt")]
+        {
+            self.defmt_raw_malformed = false;
+        }
+
+        let blank_port_line_type = LineType::Port {
+            escaped_line_ending: None,
+        };
+        // Getting all time-tagged indices in the buffer where either
+        // 1. Data came in through the port
+        // 2. The user sent data
+        let interleaved_points = interleave_by(
+            self.raw
+                .buffer_timestamps
+                .iter()
+                .map(|(index, timestamp)| (*index, *timestamp, blank_port_line_type.clone()))
+                // Add a "finale" element to capture any remaining buffer, always placed at the end.
+                .chain(std::iter::once((
+                    orig_buf_len,
+                    Local::now(),
+                    blank_port_line_type.clone(),
+                ))),
+            user_timestamps
+                .into_iter()
+                // If a user line isn't visible, ignore it when taking external new-lines into account.
+                .map(|(line_type, index, timestamp)| (index, timestamp, line_type)),
+            // Interleaving by sorting in order of raw_buffer_index, if they're equal, then whichever has a sooner timestamp.
+            |port, user| match port.0.cmp(&user.0) {
+                Ordering::Equal => port.1 <= user.1,
+                Ordering::Less => true,
+                Ordering::Greater => false,
+            },
+        );
+
+        debug!("total len: {orig_buf_len}");
+
+        let buffer_slices = interleaved_points
+            .tuple_windows()
+            // Filtering out some empty slices, unless they indicate a user event.
+            .filter(|((start_index, _, line_type), (end_index, _, _))| {
+                start_index != end_index || matches!(line_type, LineType::User { .. })
+            })
+            // Building the parent slices (pre-newline splitting)
+            .map(|((start_index, timestamp, line_type), (end_index, _, _))| {
+                (
+                    &self.raw.inner[start_index..end_index],
+                    timestamp,
+                    line_type,
+                    (start_index, end_index),
+                )
+            });
+
+        let (relog_tx, relog_rx) = unbounded();
+        use crate::buffer::logging::{Relogging, TxPayload};
+
+        self.log_handle.begin_relogging(relog_rx)?;
+
+        let mut rx_batch = Vec::new();
+        let mut tx_batch = Vec::new();
+
+        for (slice, timestamp, line_type, (slice_start, slice_end)) in buffer_slices {
+            // If this was where a user line we allow to render is,
+            // then we'll finish this line early if it's not already finished.
+            if let LineType::User {
+                is_bytes,
+                is_macro,
+                escaped_line_ending,
+                reloggable_raw,
+            } = line_type
+            {
+                if !rx_batch.is_empty() {
+                    let transmitted_rx = std::mem::take(&mut rx_batch);
+                    relog_tx.send(Relogging::RxBatch(transmitted_rx))?;
+                }
+
+                let line_ending_bytes =
+                    escaped_line_ending.map_or(Vec::new(), |le| le.as_bytes().to_owned());
+
+                tx_batch.push(TxPayload {
+                    timestamp,
+                    bytes: reloggable_raw,
+                    line_ending: line_ending_bytes,
+                });
+
+                continue;
+            } else {
+                if !tx_batch.is_empty() {
+                    let transmitted_tx = std::mem::take(&mut tx_batch);
+                    relog_tx.send(Relogging::TxBatch(transmitted_tx))?;
+                }
+
+                rx_batch.push((timestamp, slice.to_owned()));
+            }
+        }
+
+        if !rx_batch.is_empty() {
+            relog_tx.send(Relogging::RxBatch(rx_batch))?;
+        } else if !tx_batch.is_empty() {
+            relog_tx.send(Relogging::TxBatch(tx_batch))?;
+        }
+
+        relog_tx.send(Relogging::Done)?;
+
+        Ok(())
     }
 
     // pub fn update_line_ending(&mut self, line_ending: &str) {

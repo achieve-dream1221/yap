@@ -350,13 +350,13 @@ impl BufLine {
                     _ => (),
                 };
 
-                let module_file_seperator =
+                let module_file_separator =
                     if !module.is_hidden() && (!file.is_hidden() || line_num) {
                         " @ "
                     } else {
                         ""
                     };
-                let file_line_seperator = if !file.is_hidden() && line_num {
+                let file_line_separator = if !file.is_hidden() && line_num {
                     ":"
                 } else {
                     ""
@@ -380,7 +380,7 @@ impl BufLine {
 
                 Some(Span::styled(
                     format!(
-                        " {module}{module_file_seperator}{file}{file_line_seperator}{line_num}"
+                        " {module}{module_file_separator}{file}{file_line_separator}{line_num}"
                     ),
                     Style::new().dark_gray(),
                 ))

@@ -95,7 +95,7 @@ use crate::keybinds::MacroBuiltinAction;
 #[cfg(feature = "logging")]
 use crate::settings::Logging;
 #[cfg(feature = "logging")]
-use crate::tui::logging::toggle_logging_button;
+use crate::tui::logging::sync_logs_button;
 #[cfg(feature = "logging")]
 use crate::{buffer::LoggingEvent, keybinds::LoggingAction};
 
@@ -733,17 +733,9 @@ impl App {
                 _ => self.espflash.consume_event(esp_event),
             },
             #[cfg(feature = "logging")]
-            Event::Logging(LoggingEvent::Started) => self
+            Event::Logging(LoggingEvent::FinishedReconsumption) => self
                 .notifs
-                .notify_str("Starting logging incoming data to disk!", Color::Green),
-            #[cfg(feature = "logging")]
-            Event::Logging(LoggingEvent::Stopped { error: None }) => self
-                .notifs
-                .notify_str("Logging stopped, files closed!", Color::Yellow),
-            #[cfg(feature = "logging")]
-            Event::Logging(LoggingEvent::Stopped { error: Some(error) }) => self
-                .notifs
-                .notify_str(format!("Logging stopped with error: {error}"), Color::Red),
+                .notify_str("Finished syncing contents to log!", Color::Green),
             #[cfg(feature = "logging")]
             Event::Logging(LoggingEvent::Error(error)) => self
                 .notifs
@@ -1498,37 +1490,18 @@ impl App {
             }
 
             #[cfg(feature = "logging")]
-            A::Logging(LoggingAction::Start) => {
+            A::Logging(LoggingAction::Sync) => {
                 let port_status_guard = self.serial.port_status.load();
                 let Some(port_info) = &port_status_guard.current_port else {
-                    self.notifs
-                        .notify_str("Not connected to port, not starting log.", Color::Red);
+                    self.notifs.notify_str(
+                        "Not (previously) connected to port? Unable to sync log.",
+                        Color::Yellow,
+                    );
                     return Ok(());
                 };
-                self.buffer
-                    .log_handle
-                    .request_log_start(port_info.clone())?;
+                self.buffer.relog_buffer()?;
                 self.notifs
                     .notify_str("Requested logging start!", Color::Green);
-            }
-
-            #[cfg(feature = "logging")]
-            A::Logging(LoggingAction::Stop) => {
-                if self.buffer.log_handle.logging_active() {
-                    self.buffer.log_handle.request_log_stop()?;
-                } else {
-                    self.notifs
-                        .notify_str("No logging session active to stop!", Color::Yellow);
-                }
-            }
-
-            #[cfg(feature = "logging")]
-            A::Logging(LoggingAction::Toggle) => {
-                if self.buffer.log_handle.logging_active() {
-                    self.run_method_from_action(LoggingAction::Stop.into())?;
-                } else {
-                    self.run_method_from_action(LoggingAction::Start.into())?;
-                }
             }
 
             #[cfg(feature = "espflash")]
@@ -2136,22 +2109,14 @@ impl App {
             }
             #[cfg(feature = "logging")]
             Some(Popup::SettingsMenu(SettingsMenu::Logging)) => {
-                if self.popup_menu_scroll == 2 {
-                    let logging_active = self.buffer.log_handle.logging_active();
-                    if logging_active {
-                        self.buffer.log_handle.request_log_stop().unwrap();
-                    } else {
-                        let port_status_guard = self.serial.port_status.load();
-                        if let Some(port_info) = &port_status_guard.current_port {
-                            self.buffer
-                                .log_handle
-                                .request_log_start(port_info.clone())
-                                .unwrap();
-                        } else {
-                            self.notifs
-                                .notify_str("No port active, not starting logging.", Color::Red);
-                        }
-                    }
+                // if Sync Logs button was selected
+                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + Logging::VISIBLE_FIELDS
+                {
+                    self.action_dispatch(
+                        Action::AppAction(AppAction::Logging(LoggingAction::Sync)),
+                        None,
+                    )
+                    .unwrap();
                     return;
                 }
                 // Otherwise, save settings.
@@ -2542,12 +2507,9 @@ impl App {
             }
 
             #[cfg(feature = "logging")]
-            // Logging Toggle button active
-            (Popup::SettingsMenu(SettingsMenu::Logging), ALWAYS_PRESENT_SELECTOR_COUNT) => None,
-            #[cfg(feature = "logging")]
-            // Logging Settings active
+            // Logging settings and sync button
             (Popup::SettingsMenu(SettingsMenu::Logging), _) => {
-                Some(raw_scroll - (1 + ALWAYS_PRESENT_SELECTOR_COUNT))
+                Some(raw_scroll - ALWAYS_PRESENT_SELECTOR_COUNT)
             }
 
             #[cfg(feature = "espflash")]
@@ -3037,25 +2999,29 @@ impl App {
             }
             #[cfg(feature = "logging")]
             SettingsMenu::Logging => {
-                let new_seperator = {
-                    let mut area = center_inner_area;
+                let button_area = {
+                    let mut area = settings_area;
+                    area.y = area.bottom().saturating_sub(1);
                     area.height = 1;
-                    area.y += 2;
                     area
                 };
-                let button_area = settings_area;
+                let new_separator = {
+                    let mut area = settings_area;
+                    area.y = area.bottom().saturating_sub(2);
+                    area.height = 1;
+                    area
+                };
                 let settings_area = {
                     let mut area = settings_area;
                     area.height = area.height.saturating_sub(2);
-                    area.y += 2;
                     area
                 };
                 let line_block = Block::new()
                     .borders(Borders::TOP)
                     .border_style(Style::from(block_color));
 
-                // TODO make dynamic
-                let log_path_text = r"Saving to: EXEC_DIR/logs/";
+                let logs_dir = config_adjacent_path("logs/");
+                let log_path_text = format!("Saving to: {logs_dir}");
                 let log_path_line = Line::raw(log_path_text)
                     .all_spans_styled(Color::DarkGray.into())
                     .centered();
@@ -3073,26 +3039,23 @@ impl App {
                     button_hint_text_area,
                 );
 
-                let logging_active = self.buffer.log_handle.logging_active();
-                let toggle_button = toggle_logging_button(logging_active);
-                let logging_toggle_selected = self.popup_menu_scroll == 2;
-                if logging_toggle_selected {
+                let sync_button = sync_logs_button();
+                let log_sync_selected = self.popup_menu_scroll
+                    == ALWAYS_PRESENT_SELECTOR_COUNT + Logging::VISIBLE_FIELDS;
+                if log_sync_selected {
                     self.popup_table_state.select(Some(0));
                     self.popup_table_state.select_first_column();
 
                     frame.render_stateful_widget(
-                        toggle_button,
+                        sync_button,
                         button_area,
                         &mut self.popup_table_state,
                     );
-                    frame.render_widget(&line_block, new_seperator);
+                    frame.render_widget(&line_block, new_separator);
                     frame.render_widget(self.scratch.logging.as_table(), settings_area);
 
-                    let text = if logging_active {
-                        "Stop logging and close the current log files."
-                    } else {
-                        "Create new log files and begin logging."
-                    };
+                    let text =
+                        "Re-sync active log files with entire buffer content and current settings.";
                     render_scrolling_line(
                         text,
                         frame,
@@ -3104,8 +3067,8 @@ impl App {
                     self.popup_table_state.select(selected);
                     self.popup_table_state.select_first_column();
 
-                    frame.render_widget(toggle_button, button_area);
-                    frame.render_widget(&line_block, new_seperator);
+                    frame.render_widget(sync_button, button_area);
+                    frame.render_widget(&line_block, new_separator);
                     frame.render_stateful_widget(
                         self.scratch.logging.as_table(),
                         settings_area,
@@ -3124,16 +3087,10 @@ impl App {
                         &mut self.popup_hint_scroll,
                     );
                 }
-                frame.render_widget(
-                    Line::raw("Settings:")
-                        .all_spans_styled(Color::DarkGray.into())
-                        .centered(),
-                    new_seperator,
-                );
             }
             #[cfg(feature = "defmt")]
             SettingsMenu::Defmt => {
-                let new_seperator = {
+                let new_separator = {
                     let mut area = center_inner_area;
                     area.y = area.top().saturating_add(5);
                     area.height = 1;
@@ -3173,7 +3130,7 @@ impl App {
                 let settings_selected = self.popup_menu_scroll >= ALWAYS_PRESENT_SELECTOR_COUNT + 2;
 
                 // frame.render_widget(esp::espflash_buttons(), settings_area);
-                frame.render_widget(&line_block, new_seperator);
+                frame.render_widget(&line_block, new_separator);
 
                 let current_elf_str = if let Some(decoder) = &self.buffer.defmt_decoder {
                     decoder.elf_path.as_str()
@@ -3276,7 +3233,7 @@ impl App {
                     Line::raw("Settings:")
                         .all_spans_styled(Color::DarkGray.into())
                         .centered(),
-                    new_seperator,
+                    new_separator,
                 );
             }
         }
@@ -3443,7 +3400,7 @@ impl App {
         match popup {
             #[cfg(feature = "macros")]
             ToolMenu::Macros => {
-                let new_seperator = {
+                let new_separator = {
                     let mut area = center_inner_area;
                     area.height = 1;
                     area.y += 2;
@@ -3459,7 +3416,7 @@ impl App {
                     Block::new()
                         .borders(Borders::TOP)
                         .border_style(Style::from(block_color)),
-                    new_seperator,
+                    new_separator,
                 );
 
                 if self.macros.search_input.value().is_empty() {
@@ -3573,7 +3530,7 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             ToolMenu::EspFlash => {
-                let new_seperator = {
+                let new_separator = {
                     let mut area = center_inner_area;
                     area.height = 1;
                     area.y = area.top().saturating_add(5);
@@ -3612,7 +3569,7 @@ impl App {
                     self.popup_table_state.select(Some(corrected_index));
 
                     frame.render_widget(esp::espflash_buttons(false), settings_area);
-                    frame.render_widget(&line_block, new_seperator);
+                    frame.render_widget(&line_block, new_separator);
                     frame.render_stateful_widget(
                         self.espflash.profiles_table(),
                         bins_area,
@@ -3665,7 +3622,7 @@ impl App {
                         settings_area,
                         &mut self.popup_table_state,
                     );
-                    frame.render_widget(&line_block, new_seperator);
+                    frame.render_widget(&line_block, new_separator);
                     frame.render_widget(self.espflash.profiles_table(), bins_area);
 
                     let hints = [
@@ -3689,7 +3646,7 @@ impl App {
                     Line::raw("Flash Profiles | Ctrl+R: Reload")
                         .all_spans_styled(Color::DarkGray.into())
                         .centered(),
-                    new_seperator,
+                    new_separator,
                 );
             }
         }

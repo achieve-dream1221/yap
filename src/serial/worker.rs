@@ -178,6 +178,8 @@ impl SerialWorker {
                 Err(crossbeam::channel::RecvTimeoutError::Timeout) => (),
                 Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
                     error!("Serial worker handle got dropped! Shutting down!");
+                    // Drop port explicity if it's present, since normal drop can hang.
+                    self.port.drop();
                     break Err(WorkerError::HandleDropped);
                 }
             }
@@ -189,10 +191,15 @@ impl SerialWorker {
                 //     port.bytes_to_write().unwrap()
                 // );
                 match port.read(self.rx_buffer.as_mut_slice()) {
+                    // TODO timestamp *here*
                     Ok(t) if t > 0 => {
                         let cloned_buff = self.rx_buffer[..t].to_owned();
                         // info!("{:?}", &serial_buf[..t]);
                         self.buffer_tx.send(cloned_buff)?;
+                        // if let Err(e) = self.buffer_tx.send(cloned_buff) {
+                        //     self.port.drop();
+                        //     Err(e)?;
+                        // }
                     }
                     // 0-size read, ignoring
                     Ok(_) => (),
@@ -221,6 +228,7 @@ impl SerialWorker {
 
     fn unhealthy_disconnection(&mut self) {
         assert!(self.port.is_some(), "must own or be lending out port");
+        self.port.drop();
 
         let last_status = self.shared_status.load().as_ref().clone();
         let known_port_ref = last_status
@@ -245,7 +253,6 @@ impl SerialWorker {
             error!("Failed to scan for ports right after a disconnection!")
         };
 
-        self.port.drop();
         let disconnected_status = {
             last_status
                 // Ensure we keep around the old SerialPortInfo to use
@@ -1084,7 +1091,7 @@ pub(crate) enum WorkerError {
     RequestedUsbMissing,
     #[error("serial port error")]
     SerialPort(#[from] serialport::Error),
-    #[error("no parent app reciever to send to")]
+    #[error("no parent app receiver to send to")]
     FailedSend,
     #[error("failed to reply to shutdown request in time")]
     ShutdownReply,
