@@ -129,7 +129,7 @@ pub trait PromptTable: VariantNames + VariantArray + EnumProperty + Into<u8> + T
             block
         };
         let block = if let Some(text) = bottom {
-            block.title_top(text)
+            block.title_bottom(text)
         } else {
             block
         };

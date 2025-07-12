@@ -3892,14 +3892,23 @@ impl App {
         }
 
         match prompt {
-            TerminalPrompt::DisconnectPrompt => DisconnectPrompt::render_prompt_block_popup(
-                Some("Disconnect from port?"),
-                None,
-                Style::new().blue(),
-                frame,
-                area,
-                &mut self.table_state,
-            ),
+            TerminalPrompt::DisconnectPrompt => {
+                let reconns_paused = if self.settings.last_port_settings.reconnections.allowed()
+                    && port_state.is_premature_disconnect()
+                {
+                    Some("(Auto-reconnections paused while open)")
+                } else {
+                    None
+                };
+                DisconnectPrompt::render_prompt_block_popup(
+                    Some("Disconnect from port?"),
+                    reconns_paused,
+                    Style::new().blue(),
+                    frame,
+                    area,
+                    &mut self.table_state,
+                );
+            }
             TerminalPrompt::AttemptReconnectPrompt => {
                 AttemptReconnectPrompt::render_prompt_block_popup(
                     Some("Reconnect to port?"),
