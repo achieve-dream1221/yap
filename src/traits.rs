@@ -232,9 +232,11 @@ impl LineMutator for Line<'_> {
     fn style_slice(&mut self, range: Range<usize>, style: Style) {
         // #[cfg(debug_assertions)]
         // debug!("Styling {range:?} with {style:?}");
-        let spans = &mut self.spans;
+        let mut new_spans = Vec::with_capacity(self.spans.len());
+        let old_spans = std::mem::take(&mut self.spans);
+
         let mut current = 0;
-        for (index, span) in spans.iter_mut().enumerate() {
+        for span in old_spans {
             let span_len = span.content.len();
             let span_start = current;
             let span_end = current + span_len;
@@ -250,16 +252,14 @@ impl LineMutator for Line<'_> {
 
                     if offset_start == 0 && offset_end == span_len {
                         // Entire span is inside range, style whole span.
-                        span.style = style;
+                        new_spans.push(Span::styled(span.content, style));
                     } else {
                         let orig_style = span.style;
-
                         match &span.content {
                             // Try to borrow again if already borrowed
                             Cow::Borrowed(borrowed) => {
                                 let (pre, mid, post) =
-                                    split_span_content(borrowed, offset_start, offset_end);
-                                let mut new_spans = Vec::new();
+                                    split_span_content(borrowed, offset_start..offset_end);
                                 if !pre.is_empty() {
                                     new_spans.push(Span::styled(Cow::Borrowed(pre), orig_style));
                                 }
@@ -269,15 +269,11 @@ impl LineMutator for Line<'_> {
                                 if !post.is_empty() {
                                     new_spans.push(Span::styled(Cow::Borrowed(post), orig_style));
                                 }
-                                spans.splice(index..=index, new_spans);
                             }
-                            // Otherwise, we need to make our own owned versions
-                            // (turned into a match branch here to give the borrow checker more info on the borrows)
+                            // Otherwise, we need to make new owned versions
                             Cow::Owned(owned) => {
                                 let (pre, mid, post) =
-                                    split_span_content(owned, offset_start, offset_end);
-
-                                let mut new_spans = Vec::new();
+                                    split_span_content(owned, offset_start..offset_end);
                                 if !pre.is_empty() {
                                     new_spans.push(Span::styled(
                                         Cow::Owned(pre.to_string()),
@@ -294,27 +290,27 @@ impl LineMutator for Line<'_> {
                                         orig_style,
                                     ));
                                 }
-                                spans.splice(index..=index, new_spans);
                             }
                         }
-                        // Because we changed the spans vector structure, any reference to span is invalid,
-                        // so bail out of this function. A re-call would be necessary if the styling range
-                        // covers multiple, non-contiguous spans that require additional splitting or updates;
-                        // after this early return, the caller should call the function again to complete
-                        // styling the full range if needed.
-                        return;
                     }
+                } else {
+                    new_spans.push(span);
                 }
+            } else {
+                new_spans.push(span);
             }
             current += span_len;
         }
+        self.spans = new_spans;
     }
     fn censor_slice(&mut self, range: Range<usize>, style: Option<Style>) {
         // #[cfg(debug_assertions)]
         // debug!("Censoring {range:?} with style {style:?}");
-        let spans = &mut self.spans;
+        let mut new_spans = Vec::with_capacity(self.spans.len());
+        let spans = std::mem::take(&mut self.spans);
+
         let mut current = 0;
-        for (index, span) in spans.iter_mut().enumerate() {
+        for span in spans {
             let span_len = span.content.len();
             let span_start = current;
             let span_end = current + span_len;
@@ -327,46 +323,73 @@ impl LineMutator for Line<'_> {
                     // This span is at least partially in the censor range.
                     let offset_start = overlap_start - span_start;
                     let offset_end = overlap_end - span_start;
-
-                    let (pre, mid, post) =
-                        split_span_content(&span.content, offset_start, offset_end);
                     let orig_style = span.style;
 
-                    let mut new_spans = Vec::new();
+                    // Doubled up to give borrow checker more detailed info.
+                    match span.content {
+                        Cow::Borrowed(borrowed) => {
+                            let (pre, mid, post) =
+                                split_span_content(borrowed, offset_start..offset_end);
 
-                    if !pre.is_empty() {
-                        new_spans.push(Span::styled(Cow::Owned(pre.to_string()), orig_style));
-                    }
-                    if !mid.is_empty() {
-                        // Actually perform the censorship: replace internal bytes with '*'
-                        // (bytes instead of chars due to us working on the byte-scale, and we might replace
-                        // a multi-byte char)
-                        let bullet = "*";
-                        for _ in 0..mid.len() {
-                            new_spans.push(Span::styled(
-                                Cow::Borrowed(bullet),
-                                style.unwrap_or(orig_style),
-                            ));
+                            if !pre.is_empty() {
+                                new_spans.push(Span::styled(Cow::Borrowed(pre), orig_style));
+                            }
+                            if !mid.is_empty() {
+                                // Actually perform the censorship: replace char's _bytes_ with '*'
+                                // (bytes instead of chars due to us working on the byte-scale, and we might replace
+                                // a multi-byte char, so this keeps char boundaries valid.)
+                                let bullet = "*";
+                                for _ in 0..mid.len() {
+                                    new_spans
+                                        .push(Span::styled(bullet, style.unwrap_or(orig_style)));
+                                }
+                            }
+                            if !post.is_empty() {
+                                new_spans.push(Span::styled(Cow::Borrowed(post), orig_style));
+                            }
+                        }
+                        Cow::Owned(owned) => {
+                            let (pre, mid, post) =
+                                split_span_content(&owned, offset_start..offset_end);
+
+                            if !pre.is_empty() {
+                                new_spans
+                                    .push(Span::styled(Cow::Owned(pre.to_owned()), orig_style));
+                            }
+                            if !mid.is_empty() {
+                                let bullet = "*";
+                                for _ in 0..mid.len() {
+                                    new_spans
+                                        .push(Span::styled(bullet, style.unwrap_or(orig_style)));
+                                }
+                            }
+                            if !post.is_empty() {
+                                new_spans
+                                    .push(Span::styled(Cow::Owned(post.to_owned()), orig_style));
+                            }
                         }
                     }
-                    if !post.is_empty() {
-                        new_spans.push(Span::styled(Cow::Owned(post.to_string()), orig_style));
-                    }
-
-                    spans.splice(index..=index, new_spans);
-                    // As above, because we changed the spans, exit so that a caller can re-call over remaining regions if needed
-                    return;
+                } else {
+                    new_spans.push(span);
                 }
+            } else {
+                new_spans.push(span);
             }
             current += span_len;
         }
+        new_spans.shrink_to_fit();
+        self.spans = new_spans;
     }
     fn remove_slice(&mut self, range: Range<usize>) {
         // #[cfg(debug_assertions)]
         // debug!("Removing slice {:?}", range);
-        let spans = &mut self.spans;
+
+        let mut new_spans = Vec::with_capacity(self.spans.len());
+        let old_spans = std::mem::take(&mut self.spans);
+
         let mut current = 0;
-        for (index, span) in spans.iter_mut().enumerate() {
+
+        for span in old_spans.into_iter() {
             let span_len = span.content.len();
             let span_start = current;
             let span_end = current + span_len;
@@ -379,25 +402,45 @@ impl LineMutator for Line<'_> {
                     // This span is at least partly in the removal range.
                     let offset_start = overlap_start - span_start;
                     let offset_end = overlap_end - span_start;
-
-                    let (pre, _mid, post) =
-                        split_span_content(&span.content, offset_start, offset_end);
                     let orig_style = span.style;
 
-                    let mut new_spans = Vec::new();
-                    if !pre.is_empty() {
-                        new_spans.push(Span::styled(Cow::Owned(pre.to_string()), orig_style));
+                    // Doubled up to give borrow checker more detailed info.
+                    match span.content {
+                        Cow::Borrowed(borrowed) => {
+                            let (pre, _mid, post) =
+                                split_span_content(borrowed, offset_start..offset_end);
+
+                            if !pre.is_empty() {
+                                new_spans.push(Span::styled(Cow::Borrowed(pre), orig_style));
+                            }
+                            if !post.is_empty() {
+                                new_spans.push(Span::styled(Cow::Borrowed(post), orig_style));
+                            }
+                        }
+                        Cow::Owned(owned) => {
+                            let (pre, _mid, post) =
+                                split_span_content(&owned, offset_start..offset_end);
+
+                            if !pre.is_empty() {
+                                new_spans
+                                    .push(Span::styled(Cow::Owned(pre.to_owned()), orig_style));
+                            }
+                            if !post.is_empty() {
+                                new_spans
+                                    .push(Span::styled(Cow::Owned(post.to_owned()), orig_style));
+                            }
+                        }
                     }
-                    if !post.is_empty() {
-                        new_spans.push(Span::styled(Cow::Owned(post.to_string()), orig_style));
-                    }
-                    spans.splice(index..=index, new_spans);
-                    // We changed spans, exit: to remove the full range, caller must re-call if needed.
-                    return;
+                } else {
+                    new_spans.push(span);
                 }
+            } else {
+                new_spans.push(span);
             }
             current += span_len;
         }
+        new_spans.shrink_to_fit();
+        self.spans = new_spans;
     }
 }
 
@@ -417,15 +460,11 @@ fn overlap_region(a: (usize, usize), b: (usize, usize)) -> (Option<usize>, Optio
 
 /// Splits the span's content into (pre, mid, post) based on byte offsets.
 ///
-/// Assumes offset_start/offset_end are on valid char boundaries, **will panic otherwise!**
-fn split_span_content<'a>(
-    content: &'a str,
-    offset_start: usize,
-    offset_end: usize,
-) -> (&'a str, &'a str, &'a str) {
-    let pre = &content[..offset_start];
-    let mid = &content[offset_start..offset_end];
-    let post = &content[offset_end..];
+/// Assumes the range is on valid char boundaries, **will panic otherwise!**
+fn split_span_content<'a>(content: &'a str, range: Range<usize>) -> (&'a str, &'a str, &'a str) {
+    let pre = &content[..range.start];
+    let mid = &content[range.start..range.end];
+    let post = &content[range.end..];
     (pre, mid, post)
 }
 
