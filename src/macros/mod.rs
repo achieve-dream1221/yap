@@ -216,61 +216,62 @@ impl Macros {
             Some(tag) => Some(tag),
         }
     }
-    pub fn macro_from_key_combo<'a>(
-        &'a self,
-        key_combo: KeyCombination,
-        macro_keybinds: &'a IndexMap<KeyCombination, Vec<MacroNameTag>>,
-        fuzzy_macro_name_match: bool,
-    ) -> Result<Vec<&'a MacroNameTag>, Option<Vec<&'a MacroNameTag>>> {
-        // ) -> Result<Vec<usize>, Option<Vec<&KeybindMacro>>> {
-        let Some(v) = macro_keybinds.get(&key_combo) else {
-            return Err(None);
-        };
+    // pub fn macro_from_key_combo<'a>(
+    //     &'a self,
+    //     key_combo: KeyCombination,
+    //     macro_keybinds: &'a IndexMap<KeyCombination, Vec<MacroNameTag>>,
+    //     fuzzy_macro_name_match: bool,
+    // ) -> Result<Vec<&'a MacroNameTag>, Option<Vec<&'a MacroNameTag>>> {
+    //     // ) -> Result<Vec<usize>, Option<Vec<&KeybindMacro>>> {
+    //     let Some(v) = macro_keybinds.get(&key_combo) else {
+    //         return Err(None);
+    //     };
 
-        let mut somes: Vec<&MacroNameTag> = Vec::new();
-        let mut nones: Vec<&MacroNameTag> = Vec::new();
+    //     let mut somes: Vec<&MacroNameTag> = Vec::new();
+    //     let mut nones: Vec<&MacroNameTag> = Vec::new();
 
-        v.iter().for_each(|config_tag| {
-            let eq_result = self
-                .all
-                .iter()
-                // .enumerate()
-                .find(|(tag, content)| config_tag.eq(tag));
-            match eq_result {
-                Some((tag, content)) => {
-                    somes.push(tag);
-                    return;
-                }
-                None if fuzzy_macro_name_match => (),
-                None => {
-                    nones.push(config_tag);
-                    return;
-                }
-            }
-            assert!(fuzzy_macro_name_match);
-            let eq_result = self
-                .all
-                .iter()
-                // .enumerate()
-                .find(|(tag, content)| config_tag.eq_fuzzy(tag));
-            match eq_result {
-                Some((tag, content)) => somes.push(tag),
-                None => nones.push(config_tag),
-            }
-        });
+    //     v.iter().for_each(|config_tag| {
+    //         let eq_result = self
+    //             .all
+    //             .iter()
+    //             // .enumerate()
+    //             .find(|(tag, content)| config_tag.eq(tag));
+    //         match eq_result {
+    //             Some((tag, content)) => {
+    //                 somes.push(tag);
+    //                 return;
+    //             }
+    //             None if fuzzy_macro_name_match => (),
+    //             None => {
+    //                 nones.push(config_tag);
+    //                 return;
+    //             }
+    //         }
+    //         assert!(fuzzy_macro_name_match);
+    //         let eq_result = self
+    //             .all
+    //             .iter()
+    //             // .enumerate()
+    //             .find(|(tag, content)| config_tag.eq_fuzzy(tag));
+    //         match eq_result {
+    //             Some((tag, content)) => somes.push(tag),
+    //             None => nones.push(config_tag),
+    //         }
+    //     });
 
-        if nones.is_empty() {
-            Ok(somes)
-        } else {
-            Err(Some(nones))
-        }
-    }
+    //     if nones.is_empty() {
+    //         Ok(somes)
+    //     } else {
+    //         Err(Some(nones))
+    //     }
+    // }
 
-    pub fn remove_macro(&mut self, macro_ref: &MacroNameTag) {
-        self.all
-            .remove(macro_ref)
-            .expect("attempted removal of non-existant element");
-    }
+    // pub fn remove_macro(&mut self, macro_ref: &MacroNameTag) {
+    //     self.all
+    //         .remove(macro_ref)
+    //         .expect("attempted removal of non-existant element");
+    // }
+
     pub fn load_from_folder<P: AsRef<Path>>(&mut self, folder: P) -> Result<(), MacrosLoadError> {
         // TODO never return on error, just log and notify user to check logs for details.
         fn visit_dir(

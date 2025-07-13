@@ -99,7 +99,11 @@ impl StatefulWidget for &SingleLineSelector<'_> {
             state.current_index = self.items.last_index();
         }
 
-        let source_line = { self.items.get(state.current_index).unwrap() };
+        let source_line = {
+            self.items
+                .get(state.current_index)
+                .expect("index should've been validated")
+        };
 
         use std::iter::{once, repeat};
 

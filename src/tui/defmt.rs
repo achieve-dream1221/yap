@@ -39,6 +39,8 @@ impl From<usize> for DefmtPopupSelection {
 }
 
 /// This intentionally holds no decoders! Those're held by Arcs owned by the Buffer and Logging worker.
+///
+/// This holds the recently used ELF paths, and the handle to the worker thread that watches for updates to the current ELF.
 pub struct DefmtHelpers {
     pub recent_elfs: DefmtRecentElfs,
     #[cfg(feature = "defmt_watch")]

@@ -181,7 +181,8 @@ impl ColorRules {
         // We'll do a best-effort match: scan through original and line at the same time.
 
         // The buffer 'original' is bytes; but we also need the rendered text for 'line' as a str.
-        let rendered: CompactString = line.iter().map(|s| s.content.as_ref()).join_compact("");
+        let mut rendered = CompactString::with_capacity(original.len());
+        line.iter().for_each(|s| rendered.push_str(&s.content));
 
         // Build mapping: for each byte index into 'original', what's the visible char index in 'rendered'?
         // We'll do a simple, strict scan. If things don't match up, fallback to legacy approach.

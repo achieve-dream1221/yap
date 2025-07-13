@@ -322,8 +322,10 @@ impl<'de> Deserialize<'de> for EspBins {
 #[derive(Debug, serde::Deserialize)]
 pub struct SerializedEspFiles {
     #[serde(rename = "elf")]
+    #[serde(default)]
     elfs: Vec<EspElf>,
     #[serde(rename = "bin")]
+    #[serde(default)]
     bins: Vec<EspBins>,
 }
 
