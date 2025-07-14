@@ -1,12 +1,16 @@
 //! Module for the more generic helper traits I've needed while working on this project
 
-use std::{borrow::Cow, ops::Range};
+use std::{borrow::Cow, collections::BTreeMap, ops::Range};
 
 use bstr::ByteVec;
+use compact_str::ToCompactString;
+use itertools::Itertools;
+use memchr::memmem::Finder;
 use ratatui::{
-    style::Style,
+    style::{Style, Stylize},
     text::{Line, Span},
 };
+use tracing::debug;
 
 use crate::buffer::LineEnding;
 
@@ -116,7 +120,7 @@ pub trait LineHelpers<'a> {
     /// Removes all tabs, carriage returns, newlines, and control characters from all spans in the line.
     ///
     /// Any changed spans become owned if they weren't already. Unchanged spans are untouched. (Subject to change.)
-    fn remove_unsavory_chars(&mut self);
+    fn remove_unsavory_chars(&mut self, replace: bool);
     /// Returns `true` if either the `Line` or any of it's `Spans` are styled.
     fn is_styled(&self) -> bool;
     /// Returns `true` if no `Spans` exist, or if all `Spans` are also empty.
@@ -132,14 +136,46 @@ pub trait LineHelpers<'a> {
 }
 
 impl<'a> LineHelpers<'a> for Line<'a> {
-    fn remove_unsavory_chars(&mut self) {
-        self.spans.iter_mut().for_each(|s| {
-            let mut new_string = s.content.replace(&['\t', '\n', '\r'][..], "");
-            new_string.retain(|c| !c.is_control() && !c.is_ascii_control());
-            if s.content != new_string {
-                s.content = Cow::Owned(new_string);
+    fn remove_unsavory_chars(&mut self, replace: bool) {
+        let is_char_unsavory = |c: char| -> bool { c.is_ascii_control() || c.is_control() };
+
+        let mut chars_to_escape: BTreeMap<usize, char> = BTreeMap::new();
+
+        let mut line_char_index = 0;
+        self.spans
+            .iter()
+            .map(|s| s.content.chars())
+            .flatten()
+            .for_each(|c| {
+                if is_char_unsavory(c) {
+                    chars_to_escape.insert(line_char_index, c);
+                }
+                line_char_index += c.len_utf8();
+            });
+
+        let mut offset: isize = 0;
+        if replace {
+            for (index, char) in chars_to_escape {
+                let as_escaped = char.escape_default().to_compact_string();
+
+                let corrected = index.checked_add_signed(offset).expect("overflow!");
+
+                let offset_mod = as_escaped.len() as isize - char.len_utf8() as isize;
+
+                offset += offset_mod;
+
+                self.remove_slice(corrected..corrected + char.len_utf8());
+                self.insert_slice(corrected, as_escaped, Some(Style::new().dark_gray()));
             }
-        });
+        } else {
+            for (index, char) in chars_to_escape {
+                let corrected = index.checked_add_signed(offset).expect("overflow!");
+                let char_len = char.len_utf8();
+                offset -= char_len as isize;
+
+                self.remove_slice(corrected..corrected + char_len);
+            }
+        }
     }
     fn is_styled(&self) -> bool {
         if self.style != Style::default() {
@@ -221,14 +257,104 @@ impl HasEscapedBytes for str {
     }
 }
 
-pub trait LineMutator {
+pub trait LineMutator<'a> {
+    fn insert_slice(
+        &mut self,
+        index: usize,
+        content: impl Into<Cow<'a, str>>,
+        style: Option<Style>,
+    );
     fn style_slice(&mut self, range: Range<usize>, style: Style);
     fn censor_slice(&mut self, range: Range<usize>, style: Option<Style>);
     fn remove_slice(&mut self, range: Range<usize>);
 }
 
-impl LineMutator for Line<'_> {
+impl<'a> LineMutator<'a> for Line<'a> {
+    /// ## Panics if index intersects char boundaries or goes out of bounds!
+    fn insert_slice(
+        &mut self,
+        index: usize,
+        content: impl Into<Cow<'a, str>>,
+        style: Option<Style>,
+    ) {
+        let total_len = self.spans.iter().map(|s| s.content.len()).sum();
+        assert!(
+            index <= total_len,
+            "Insertion operation index out of bounds: the index is {} but the total length is {}",
+            index,
+            total_len
+        );
+
+        if total_len == 0 {
+            return;
+        }
+
+        let mut index_within_span_opt = None;
+        let mut last_span_style = None;
+        let mut passed_len = 0;
+        let Some((span_index, span)) = self.spans.iter().find_position(|s| {
+            passed_len += s.content.len();
+
+            // Span is before requested index, ignore.
+            if passed_len < index {
+                last_span_style = Some(s.style);
+                false
+            } else if passed_len == index {
+                // Span ended at index! Ideal!
+                true
+            } else {
+                // Index is within this span.
+                index_within_span_opt = Some(s.content.len() - (passed_len - index));
+                true
+            }
+        }) else {
+            unreachable!("requested index: {index}, len: {total_len}");
+        };
+
+        match index_within_span_opt {
+            None => {
+                self.spans.insert(
+                    span_index + 1,
+                    Span::styled(content, style.unwrap_or(span.style)),
+                );
+            }
+            Some(0) => {
+                self.spans.insert(
+                    span_index,
+                    Span::styled(
+                        content,
+                        style.unwrap_or(last_span_style.unwrap_or_default()),
+                    ),
+                );
+            }
+            Some(index_within_span) => match &span.content {
+                Cow::Borrowed(borrowed) => {
+                    let (pre, post) = borrowed.split_at(index_within_span);
+                    let pre = Span::styled(pre, span.style);
+                    let mid = Span::styled(content, style.unwrap_or(span.style));
+                    let post = Span::styled(post, span.style);
+                    let range = Range {
+                        start: span_index,
+                        end: (span_index + 2).min(self.spans.len()),
+                    };
+                    self.spans.splice(range, [pre, mid, post]);
+                }
+                Cow::Owned(owned) => {
+                    let (pre, post) = owned.split_at(index_within_span);
+                    let pre = Span::styled(pre.to_owned(), span.style);
+                    let mid = Span::styled(content, style.unwrap_or(span.style));
+                    let post = Span::styled(post.to_owned(), span.style);
+                    let range = Range {
+                        start: span_index,
+                        end: (span_index + 2).min(self.spans.len()),
+                    };
+                    self.spans.splice(range, [pre, mid, post]);
+                }
+            },
+        }
+    }
     /// ## Panics if range intersects char boundaries or goes out of bounds!
+    #[inline]
     fn style_slice(&mut self, range: Range<usize>, style: Style) {
         // #[cfg(debug_assertions)]
         // debug!("Styling {range:?} with {style:?}");
@@ -303,6 +429,7 @@ impl LineMutator for Line<'_> {
         }
         self.spans = new_spans;
     }
+    #[inline]
     fn censor_slice(&mut self, range: Range<usize>, style: Option<Style>) {
         // #[cfg(debug_assertions)]
         // debug!("Censoring {range:?} with style {style:?}");
@@ -380,6 +507,7 @@ impl LineMutator for Line<'_> {
         new_spans.shrink_to_fit();
         self.spans = new_spans;
     }
+    #[inline]
     fn remove_slice(&mut self, range: Range<usize>) {
         // #[cfg(debug_assertions)]
         // debug!("Removing slice {:?}", range);
@@ -461,6 +589,7 @@ fn overlap_region(a: (usize, usize), b: (usize, usize)) -> (Option<usize>, Optio
 /// Splits the span's content into (pre, mid, post) based on byte offsets.
 ///
 /// Assumes the range is on valid char boundaries, **will panic otherwise!**
+#[inline]
 fn split_span_content<'a>(content: &'a str, range: Range<usize>) -> (&'a str, &'a str, &'a str) {
     let pre = &content[..range.start];
     let mid = &content[range.start..range.end];

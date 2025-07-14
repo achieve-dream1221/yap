@@ -142,7 +142,7 @@ pub struct BufLineKit<'a> {
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
     fn new(mut line: Line<'static>, kit: BufLineKit, line_type: LineType) -> Self {
-        line.remove_unsavory_chars();
+        line.remove_unsavory_chars(true);
 
         // let index_info = make_index_info(&kit.full_range_slice, kit.render.rendering.hex_indices);
 
@@ -207,7 +207,7 @@ impl BufLine {
         Self::new(line, kit, line_type)
     }
 
-    pub fn update_line(&mut self, line: Line<'static>, kit: BufLineKit, line_ending: &LineEnding) {
+    pub fn update_line(&mut self, mut new: BufLine) {
         assert_eq!(
             self.line_type,
             LineType::Port {
@@ -215,25 +215,10 @@ impl BufLine {
             }
         );
 
-        // self.index_info = make_index_info(&kit.full_range_slice);
+        new.timestamp = self.timestamp;
+        new.value.remove_unsavory_chars(true);
 
-        self.value = line;
-        self.value.remove_unsavory_chars();
-
-        let LineType::Port {
-            escaped_line_ending,
-        } = &mut self.line_type
-        else {
-            unreachable!();
-        };
-
-        if let Some(escaped) = line_ending.escaped_from(kit.full_range_slice.slice) {
-            _ = escaped_line_ending.insert(escaped);
-        };
-
-        // self.populate_line_ending(full_line_slice, line_ending);
-
-        self.update_line_height(kit.area_width, kit.render);
+        *self = new;
     }
 
     pub fn update_line_height(&mut self, area_width: u16, rendering: RenderSettings) -> usize {

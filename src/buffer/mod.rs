@@ -485,38 +485,18 @@ impl StyledLines {
                 let orig = raw_buffer
                     .range(orig)
                     .expect("failed to get line-to-continue buffer");
-                // debug!("Appendo from {last_index}! trunc: {trunc:#?} orig: {orig:#?}");
 
-                // info!("AAAFG: {:?}", slice);
-                let lossy_flavor = if kit.render.rendering.escape_invalid_bytes {
-                    LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
-                } else {
-                    LossyFlavor::replacement_char()
-                };
-                let line = match trunc.into_line_lossy(Style::new(), lossy_flavor) {
-                    Ok(line) => line,
-                    Err(_) => {
-                        error!("ansi-to-tui failed to parse input! Using unstyled text.");
-                        Line::from(String::from_utf8_lossy(trunc).to_string())
-                    }
+                let kit_for_append = BufLineKit {
+                    full_range_slice: unsafe {
+                        RangeSlice::from_parent_and_child(&raw_buffer.inner, orig)
+                    },
+                    ..kit
                 };
 
-                let line_opt = color_rules.apply_onto(trunc, line);
+                let buf_line_opt = slice_as_port_text(kit_for_append, color_rules, line_ending);
 
-                // let render_settings = RenderSettings {
-                //     rendering: &self.rendering,
-                //     defmt: &self.defmt_settings,
-                // };
-
-                if let Some(line) = line_opt {
-                    let kit = BufLineKit {
-                        full_range_slice: unsafe {
-                            RangeSlice::from_parent_and_child(&raw_buffer.inner, orig)
-                        },
-                        ..kit
-                    };
-
-                    last_line.update_line(line, kit, line_ending);
+                if let Some(line) = buf_line_opt {
+                    last_line.update_line(line);
                 } else {
                     _ = self.rx.pop();
                     self.last_rx_was_complete = true;
@@ -525,15 +505,51 @@ impl StyledLines {
                 self.last_rx_was_complete = orig.has_line_ending(line_ending);
                 continue;
             }
-
-            let kit = BufLineKit {
+            // Otherwise, new line being created.
+            let kit_for_new = BufLineKit {
                 full_range_slice: unsafe {
                     RangeSlice::from_parent_and_child(&raw_buffer.inner, orig)
                 },
                 ..kit
             };
 
-            if let Some(new_bufline) = slice_as_port_text(kit, color_rules, line_ending) {
+            // Returns None if the slice would be fully hidden by the color rules.
+            fn slice_as_port_text(
+                kit: BufLineKit,
+                color_rules: &ColorRules,
+                line_ending: &LineEnding,
+            ) -> Option<BufLine> {
+                let lossy_flavor = if kit.render.rendering.escape_invalid_bytes {
+                    LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
+                } else {
+                    LossyFlavor::replacement_char()
+                };
+
+                let RangeSlice {
+                    range,
+                    slice: original,
+                } = &kit.full_range_slice;
+
+                let truncated = if original.has_line_ending(line_ending) {
+                    &original[..original.len() - line_ending.as_bytes().len()]
+                } else {
+                    original
+                };
+
+                let line = match truncated.into_line_lossy(Style::new(), lossy_flavor) {
+                    Ok(line) => line,
+                    Err(_) => {
+                        error!("ansi-to-tui failed to parse input! Using unstyled text.");
+                        Line::from(String::from_utf8_lossy(truncated).to_string())
+                    }
+                };
+
+                color_rules
+                    .apply_onto(truncated, line, lossy_flavor)
+                    .map(|line| BufLine::port_text_line(line, kit, line_ending))
+            }
+
+            if let Some(new_bufline) = slice_as_port_text(kit_for_new, color_rules, line_ending) {
                 self.rx.push(new_bufline);
             }
             self.last_rx_was_complete = orig.has_line_ending(line_ending);
@@ -580,7 +596,11 @@ impl StyledLines {
             let mut message_line = Line::default();
             message_line.push_span(Span::raw(line));
 
-            if let Some(line) = color_rules.apply_onto(line.as_bytes(), message_line) {
+            if let Some(line) = color_rules.apply_onto(
+                line.as_bytes(),
+                message_line,
+                LossyFlavor::ReplacementChar(None),
+            ) {
                 let owned_spans: Vec<Span<'static>> = line
                     .into_iter()
                     .map(|s| match s.content {
@@ -1239,9 +1259,10 @@ impl Buffer {
                 lines[0].range().start < lines[1].range().start,
                 "Port lines should be in exact ascending order by index."
             );
-            assert!(
-                lines[0].range().end == lines[1].range().start,
-                "Line slice should end where next one begins."
+            assert_eq!(
+                lines[0].range().end,
+                lines[1].range().start,
+                "Port line slice should end where next one begins.",
             );
         });
 
@@ -1484,41 +1505,6 @@ impl Buffer {
     //         defmt: &self.defmt_settings,
     //     }
     // }
-}
-// Returns None if the slice would be fully hidden by the color rules.
-fn slice_as_port_text(
-    kit: BufLineKit,
-    color_rules: &ColorRules,
-    line_ending: &LineEnding,
-) -> Option<BufLine> {
-    let lossy_flavor = if kit.render.rendering.escape_invalid_bytes {
-        LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
-    } else {
-        LossyFlavor::replacement_char()
-    };
-
-    let RangeSlice {
-        range,
-        slice: original,
-    } = &kit.full_range_slice;
-
-    let truncated = if original.has_line_ending(line_ending) {
-        &original[..original.len() - line_ending.as_bytes().len()]
-    } else {
-        original
-    };
-
-    let line = match truncated.into_line_lossy(Style::new(), lossy_flavor) {
-        Ok(line) => line,
-        Err(_) => {
-            error!("ansi-to-tui failed to parse input! Using unstyled text.");
-            Line::from(String::from_utf8_lossy(truncated).to_string())
-        }
-    };
-
-    color_rules
-        .apply_onto(truncated, line)
-        .map(|line| BufLine::port_text_line(line, kit, line_ending))
 }
 
 /// Returns an iterator over the given byte slice, seperated by (and excluding) the given line ending byte slice.
