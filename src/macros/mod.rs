@@ -67,6 +67,8 @@ pub struct Macros {
 pub enum MacrosLoadError {
     #[error("error reading macro file")]
     File(#[from] std::io::Error),
+    // #[error("error deserializing macro content")]
+    // Deser(#[from] toml::de::Error),
 }
 
 impl Macros {
@@ -273,6 +275,7 @@ impl Macros {
     // }
 
     pub fn load_from_folder<P: AsRef<Path>>(&mut self, folder: P) -> Result<(), MacrosLoadError> {
+        // TODO maybe have: "Macros Reloaded! X loaded, Y had errors."
         // TODO never return on error, just log and notify user to check logs for details.
         fn visit_dir(
             dir: &Path,

@@ -938,6 +938,11 @@ impl Buffer {
         // while self.consume_latest_bytes(Some(now)) {
         //     ();
         // }
+        #[cfg(debug_assertions)]
+        {
+            let buffer_bytes = self.raw.inner.len();
+            debug!("Buffer size: {:.2} KB", buffer_bytes as f64 / 1024.0);
+        }
     }
 
     fn consume_latest_bytes(&mut self, timestamp: DateTime<Local>) {

@@ -18,6 +18,8 @@ pub struct CarouselHandle {
     command_tx: Sender<CarouselCommand>,
 }
 
+// impl Drop for CarouselHandle {}
+
 type PayloadFn = Box<dyn Fn() -> Result<(), String> + Send + 'static>;
 
 impl CarouselHandle {
