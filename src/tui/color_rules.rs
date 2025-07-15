@@ -178,10 +178,10 @@ impl ColorRules {
         // let now = std::time::Instant::now();
 
         struct ByteVisiblityTracker {
-            records: Vec<Append>,
+            records: Vec<Bytes>,
         }
         impl ByteVisiblityTracker {
-            /// Accounts for shifts in content due to Append::Replaced
+            /// Accounts for shifts in content due to Bytes::Replaced
             fn get_corrected_range(&self, in_original: Range<usize>) -> Option<Range<usize>> {
                 // Track our position in the original and rendered string.
                 let mut orig_idx = 0;
@@ -193,7 +193,7 @@ impl ColorRules {
 
                 for append in &self.records {
                     match append {
-                        Append::Visible(len) => {
+                        Bytes::Visible(len) => {
                             let next_orig = orig_idx + len;
                             let next_rendered = rendered_idx + len;
 
@@ -209,7 +209,7 @@ impl ColorRules {
                             orig_idx = next_orig;
                             rendered_idx = next_rendered;
                         }
-                        Append::Replaced { original, new } => {
+                        Bytes::Replaced { original, new } => {
                             let next_orig = orig_idx + original;
                             let next_rendered = rendered_idx + new;
 
@@ -254,18 +254,18 @@ impl ColorRules {
                     .expect("str not found within parent slice?");
 
                 if str_index > 0 {
-                    self.records.push(Append::Replaced {
+                    self.records.push(Bytes::Replaced {
                         original: str_index,
                         new: 0,
                     });
                 }
 
-                self.records.push(Append::Visible(text.len()));
+                self.records.push(Bytes::Visible(text.len()));
 
                 *cursor += text.len() + str_index;
             }
             fn replaced(&mut self, original: usize, new: usize, cursor: &mut usize) {
-                self.records.push(Append::Replaced { original, new });
+                self.records.push(Bytes::Replaced { original, new });
                 *cursor += original;
             }
             // Might make more sense to keep the existing removed_ranges logic,
@@ -320,57 +320,37 @@ impl ColorRules {
         let mut visibility = ByteVisiblityTracker {
             records: Vec::with_capacity(line.spans.len()),
         };
-        // let mut builder = ropey::RopeBuilder::new();
-
-        enum Append {
+        enum Bytes {
             Visible(usize),
             Replaced { original: usize, new: usize },
         }
-        impl Append {
-            fn len(&self) -> usize {
-                match self {
-                    Append::Visible(len) => *len,
-                    Append::Replaced { original, .. } => *original,
-                }
-            }
-        }
-
-        // let mut append_to_builder = |data: Append, cursor: &mut usize| match data {
-        //     Append::Visible(s) => {
-        //         let str_index = original[*cursor..]
-        //             .find(s)
-        //             .expect("str not found within parent slice?");
-        //         if *cursor < str_index {
-        //             let deficit = str_index - *cursor;
-        //             for _ in 0..deficit {
-        //                 builder.append("*");
-        //             }
-        //         }
-        //         *cursor += str_index;
-        //         builder.append(s);
-        //     }
-        //     Append::Dummy(amount) => {
-        //         *cursor += amount;
-        //         for _ in 0..amount {
-        //             builder.append("*");
+        // impl Bytes {
+        //     fn len(&self) -> usize {
+        //         match self {
+        //             Bytes::Visible(len) => *len,
+        //             Bytes::Replaced { original, .. } => *original,
         //         }
         //     }
-        // };
+        // }
 
         fn determine_if_visible(span_a: &str, span_b: &str, unconsumed: &[u8]) -> bool {
             let span_a_index = unconsumed.find(span_a.as_bytes());
 
             match span_a_index {
+                // must be an ansi_to_tui replacement,
+                // char doesnt exist in slice.
                 None => false,
                 Some(a_idx) => {
                     let span_b_index = unconsumed.find(span_b.as_bytes());
                     match span_b_index {
+                        // this one is likely a part of the original data
+                        // since we were able to find it in the original slice,
+                        // but the upcoming span likely isn't.
                         None => true,
                         Some(b_idx) => {
                             match a_idx.cmp(&b_idx) {
                                 // Replacement string was not added by us!
                                 // a_idx existing in original before b_idx means
-                                //
                                 Ordering::Less | Ordering::Equal => true,
                                 // confirmed to be an ansi_to_tui replacement,
                                 // since another was found after content we haven't gotten to yet
@@ -381,34 +361,6 @@ impl ColorRules {
                 }
             }
         }
-
-        // fn determine_if_visible(span_a: &str, span_b: &str, unconsumed: &[u8]) -> bool {
-        //     let span_a_index = unconsumed.find(span_a.as_bytes());
-        //     let span_b_index = unconsumed.find(span_b.as_bytes());
-
-        //     match (span_a_index, span_b_index) {
-        //         (Some(a_idx), Some(b_idx)) => match a_idx.cmp(&b_idx) {
-        //             // Replacement string was not added by us!
-        //             // a_idx existing in original before b_idx means
-        //             //
-        //             Ordering::Less | Ordering::Equal => true,
-        //             // confirmed to be an ansi_to_tui replacement,
-        //             // since another was found after content we haven't gotten to yet
-        //             Ordering::Greater => false,
-        //         },
-        //         (Some(_), None) => {
-        //             // this one is likely a part of the original data
-        //             // since we were able to find it in the original slice,
-        //             // but the upcoming span likely isn't.
-        //             true
-        //         }
-        //         (None, _) => {
-        //             // must be an ansi_to_tui replacement,
-        //             // char doesnt exist in slice.
-        //             false
-        //         }
-        //     }
-        // }
 
         let line_len: usize = line.iter().map(|s| s.content.len()).sum();
         let mut cursor = 0;

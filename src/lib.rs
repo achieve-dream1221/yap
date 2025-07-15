@@ -4,13 +4,14 @@ use std::{
     net::{SocketAddr, TcpStream},
     path::Path,
     sync::{Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use app::{App, CrosstermEvent};
 use camino::Utf8PathBuf;
 
 use clap::Parser;
+use crokey::crossterm::event::{KeyCode, KeyModifiers};
 use fs_err as fs;
 use panic_handler::initialize_panic_handler;
 use ratatui::crossterm::{
@@ -125,19 +126,20 @@ pub fn run() -> color_eyre::Result<()> {
 fn run_inner(cli_args: YapCli, app_settings: Settings) -> color_eyre::Result<()> {
     let (tx, rx) = crossbeam::channel::unbounded::<app::Event>();
     let crossterm_tx = tx.clone();
+    let (ctrl_c_tx, ctrl_c_rx) = crossbeam::channel::bounded::<()>(1);
     let crossterm_thread = std::thread::spawn(move || {
-        use crossterm::event::{Event, KeyEventKind};
+        use crokey::crossterm::event::{Event, KeyEvent, KeyEventKind};
 
         #[derive(Debug)]
         struct SendError;
-
         impl std::fmt::Display for SendError {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "failed to send crossterm event")
             }
         }
-
         impl std::error::Error for SendError {}
+        const CTRL_C_ACK_MAX_WAIT: Duration = Duration::from_secs(5);
+        let mut ctrl_c_recieved_at: Option<Instant> = None;
 
         let filter_and_send = |event: Event| -> Result<(), SendError> {
             let send_event = |crossterm_event: CrosstermEvent| -> Result<(), SendError> {
@@ -180,6 +182,22 @@ fn run_inner(cli_args: YapCli, app_settings: Settings) -> color_eyre::Result<()>
                 }
             };
 
+            if ctrl_c_recieved_at.is_some() && ctrl_c_rx.try_recv().is_ok() {
+                _ = ctrl_c_recieved_at.take();
+            }
+
+            if let Event::Key(key) = &event
+                && is_ctrl_c(key)
+            {
+                if let Some(time_since_ctrl_c) = ctrl_c_recieved_at.as_ref().map(Instant::elapsed) {
+                    if time_since_ctrl_c > CTRL_C_ACK_MAX_WAIT {
+                        panic!("Ctrl-C was not acknowledged, force exiting!");
+                    }
+                } else {
+                    _ = ctrl_c_recieved_at.insert(Instant::now());
+                }
+            }
+
             if let Err(e) = filter_and_send(event) {
                 error!("{e}");
                 break;
@@ -197,7 +215,7 @@ fn run_inner(cli_args: YapCli, app_settings: Settings) -> color_eyre::Result<()>
     //     error!("Failed to enable key combining! {e}");
     // };
 
-    let mut app = App::build(tx, rx, app_settings)?;
+    let mut app = App::build(tx, rx, ctrl_c_tx, app_settings)?;
 
     if let Some(defmt_path) = cli_args.defmt_elf {
         match app::_try_load_defmt_elf(
@@ -273,6 +291,12 @@ fn run_inner(cli_args: YapCli, app_settings: Settings) -> color_eyre::Result<()>
         crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
         result
     }
+}
+
+pub fn is_ctrl_c(key: &crossterm::event::KeyEvent) -> bool {
+    key.kind == crossterm::event::KeyEventKind::Press
+        && matches!(key.code, KeyCode::Char('c'))
+        && key.modifiers == KeyModifiers::CONTROL
 }
 
 pub fn initialize_logging<P: AsRef<Path>>(

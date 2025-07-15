@@ -551,7 +551,7 @@ pub struct PortSettings {
     /// Line endings for RX'd data.
     #[table(display = ["\\n", "\\r", "\\r\\n", "None"])]
     #[table(rename = "RX Line Ending")]
-    #[table(values = [RxLineEnding::Preset("\\n", b"\n"), RxLineEnding::Preset("\\r", b"\r"), RxLineEnding::Preset("\\r\\n", b"\\r\\n"), RxLineEnding::Preset("", b"")])]
+    #[table(values = [RxLineEnding::Preset("\\n", b"\n"), RxLineEnding::Preset("\\r", b"\r"), RxLineEnding::Preset("\\r\\n", b"\r\n"), RxLineEnding::Preset("", b"")])]
     #[table(allow_unknown_values)]
     #[serde(
         serialize_with = "serialize_as_string",
@@ -563,7 +563,7 @@ pub struct PortSettings {
     /// Line endings for TX'd data.
     #[table(display = ["Inherit RX", "\\n", "\\r", "\\r\\n", "None"])]
     #[table(rename = "TX Line Ending")]
-    #[table(values = [TxLineEnding::InheritRx, TxLineEnding::Preset("\\n", b"\\n"), TxLineEnding::Preset("\\r", b"\\r"), TxLineEnding::Preset("\\r\\n", b"\\r\\n"), TxLineEnding::Preset("", b"")])]
+    #[table(values = [TxLineEnding::InheritRx, TxLineEnding::Preset("\\n", b"\n"), TxLineEnding::Preset("\\r", b"\r"), TxLineEnding::Preset("\\r\\n", b"\r\n"), TxLineEnding::Preset("", b"")])]
     #[table(allow_unknown_values)]
     #[serde(
         serialize_with = "serialize_as_string",
@@ -575,7 +575,7 @@ pub struct PortSettings {
     #[cfg(feature = "macros")]
     /// Default line ending for sent macros.
     #[table(display = ["Inherit TX", "Inherit RX", "\\n", "\\r", "\\r\\n", "None"])]
-    #[table(values = [MacroTxLineEnding::InheritTx, MacroTxLineEnding::InheritRx, MacroTxLineEnding::Preset("\\n", b"\\n"), MacroTxLineEnding::Preset("\\r", b"\\r"), MacroTxLineEnding::Preset("\\r\\n", b"\\r\\n"), MacroTxLineEnding::Preset("", b"")])]
+    #[table(values = [MacroTxLineEnding::InheritTx, MacroTxLineEnding::InheritRx, MacroTxLineEnding::Preset("\\n", b"\n"), MacroTxLineEnding::Preset("\\r", b"\r"), MacroTxLineEnding::Preset("\\r\\n", b"\r\n"), MacroTxLineEnding::Preset("", b"")])]
     #[table(allow_unknown_values)]
     #[serde(
         serialize_with = "serialize_as_string",

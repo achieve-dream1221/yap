@@ -13,8 +13,8 @@ use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use color_eyre::eyre::Result;
 use compact_str::{CompactString, ToCompactString};
-use crokey::{KeyCombination, key};
-use crossbeam::channel::{Receiver, Select, Sender};
+use crokey::{KeyCombination, crossterm::event::KeyEventKind, key};
+use crossbeam::channel::{Receiver, Select, Sender, TrySendError};
 use enum_rotate::EnumRotate;
 use fs_err as fs;
 
@@ -53,6 +53,7 @@ use crate::{
     event_carousel::CarouselHandle,
     get_executable_name,
     history::UserInput,
+    is_ctrl_c,
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
     notifications::{EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notifications, PAUSE_TIME},
     serial::{
@@ -332,12 +333,14 @@ pub struct App {
     pub defmt_helpers: DefmtHelpers,
     // TODO
     // error_message: Option<String>,
+    ctrl_c_tx: Sender<()>,
 }
 
 impl App {
     pub fn build(
         event_tx: Sender<Event>,
         event_rx: Receiver<Event>,
+        ctrl_c_tx: Sender<()>,
         settings: Settings,
     ) -> Result<Self> {
         let keybinds_path = config_adjacent_path(crate::keybinds::CONFIG_TOML_PATH);
@@ -500,6 +503,8 @@ impl App {
             defmt_helpers,
 
             user_broke_connection: false,
+
+            ctrl_c_tx,
         })
     }
     fn is_running(&self) -> bool {
@@ -934,6 +939,14 @@ impl App {
     }
     // TODO fuzz this
     fn handle_key_press(&mut self, key: KeyEvent) {
+        if is_ctrl_c(&key) {
+            match self.ctrl_c_tx.try_send(()) {
+                Ok(()) => (),
+                Err(TrySendError::Full(_)) => panic!("Ctrl-C ack buffer full??"),
+                Err(TrySendError::Disconnected(_)) => panic!("Failed to acknowledge Ctrl-C!"),
+            }
+        }
+
         let key_combo = KeyCombination::from(key);
         // debug!("{key_combo}");
 
