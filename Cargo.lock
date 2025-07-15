@@ -61,7 +61,7 @@ dependencies = [
 [[package]]
 name = "ansi-to-tui"
 version = "7.0.0"
-source = "git+https://github.com/nullstalgia/ansi-to-tui?branch=lossy_and_line_endings#266221a24fc1a86a717b48646127dd68dd0cb901"
+source = "git+https://github.com/nullstalgia/ansi-to-tui?branch=lossy_and_line_endings#64bdf3a4ead9aea3b38a14e005d677051f02bff2"
 dependencies = [
  "nom 7.1.3",
  "ratatui",

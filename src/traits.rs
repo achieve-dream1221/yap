@@ -3,7 +3,7 @@
 use std::{borrow::Cow, collections::BTreeMap, ops::Range};
 
 use bstr::ByteVec;
-use compact_str::ToCompactString;
+use compact_str::{ToCompactString, format_compact};
 use itertools::Itertools;
 use memchr::memmem::Finder;
 use ratatui::{
@@ -12,7 +12,7 @@ use ratatui::{
 };
 use tracing::debug;
 
-use crate::buffer::LineEnding;
+use crate::buffer::{HEX_UPPER, LineEnding};
 
 // use crate::tui::buffer::LineEnding;
 
@@ -129,14 +129,31 @@ pub trait LineHelpers<'a> {
     fn style_all_spans(&mut self, new_style: Style);
     /// Consumes the `Line` and returns a new one with all `Span`'s styles set to the specified style.
     fn all_spans_styled(self, new_style: Style) -> Line<'a>;
-    /// Returns an owned `Line` that borrows from the current line's spans.
+    /// Returns a new `Line` object that owns all of it's spans, copied from the original.
+    fn new_owned(&'a self) -> Line<'static>;
+    /// Returns a new `Line` that borrows from all of the current line's spans.
     fn new_borrowing(&'a self) -> Line<'a>;
     /// Generates an iterator that creates owned `Span` objects whose content borrows from the original line's spans.
     fn borrowed_spans_iter(&'a self) -> impl DoubleEndedIterator<Item = Span<'a>>;
 }
 
 impl<'a> LineHelpers<'a> for Line<'a> {
+    fn new_owned(&'a self) -> Line<'static> {
+        let mut line: Line<'static> = Line::from_iter(self.borrowed_spans_iter().map(|s| {
+            let span: Span<'static> = Span {
+                content: s.content.as_ref().to_owned().into(),
+                ..s
+            };
+            span
+        }));
+        if self.alignment.is_some() {
+            line.alignment = self.alignment;
+        }
+        line.style = self.style;
+        line
+    }
     fn remove_unsavory_chars(&mut self, replace: bool) {
+        // let now = Instant::now();
         let is_char_unsavory = |c: char| -> bool { c.is_ascii_control() || c.is_control() };
 
         let mut chars_to_escape: BTreeMap<usize, char> = BTreeMap::new();
@@ -152,20 +169,55 @@ impl<'a> LineHelpers<'a> for Line<'a> {
                 }
                 line_char_index += c.len_utf8();
             });
+        // debug!("took {:?} to see whats fuckd", now.elapsed());
+        // let now2 = Instant::now();
 
         let mut offset: isize = 0;
         if replace {
             for (index, char) in chars_to_escape {
-                let as_escaped = char.escape_default().to_compact_string();
-
                 let corrected = index.checked_add_signed(offset).expect("overflow!");
-
-                let offset_mod = as_escaped.len() as isize - char.len_utf8() as isize;
-
-                offset += offset_mod;
-
                 self.remove_slice(corrected..corrected + char.len_utf8());
-                self.insert_slice(corrected, as_escaped, Some(Style::new().dark_gray()));
+                let dark_gray = Style::new().dark_gray();
+                let replacement_len = match char {
+                    // '\0' => {
+                    //     let zero = "\\0";
+                    //     self.insert_slice(corrected, zero, Some(dark_gray));
+                    //     zero.len()
+                    // }
+                    '\t' => {
+                        let tab = "    ";
+                        self.insert_slice(corrected, tab, Some(dark_gray));
+                        tab.len()
+                    }
+                    '\n' => {
+                        let lf = "\\n";
+                        self.insert_slice(corrected, lf, Some(dark_gray));
+                        lf.len()
+                    }
+                    '\r' => {
+                        let cr = "\\r";
+                        self.insert_slice(corrected, cr, Some(dark_gray));
+                        cr.len()
+                    }
+                    _ => {
+                        let mut buffer = [0u8; 4];
+                        let len = char.encode_utf8(&mut buffer).len();
+                        let mut added_len = 0;
+
+                        for i in 0..len {
+                            let hex_prefix = "\\x";
+                            self.insert_slice(corrected + added_len, hex_prefix, Some(dark_gray));
+                            added_len += hex_prefix.len();
+                            let upper_hex = HEX_UPPER[buffer[i] as usize];
+                            self.insert_slice(corrected + added_len, upper_hex, Some(dark_gray));
+                            added_len += upper_hex.len();
+                        }
+                        added_len
+                    }
+                };
+
+                let offset_mod = replacement_len as isize - char.len_utf8() as isize;
+                offset += offset_mod;
             }
         } else {
             for (index, char) in chars_to_escape {
@@ -176,6 +228,10 @@ impl<'a> LineHelpers<'a> for Line<'a> {
                 self.remove_slice(corrected..corrected + char_len);
             }
         }
+        // debug!(
+        //     "unsavory took {:?} for modifying {line_char_index}",
+        //     now2.elapsed()
+        // );
     }
     fn is_styled(&self) -> bool {
         if self.style != Style::default() {
@@ -504,7 +560,7 @@ impl<'a> LineMutator<'a> for Line<'a> {
             }
             current += span_len;
         }
-        new_spans.shrink_to_fit();
+        // new_spans.shrink_to_fit();
         self.spans = new_spans;
     }
     #[inline]
@@ -567,7 +623,7 @@ impl<'a> LineMutator<'a> for Line<'a> {
             }
             current += span_len;
         }
-        new_spans.shrink_to_fit();
+        // new_spans.shrink_to_fit();
         self.spans = new_spans;
     }
 }

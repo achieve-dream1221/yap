@@ -590,7 +590,7 @@ impl App {
             Event::Quit => self.shutdown(),
 
             Event::RxBuffer(data) => {
-                self.buffer.fresh_rx_bytes(&data);
+                self.buffer.fresh_rx_bytes(data);
                 self.buffer.scroll_by(0);
 
                 self.repeating_line_flip.flip();

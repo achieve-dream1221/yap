@@ -1,6 +1,6 @@
 #[cfg(feature = "defmt")]
 use std::sync::Arc;
-use std::{cmp::Ordering, ops::Range, thread::JoinHandle};
+use std::{borrow::Cow, cmp::Ordering, ops::Range, thread::JoinHandle};
 
 use ansi_to_tui::{IntoText, LossyFlavor};
 use bstr::{ByteSlice, ByteVec};
@@ -51,6 +51,7 @@ use crate::settings::Logging;
 
 mod buf_line;
 mod hex_spans;
+pub use hex_spans::*;
 mod tui;
 
 #[cfg(feature = "logging")]
@@ -536,7 +537,7 @@ impl StyledLines {
                     original
                 };
 
-                let line = match truncated.into_line_lossy(Style::new(), lossy_flavor) {
+                let line = match truncated.to_line_lossy(Style::new(), lossy_flavor) {
                     Ok(line) => line,
                     Err(_) => {
                         error!("ansi-to-tui failed to parse input! Using unstyled text.");
@@ -546,7 +547,12 @@ impl StyledLines {
 
                 color_rules
                     .apply_onto(truncated, line, lossy_flavor)
-                    .map(|line| BufLine::port_text_line(line, kit, line_ending))
+                    .map(|mut l| {
+                        // TODO read from config
+                        l.remove_unsavory_chars(false);
+                        let line: Line<'static> = l.new_owned();
+                        BufLine::port_text_line(line, kit, line_ending)
+                    })
             }
 
             if let Some(new_bufline) = slice_as_port_text(kit_for_new, color_rules, line_ending) {
@@ -931,14 +937,15 @@ impl Buffer {
     }
 
     // Forced to use Vec<u8> for now
-    pub fn fresh_rx_bytes(&mut self, bytes: &[u8]) {
+    pub fn fresh_rx_bytes(&mut self, bytes: Vec<u8>) {
         let now = Local::now();
         // debug!("{lines:?}");
         // debug!("{:#?}", self.lines);
-        #[cfg(feature = "logging")]
-        self.log_handle.log_rx_bytes(now, bytes.to_owned()).unwrap();
 
-        self.raw.feed(bytes, now);
+        self.raw.feed(&bytes, now);
+
+        #[cfg(feature = "logging")]
+        self.log_handle.log_rx_bytes(now, bytes).unwrap();
 
         // let meow = std::time::Instant::now();
         self.consume_latest_bytes(now);

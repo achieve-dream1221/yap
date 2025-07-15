@@ -142,7 +142,8 @@ pub struct BufLineKit<'a> {
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
     fn new(mut line: Line<'static>, kit: BufLineKit, line_type: LineType) -> Self {
-        line.remove_unsavory_chars(true);
+        // TODO read from config
+        // line.remove_unsavory_chars(false);
 
         // let index_info = make_index_info(&kit.full_range_slice, kit.render.rendering.hex_indices);
 
@@ -216,7 +217,7 @@ impl BufLine {
         );
 
         new.timestamp = self.timestamp;
-        new.value.remove_unsavory_chars(true);
+        // new.value.remove_unsavory_chars(false);
 
         *self = new;
     }

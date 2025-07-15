@@ -1,14 +1,17 @@
-use std::{ops::Range, path::Path, str::FromStr};
+use std::{cmp::Ordering, ops::Range, path::Path, str::FromStr};
 
+use ansi_to_tui::LossyFlavor;
+use bstr::ByteSlice;
 use compact_str::{CompactString, CompactStringExt};
 use fs_err as fs;
+use itertools::Itertools;
 use memchr::memmem::Finder;
 use ratatui::{
     style::{Color, Style},
     text::Line,
 };
 use regex::bytes::Regex;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::traits::{LineHelpers, LineMutator};
 
@@ -166,102 +169,307 @@ impl ColorRules {
         })
     }
 
-    pub fn apply_onto<'a>(&self, original: &[u8], mut line: Line<'a>) -> Option<Line<'a>> {
-        // Handle mapping between original bytes and visible characters,
-        // so that styling with ANSI escapes/arbitrary bytes is handled correctly.
+    pub fn apply_onto<'a>(
+        &self,
+        original: &[u8],
+        mut line: Line<'a>,
+        lossy_flavor: LossyFlavor,
+    ) -> Option<Line<'a>> {
+        // let now = std::time::Instant::now();
 
-        // First, build a mapping from raw byte offset (in 'original') to grapheme offset (idx into 'line').
-        // We'll step through 'line' content, mapping the char-by-char positions.
+        struct ByteVisiblityTracker {
+            records: Vec<Append>,
+        }
+        impl ByteVisiblityTracker {
+            /// Accounts for shifts in content due to Append::Replaced
+            fn get_corrected_range(&self, in_original: Range<usize>) -> Option<Range<usize>> {
+                // Track our position in the original and rendered string.
+                let mut orig_idx = 0;
+                let mut rendered_idx = 0;
+                let mut new_start = None;
+                let mut new_end = None;
 
-        // This requires two things:
-        // 1. Mapping byte indices from 'original' (which may include escapes/nonsense)
-        //    to character indices in 'line' (which should be clean render text).
-        // 2. Skipping ANSI escape sequences ("\x1b[...m") and non-printable bytes.
+                let Range { start, end } = in_original;
 
-        // We'll do a best-effort match: scan through original and line at the same time.
+                for append in &self.records {
+                    match append {
+                        Append::Visible(len) => {
+                            let next_orig = orig_idx + len;
+                            let next_rendered = rendered_idx + len;
 
-        // The buffer 'original' is bytes; but we also need the rendered text for 'line' as a str.
-        let mut rendered = CompactString::with_capacity(original.len());
-        line.iter().for_each(|s| rendered.push_str(&s.content));
+                            // Is start inside this block?
+                            if new_start.is_none() && start >= orig_idx && start < next_orig {
+                                new_start = Some(rendered_idx + (start - orig_idx));
+                            }
+                            // Is end inside this block?
+                            if new_end.is_none() && end > orig_idx && end <= next_orig {
+                                new_end = Some(rendered_idx + (end - orig_idx));
+                            }
 
-        // Build mapping: for each byte index into 'original', what's the visible char index in 'rendered'?
-        // We'll do a simple, strict scan. If things don't match up, fallback to legacy approach.
-
-        // Maps byte index in 'original' to char index in 'rendered'.
-        let mut byte_to_char: Vec<usize> = vec![0; original.len() + 1]; // for every byte, its mapped char idx in rendered
-        let mut i = 0; // index into original
-        let mut j = 0; // char index into rendered
-
-        // Also, build mapping from char index in rendered to byte index in original.
-        let mut char_to_byte: Vec<usize> = vec![0; rendered.len() + 1];
-
-        while i < original.len() && j < rendered.len() {
-            if original[i] == 0x1b {
-                // Skip an ANSI escape sequence
-                let mut esc_end = i + 1;
-                if esc_end < original.len() && original[esc_end] == b'[' {
-                    esc_end += 1;
-                    // CSI sequences: \x1b[ ... [A-Za-z] (final byte)
-                    while esc_end < original.len() {
-                        let b = original[esc_end];
-                        if (0x40..=0x7E).contains(&b) {
-                            esc_end += 1;
-                            break;
+                            orig_idx = next_orig;
+                            rendered_idx = next_rendered;
                         }
-                        esc_end += 1;
+                        Append::Replaced { original, new } => {
+                            let next_orig = orig_idx + original;
+                            let next_rendered = rendered_idx + new;
+
+                            // If the start is buried in replaced area, snap to end of replacement
+                            if new_start.is_none() && start >= orig_idx && start < next_orig {
+                                new_start = Some(rendered_idx + (*new).saturating_sub(1));
+                            }
+                            // If the end is buried in replaced area, snap to end of replacement
+                            if new_end.is_none() && end > orig_idx && end <= next_orig {
+                                new_end = Some(rendered_idx + (*new).saturating_sub(0));
+                            }
+
+                            orig_idx = next_orig;
+                            rendered_idx = next_rendered;
+                        }
+                    }
+
+                    // If we've found both ends, break
+                    if new_start.is_some() && new_end.is_some() {
+                        break;
                     }
                 }
-                while i < esc_end {
-                    byte_to_char[i] = j;
-                    i += 1;
+
+                // TODO verify this?
+                // If not found, might be after all appended blocks.
+                if new_start.is_none() {
+                    new_start = Some(rendered_idx);
                 }
-                continue;
+                if new_end.is_none() {
+                    new_end = Some(rendered_idx);
+                }
+
+                let start = new_start.unwrap_or(0);
+                let end = new_end.unwrap_or(start);
+
+                if start <= end { Some(start..end) } else { None }
             }
 
-            // decode next UTF-8 char from original
+            fn visible_text(&mut self, text: &str, unconsumed: &[u8], cursor: &mut usize) {
+                let str_index = unconsumed
+                    .find(text)
+                    .expect("str not found within parent slice?");
 
-            let end = original.len().min(i + 4);
-
-            // let c = match std::str::from_utf8() {
-            //     Ok(rest) => rest.chars().next(),
-            //     Err(_) => None,
-            // };
-
-            let c = bytes_to_char(&original[i..end]);
-
-            if let Some(orig_ch) = c {
-                let ch_len = orig_ch.len_utf8();
-                let rendered_ch = rendered[j..].chars().next();
-
-                // If the characters match, map all bytes of orig_ch to j in char space
-                if Some(orig_ch) == rendered_ch {
-                    for k in 0..ch_len {
-                        byte_to_char[i + k] = j;
-                    }
-                    char_to_byte[j] = i;
-                    i += ch_len;
-                    j += orig_ch.len_utf8();
-                } else {
-                    // out of sync: fallback
-                    // Mark remaining positions to 0, break.
-                    for x in i..original.len() {
-                        byte_to_char[x] = 0;
-                    }
-                    break;
+                if str_index > 0 {
+                    self.records.push(Append::Replaced {
+                        original: str_index,
+                        new: 0,
+                    });
                 }
-            } else {
-                // Invalid byte or not a valid UTF-8 codepoint.
-                byte_to_char[i] = j;
-                i += 1;
+
+                self.records.push(Append::Visible(text.len()));
+
+                *cursor += text.len() + str_index;
+            }
+            fn replaced(&mut self, original: usize, new: usize, cursor: &mut usize) {
+                self.records.push(Append::Replaced { original, new });
+                *cursor += original;
+            }
+            // Might make more sense to keep the existing removed_ranges logic,
+            // since this would break AXM rules with the visibility tracker in the iterator
+            // /// Amend existing records to set this range in original as hidden
+            // fn hide_visible(&mut self, range: Range<usize>) {
+            //     let mut passed_len = 0;
+            //     let (index, visible) = self
+            //         .records
+            //         .iter()
+            //         .find_position(|a| {
+            //             passed_len += a.len();
+            //             passed_len >= range.start
+            //         })
+            //         .expect("failed to find existing visible record!");
+
+            //     let (pre, mid, post): (Option<Append>, Option<Append>, Option<Append>) = {
+            //         let Append::Visible(len) = &visible else {
+            //             panic!("hide_visible can only operate on visible blocks");
+            //         };
+            //         let pre_len = range.start - (passed_len - visible.len());
+            //         let mid_len = (range.end - range.start).min(*len - pre_len);
+            //         let post_len = len - pre_len - mid_len;
+            //         let pre = if pre_len > 0 {
+            //             Some(Append::Visible(pre_len))
+            //         } else {
+            //             None
+            //         };
+            //         let mid = if mid_len > 0 {
+            //             Some(Append::Replaced {
+            //                 original: mid_len,
+            //                 new: 0,
+            //             })
+            //         } else {
+            //             None
+            //         };
+            //         let post = if post_len > 0 {
+            //             Some(Append::Visible(post_len))
+            //         } else {
+            //             None
+            //         };
+            //         (pre, mid, post)
+            //     };
+
+            //     self.records.splice(
+            //         index..index + 1,
+            //         [pre, mid, post].into_iter().filter_map(|s| s),
+            //     );
+            // }
+        }
+
+        let mut visibility = ByteVisiblityTracker {
+            records: Vec::with_capacity(line.spans.len()),
+        };
+        // let mut builder = ropey::RopeBuilder::new();
+
+        enum Append {
+            Visible(usize),
+            Replaced { original: usize, new: usize },
+        }
+        impl Append {
+            fn len(&self) -> usize {
+                match self {
+                    Append::Visible(len) => *len,
+                    Append::Replaced { original, .. } => *original,
+                }
             }
         }
-        // The arrays cover up to these positions, but not necessarily through the whole original/line.
-        for x in i..original.len() {
-            byte_to_char[x] = j;
+
+        // let mut append_to_builder = |data: Append, cursor: &mut usize| match data {
+        //     Append::Visible(s) => {
+        //         let str_index = original[*cursor..]
+        //             .find(s)
+        //             .expect("str not found within parent slice?");
+        //         if *cursor < str_index {
+        //             let deficit = str_index - *cursor;
+        //             for _ in 0..deficit {
+        //                 builder.append("*");
+        //             }
+        //         }
+        //         *cursor += str_index;
+        //         builder.append(s);
+        //     }
+        //     Append::Dummy(amount) => {
+        //         *cursor += amount;
+        //         for _ in 0..amount {
+        //             builder.append("*");
+        //         }
+        //     }
+        // };
+
+        fn determine_if_visible(span_a: &str, span_b: &str, unconsumed: &[u8]) -> bool {
+            let span_a_index = unconsumed.find(span_a.as_bytes());
+
+            match span_a_index {
+                None => false,
+                Some(a_idx) => {
+                    let span_b_index = unconsumed.find(span_b.as_bytes());
+                    match span_b_index {
+                        None => true,
+                        Some(b_idx) => {
+                            match a_idx.cmp(&b_idx) {
+                                // Replacement string was not added by us!
+                                // a_idx existing in original before b_idx means
+                                //
+                                Ordering::Less | Ordering::Equal => true,
+                                // confirmed to be an ansi_to_tui replacement,
+                                // since another was found after content we haven't gotten to yet
+                                Ordering::Greater => false,
+                            }
+                        }
+                    }
+                }
+            }
         }
-        for y in j..rendered.len() {
-            char_to_byte[y] = i;
+
+        // fn determine_if_visible(span_a: &str, span_b: &str, unconsumed: &[u8]) -> bool {
+        //     let span_a_index = unconsumed.find(span_a.as_bytes());
+        //     let span_b_index = unconsumed.find(span_b.as_bytes());
+
+        //     match (span_a_index, span_b_index) {
+        //         (Some(a_idx), Some(b_idx)) => match a_idx.cmp(&b_idx) {
+        //             // Replacement string was not added by us!
+        //             // a_idx existing in original before b_idx means
+        //             //
+        //             Ordering::Less | Ordering::Equal => true,
+        //             // confirmed to be an ansi_to_tui replacement,
+        //             // since another was found after content we haven't gotten to yet
+        //             Ordering::Greater => false,
+        //         },
+        //         (Some(_), None) => {
+        //             // this one is likely a part of the original data
+        //             // since we were able to find it in the original slice,
+        //             // but the upcoming span likely isn't.
+        //             true
+        //         }
+        //         (None, _) => {
+        //             // must be an ansi_to_tui replacement,
+        //             // char doesnt exist in slice.
+        //             false
+        //         }
+        //     }
+        // }
+
+        let line_len: usize = line.iter().map(|s| s.content.len()).sum();
+        let mut cursor = 0;
+        if line.spans.len() == 1 {
+            let content = &line.spans[0].content;
+            if let Some(_content_idx) = original.find(content.as_bytes()) {
+                visibility.visible_text(content.as_ref(), original, &mut cursor);
+            }
+        } else {
+            for spans in line.spans.windows(2) {
+                let unconsumed = &original[cursor..];
+
+                let [span_a, span_b] = spans else {
+                    unreachable!();
+                };
+
+                match span_a.content.as_ref() {
+                    // could've been added by ansi_to_tui during escaping, uncertain
+                    maybe_replaced @ "�"
+                        if matches!(lossy_flavor, LossyFlavor::ReplacementChar(_)) =>
+                    {
+                        if determine_if_visible(&span_a.content, &span_b.content, unconsumed) {
+                            visibility.visible_text(&span_a.content, unconsumed, &mut cursor);
+                        } else {
+                            let utf8_chunk = unconsumed.utf8_chunks().next().unwrap();
+                            visibility.replaced(utf8_chunk.invalid().len(), maybe_replaced.len(), &mut cursor);
+                        }
+                    }
+                    // could've been added by ansi_to_tui during escaping, uncertain
+                    maybe_escaped
+                        if matches!(lossy_flavor, LossyFlavor::EscapedBytes(_))
+                            && maybe_escaped.starts_with("\\x")
+                            // && maybe_escaped.len() == 4
+                            // && maybe_escaped[2..]
+                            // .chars()
+                            // .all(|c| c.is_ascii_hexdigit() && c.is_uppercase())
+                            =>
+                    {
+                        if determine_if_visible(&span_a.content, &span_b.content, unconsumed) {
+                            visibility.visible_text(&span_a.content, unconsumed, &mut cursor);
+                        } else {
+                            let utf8_chunk = unconsumed.utf8_chunks().next().unwrap();
+                            visibility.replaced(
+                                utf8_chunk.invalid().len(),
+                                maybe_escaped.len(),
+                                &mut cursor,
+                            );
+                        }
+                    }
+
+                    exists_within_orig => {
+                        visibility.visible_text(exists_within_orig, unconsumed, &mut cursor)
+                    }
+                }
+            }
         }
+
+        // debug!("indexing slice took {:?}", now.elapsed());
+        // let now2 = Instant::now();
+
+        // let rope = builder.finish();
 
         // For style_all_spans, we don't care -- just color the whole line.
         // For style_slice, we use byte_to_char to map the matched byte span to the rendered string indices.
@@ -272,7 +480,7 @@ impl ColorRules {
                     RuleType::Color(color) => line.style_all_spans(Style::from(*color)),
                     RuleType::Hide => return None,
                     RuleType::Censor(color_opt) => {
-                        line.censor_slice(0..rendered.len(), color_opt.map(Style::from))
+                        line.censor_slice(0..line_len, color_opt.map(Style::from))
                     }
                 }
             }
@@ -283,7 +491,7 @@ impl ColorRules {
                     RuleType::Color(color) => line.style_all_spans(Style::from(*color)),
                     RuleType::Hide => return None,
                     RuleType::Censor(color_opt) => {
-                        line.censor_slice(0..rendered.len(), color_opt.map(Style::from))
+                        line.censor_slice(0..line_len, color_opt.map(Style::from))
                     }
                 }
             }
@@ -293,42 +501,16 @@ impl ColorRules {
 
         for (lit_rule, rule_type) in &self.literal_words {
             let rule_len = lit_rule.finder.needle().len();
-            let ranges_iter = lit_rule.finder.find_iter(original).filter_map(|oc_idx| {
-                let byte_start = oc_idx;
-                let byte_end = oc_idx + rule_len;
-                // Map these to char indices in rendered
-                let char_start = if byte_start < byte_to_char.len() {
-                    byte_to_char[byte_start]
-                } else {
-                    0
-                };
-                let mut char_end = if byte_end < byte_to_char.len() {
-                    byte_to_char[byte_end]
-                } else {
-                    rendered.len()
-                };
-                if char_end == 0 {
-                    char_end = rendered.len();
-                }
-                // Clamp to bounds of rendered string
-                let char_start = char_start.min(rendered.len());
-                let char_end = char_end.min(rendered.len());
-
-                if char_start < char_end {
-                    Some(char_start..char_end)
-                } else {
-                    // debug!("AGH1 {char_start}..{char_end} {byte_start}..{byte_end}");
-                    // debug!("{byte_to_char:#?}");
-                    None
-                }
-            });
+            let ranges_iter = lit_rule
+                .finder
+                .find_iter(original)
+                .filter_map(|oc_idx| visibility.get_corrected_range(oc_idx..oc_idx + rule_len));
 
             match rule_type {
                 RuleType::Color(color) => {
                     for range in ranges_iter {
-                        if let Some(new_range) =
-                            act_if_possible(rendered.len(), &removed_ranges, range)
-                        {
+                        if let Some(new_range) = act_if_possible(line_len, &removed_ranges, range) {
+                            // debug!("styling range {range:?} {color}");
                             line.style_slice(new_range, Style::from(*color));
                         }
                     }
@@ -336,7 +518,7 @@ impl ColorRules {
                 RuleType::Hide => {
                     for range in ranges_iter {
                         if let Some(new_range) =
-                            remove_if_possible(rendered.len(), &mut removed_ranges, range)
+                            remove_if_possible(line_len, &mut removed_ranges, range)
                         {
                             line.remove_slice(new_range);
                         }
@@ -344,58 +526,22 @@ impl ColorRules {
                 }
                 RuleType::Censor(color_opt) => {
                     for range in ranges_iter {
-                        if let Some(new_range) =
-                            act_if_possible(rendered.len(), &removed_ranges, range)
-                        {
+                        if let Some(new_range) = act_if_possible(line_len, &removed_ranges, range) {
                             line.censor_slice(new_range, color_opt.map(Style::from));
                         }
                     }
                 }
             }
-
-            // if lit_rule.hide {
-
-            // } else if lit_rule.else {
-            //     for range in ranges_iter {
-            //         line.style_slice(range, Style::from(*color));
-            //     }
-            // }
         }
         for (reg_rule, rule_type) in &self.regex_words {
-            let ranges_iter = reg_rule.regex.find_iter(original).filter_map(|occ| {
-                let byte_start = occ.start();
-                let byte_end = occ.end();
-
-                let char_start = if byte_start < byte_to_char.len() {
-                    byte_to_char[byte_start]
-                } else {
-                    0
-                };
-                let mut char_end = if byte_end < byte_to_char.len() {
-                    byte_to_char[byte_end]
-                } else {
-                    rendered.len()
-                };
-                if char_end == 0 {
-                    char_end = rendered.len();
-                }
-
-                let char_start = char_start.min(rendered.len());
-                let char_end = char_end.min(rendered.len());
-
-                if char_start < char_end {
-                    Some(char_start..char_end)
-                } else {
-                    // debug!("AGH2 {char_start}..{char_end} {byte_start}..{byte_end}");
-                    None
-                }
-            });
+            let ranges_iter = reg_rule
+                .regex
+                .find_iter(original)
+                .filter_map(|occ| visibility.get_corrected_range(occ.start()..occ.end()));
             match rule_type {
                 RuleType::Color(color) => {
                     for range in ranges_iter {
-                        if let Some(new_range) =
-                            act_if_possible(rendered.len(), &removed_ranges, range)
-                        {
+                        if let Some(new_range) = act_if_possible(line_len, &removed_ranges, range) {
                             line.style_slice(new_range, Style::from(*color));
                         }
                     }
@@ -403,7 +549,7 @@ impl ColorRules {
                 RuleType::Hide => {
                     for range in ranges_iter {
                         if let Some(new_range) =
-                            remove_if_possible(rendered.len(), &mut removed_ranges, range)
+                            remove_if_possible(line_len, &mut removed_ranges, range)
                         {
                             line.remove_slice(new_range);
                         }
@@ -411,9 +557,7 @@ impl ColorRules {
                 }
                 RuleType::Censor(color_opt) => {
                     for range in ranges_iter {
-                        if let Some(new_range) =
-                            act_if_possible(rendered.len(), &removed_ranges, range)
-                        {
+                        if let Some(new_range) = act_if_possible(line_len, &removed_ranges, range) {
                             line.censor_slice(new_range, color_opt.map(Style::from));
                         }
                     }
@@ -421,12 +565,10 @@ impl ColorRules {
             }
         }
 
+        // debug!("applying to slice took {:?}", now2.elapsed());
+        // tracing::debug!("apply color rules took {:?}", now.elapsed());
         Some(line)
     }
-}
-
-fn bytes_to_char(bytes: &[u8]) -> Option<char> {
-    std::str::from_utf8(bytes).ok()?.chars().next()
 }
 
 fn remove_if_possible(
