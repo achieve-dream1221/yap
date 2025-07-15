@@ -520,7 +520,7 @@ impl StyledLines {
                 color_rules: &ColorRules,
                 line_ending: &LineEnding,
             ) -> Option<BufLine> {
-                let lossy_flavor = if kit.render.rendering.escape_invalid_bytes {
+                let lossy_flavor = if kit.render.rendering.escape_unprintable_bytes {
                     LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
                 } else {
                     LossyFlavor::replacement_char()
@@ -548,8 +548,7 @@ impl StyledLines {
                 color_rules
                     .apply_onto(truncated, line, lossy_flavor)
                     .map(|mut l| {
-                        // TODO read from config
-                        l.remove_unsavory_chars(false);
+                        l.remove_unsavory_chars(kit.render.rendering.escape_unprintable_bytes);
                         let line: Line<'static> = l.new_owned();
                         BufLine::port_text_line(line, kit, line_ending)
                     })
@@ -602,29 +601,13 @@ impl StyledLines {
             let mut message_line = Line::default();
             message_line.push_span(Span::raw(line));
 
-            if let Some(line) = color_rules.apply_onto(
+            if let Some(mut line) = color_rules.apply_onto(
                 line.as_bytes(),
                 message_line,
                 LossyFlavor::ReplacementChar(None),
             ) {
-                let owned_spans: Vec<Span<'static>> = line
-                    .into_iter()
-                    .map(|s| match s.content {
-                        std::borrow::Cow::Owned(owned) => Span {
-                            content: std::borrow::Cow::Owned(owned),
-                            ..s
-                        },
-                        std::borrow::Cow::Borrowed(borrowed) => Span {
-                            content: std::borrow::Cow::Owned(borrowed.to_string()),
-                            ..s
-                        },
-                    })
-                    .collect();
-
-                let owned_line = Line {
-                    spans: owned_spans,
-                    ..Default::default()
-                };
+                line.remove_unsavory_chars(kit.render.rendering.escape_unprintable_bytes);
+                let owned_line = line.new_owned();
 
                 let kit = BufLineKit {
                     full_range_slice: kit.full_range_slice.clone(),
@@ -1432,7 +1415,7 @@ impl Buffer {
     pub fn update_render_settings(&mut self, rendering: Rendering) {
         let old = std::mem::replace(&mut self.rendering, rendering);
         let new = &self.rendering;
-        let should_reconsume = changed!(old, new, echo_user_input, escape_invalid_bytes);
+        let should_reconsume = changed!(old, new, echo_user_input, escape_unprintable_bytes);
 
         let should_rewrap_lines = changed!(
             old,

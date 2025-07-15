@@ -191,7 +191,9 @@ fn run_inner(cli_args: YapCli, app_settings: Settings) -> color_eyre::Result<()>
             {
                 if let Some(time_since_ctrl_c) = ctrl_c_recieved_at.as_ref().map(Instant::elapsed) {
                     if time_since_ctrl_c > CTRL_C_ACK_MAX_WAIT {
-                        panic!("Ctrl-C was not acknowledged, force exiting!");
+                        panic!(
+                            "Ctrl-C was not acknowledged within {CTRL_C_ACK_MAX_WAIT:?}, force exiting!"
+                        );
                     }
                 } else {
                     _ = ctrl_c_recieved_at.insert(Instant::now());

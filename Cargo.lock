@@ -1126,9 +1126,9 @@ dependencies = [
 
 [[package]]
 name = "espflash"
-version = "4.0.0"
+version = "4.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4779db2705a005a81a0c536d8ef49fbb0f0739c060bfd9a8eac8bc29f8f862b4"
+checksum = "cae69927fa129d5bf119dc39fe984de95851f7ef918d06d14df95f8a74c59cda"
 dependencies = [
  "base64",
  "bitflags 2.9.1",
@@ -1419,7 +1419,7 @@ dependencies = [
 [[package]]
 name = "indenter"
 version = "0.3.3"
-source = "git+https://github.com/ComunidadAylas/indenter?rev=d3f419ffcfd1f24d24ddb9c2f65dbe84991dc559#d3f419ffcfd1f24d24ddb9c2f65dbe84991dc559"
+source = "git+https://github.com/eyre-rs/indenter?rev=9ed7e012c678ac58e3204d01af6e23696cf9795d#9ed7e012c678ac58e3204d01af6e23696cf9795d"
 
 [[package]]
 name = "indexmap"

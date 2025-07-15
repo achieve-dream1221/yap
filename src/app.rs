@@ -13,7 +13,7 @@ use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use color_eyre::eyre::Result;
 use compact_str::{CompactString, ToCompactString};
-use crokey::{KeyCombination, crossterm::event::KeyEventKind, key};
+use crokey::{KeyCombination, key};
 use crossbeam::channel::{Receiver, Select, Sender, TrySendError};
 use enum_rotate::EnumRotate;
 use fs_err as fs;
@@ -51,7 +51,6 @@ use crate::buffer::defmt::elf_watcher::ElfWatchHandle;
 use crate::{
     buffer::Buffer,
     event_carousel::CarouselHandle,
-    get_executable_name,
     history::UserInput,
     is_ctrl_c,
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
@@ -74,7 +73,7 @@ use crate::{
 
 #[cfg(feature = "defmt")]
 use crate::{
-    buffer::defmt::{DefmtDecoder, DefmtLoadError, DefmtTableError, LocationsError},
+    buffer::defmt::{DefmtDecoder, DefmtLoadError, LocationsError},
     tui::defmt::DefmtRecentElfs,
 };
 #[cfg(feature = "defmt")]
@@ -1060,7 +1059,9 @@ impl App {
             }
             Menu::Terminal(TerminalPrompt::None) => (),
             Menu::Terminal(TerminalPrompt::DisconnectPrompt) => {
-                if let Some(pressed) = DisconnectPrompt::from_key_code(key.code) {
+                if let Some(pressed) = DisconnectPrompt::from_key_code(key.code)
+                    && !is_ctrl_c(&key)
+                {
                     let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
                     let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -1068,7 +1069,9 @@ impl App {
                 }
             }
             Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) => {
-                if let Some(pressed) = AttemptReconnectPrompt::from_key_code(key.code) {
+                if let Some(pressed) = AttemptReconnectPrompt::from_key_code(key.code)
+                    && !is_ctrl_c(&key)
+                {
                     let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
                     let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -2323,7 +2326,8 @@ impl App {
             DisconnectPrompt::ExitApp => self.shutdown(),
             DisconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
             DisconnectPrompt::OpenPortSettings => {
-                self.show_popup_menu(ShowPopupAction::ShowPortSettings)
+                self.show_popup_menu(ShowPopupAction::ShowPortSettings);
+                self.menu = Menu::Terminal(TerminalPrompt::None);
             }
             DisconnectPrompt::Disconnect if shift_pressed || ctrl_pressed => {
                 // This is intentionally being set true unconditionally here, and also when the event pops.
@@ -2387,7 +2391,8 @@ impl App {
             }
             AttemptReconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
             AttemptReconnectPrompt::OpenPortSettings => {
-                self.show_popup_menu(ShowPopupAction::ShowPortSettings)
+                self.show_popup_menu(ShowPopupAction::ShowPortSettings);
+                self.menu = Menu::Terminal(TerminalPrompt::None);
             }
 
             AttemptReconnectPrompt::BackToPortSelection => {
@@ -3559,7 +3564,7 @@ impl App {
                     .borders(Borders::TOP)
                     .border_style(Style::from(block_color));
                 frame.render_widget(
-                    Line::raw("Powered by esp-rs/espflash v4.0.0!")
+                    Line::raw("Powered by esp-rs/espflash v4.0.1!")
                         .all_spans_styled(Color::DarkGray.into())
                         .centered(),
                     line_area,

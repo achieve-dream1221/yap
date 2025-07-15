@@ -171,63 +171,53 @@ impl<'a> LineHelpers<'a> for Line<'a> {
             });
         // debug!("took {:?} to see whats fuckd", now.elapsed());
         // let now2 = Instant::now();
+        let dark_gray = Style::new().dark_gray();
 
         let mut offset: isize = 0;
-        if replace {
-            for (index, char) in chars_to_escape {
-                let corrected = index.checked_add_signed(offset).expect("overflow!");
-                self.remove_slice(corrected..corrected + char.len_utf8());
-                let dark_gray = Style::new().dark_gray();
-                let replacement_len = match char {
-                    // '\0' => {
-                    //     let zero = "\\0";
-                    //     self.insert_slice(corrected, zero, Some(dark_gray));
-                    //     zero.len()
-                    // }
-                    '\t' => {
-                        let tab = "    ";
-                        self.insert_slice(corrected, tab, Some(dark_gray));
-                        tab.len()
-                    }
-                    '\n' => {
-                        let lf = "\\n";
-                        self.insert_slice(corrected, lf, Some(dark_gray));
-                        lf.len()
-                    }
-                    '\r' => {
-                        let cr = "\\r";
-                        self.insert_slice(corrected, cr, Some(dark_gray));
-                        cr.len()
-                    }
-                    _ => {
-                        let mut buffer = [0u8; 4];
-                        let len = char.encode_utf8(&mut buffer).len();
-                        let mut added_len = 0;
+        for (index, char) in chars_to_escape {
+            let corrected = index.checked_add_signed(offset).expect("overflow!");
+            let char_len = char.len_utf8();
 
-                        for i in 0..len {
-                            let hex_prefix = "\\x";
-                            self.insert_slice(corrected + added_len, hex_prefix, Some(dark_gray));
-                            added_len += hex_prefix.len();
-                            let upper_hex = HEX_UPPER[buffer[i] as usize];
-                            self.insert_slice(corrected + added_len, upper_hex, Some(dark_gray));
-                            added_len += upper_hex.len();
-                        }
-                        added_len
+            self.remove_slice(corrected..corrected + char_len);
+            let replacement_len = match char {
+                // TODO handle tab width properly?
+                '\t' => {
+                    let tab = "\\t";
+                    self.insert_slice(corrected, tab, Some(dark_gray));
+                    tab.len()
+                }
+                _ if !replace => 0,
+                '\n' => {
+                    let lf = "\\n";
+                    self.insert_slice(corrected, lf, Some(dark_gray));
+                    lf.len()
+                }
+                '\r' => {
+                    let cr = "\\r";
+                    self.insert_slice(corrected, cr, Some(dark_gray));
+                    cr.len()
+                }
+                _ => {
+                    let mut buffer = [0u8; 4];
+                    let len = char.encode_utf8(&mut buffer).len();
+                    let mut added_len = 0;
+
+                    for i in 0..len {
+                        let hex_prefix = "\\x";
+                        self.insert_slice(corrected + added_len, hex_prefix, Some(dark_gray));
+                        added_len += hex_prefix.len();
+                        let upper_hex = HEX_UPPER[buffer[i] as usize];
+                        self.insert_slice(corrected + added_len, upper_hex, Some(dark_gray));
+                        added_len += upper_hex.len();
                     }
-                };
+                    added_len
+                }
+            };
 
-                let offset_mod = replacement_len as isize - char.len_utf8() as isize;
-                offset += offset_mod;
-            }
-        } else {
-            for (index, char) in chars_to_escape {
-                let corrected = index.checked_add_signed(offset).expect("overflow!");
-                let char_len = char.len_utf8();
-                offset -= char_len as isize;
-
-                self.remove_slice(corrected..corrected + char_len);
-            }
+            let offset_mod = replacement_len as isize - char_len as isize;
+            offset += offset_mod;
         }
+
         // debug!(
         //     "unsavory took {:?} for modifying {line_char_index}",
         //     now2.elapsed()
