@@ -444,6 +444,7 @@ impl From<defmt_parser::Level> for Level {
 #[derivative(Default)]
 pub struct Espflash {
     /// Skip requirement for holding Shift/Ctrl when selecting Erase Flash on ESP32 Flashing menu.
+    #[serde(default)]
     pub easy_erase_flash: bool,
 }
 

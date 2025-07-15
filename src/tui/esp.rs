@@ -411,7 +411,7 @@ impl EspFlashHelper {
 
         Ok(())
     }
-    pub fn consume_event(&mut self, event: EspEvent) {
+    pub fn consume_event(&mut self, event: EspEvent, ctrl_c_tx: &crossbeam::channel::Sender<()>) {
         match event {
             EspEvent::DeviceInfo(info) => {
                 debug!("{info:#?}");
@@ -515,12 +515,25 @@ impl EspFlashHelper {
             EspEvent::Connecting => self.popup = Some(EspPopup::Connecting),
             EspEvent::Connected { chip } => self.popup = Some(EspPopup::Connected { chip }),
             EspEvent::EraseStart { chip } => self.popup = Some(EspPopup::Erasing { chip }),
-            EspEvent::PortReturned => self.popup = None,
+            EspEvent::PortReturned => {
+                self.popup = None;
+                match ctrl_c_tx.try_send(()) {
+                    Ok(()) => (),
+                    // Already an ack to be seen, don't need to act.
+                    Err(crossbeam::channel::TrySendError::Full(_)) => (),
+                    Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                        panic!("Failed to ack potentially buffered Ctrl-C!")
+                    }
+                }
+            }
             _ => (),
         }
     }
     pub fn reset_popup(&mut self) {
         _ = self.popup.take();
+    }
+    pub fn popup_active(&self) -> bool {
+        self.popup.is_some()
     }
     pub fn render_espflash(&self, frame: &mut Frame, screen: Rect) {
         let center_area = centered_rect_size(

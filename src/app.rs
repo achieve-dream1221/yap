@@ -343,21 +343,9 @@ impl App {
         settings: Settings,
     ) -> Result<Self> {
         let keybinds_path = config_adjacent_path(crate::keybinds::CONFIG_TOML_PATH);
-
         let keybinds = if keybinds_path.exists() {
-            match fs::read_to_string(keybinds_path) {
-                Ok(keybinds_input) => match Keybinds::from_str(&keybinds_input) {
-                    Ok(kb) => kb,
-                    Err(e) => {
-                        error!("Failed parsing keybinds config! {e}");
-                        Keybinds::overridable_defaults()
-                    }
-                },
-                Err(e) => {
-                    error!("Failed reading keybinds config! {e}");
-                    Keybinds::overridable_defaults()
-                }
-            }
+            let keybinds_input = fs::read_to_string(keybinds_path)?;
+            Keybinds::from_str(&keybinds_input)?
         } else {
             fs::write(
                 keybinds_path,
@@ -391,17 +379,15 @@ impl App {
         .expect("Failed to build serial worker!");
 
         let tick_tx = event_tx.clone();
-        event_carousel
-            .add_repeating(
-                "PerSecond",
-                Box::new(move || {
-                    tick_tx
-                        .send(Tick::PerSecond.into())
-                        .map_err(|e| e.to_string())
-                }),
-                Duration::from_secs(1),
-            )
-            .unwrap();
+        event_carousel.add_repeating(
+            "PerSecond",
+            Box::new(move || {
+                tick_tx
+                    .send(Tick::PerSecond.into())
+                    .map_err(|e| e.to_string())
+            }),
+            Duration::from_secs(1),
+        )?;
 
         let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
 
@@ -409,8 +395,7 @@ impl App {
         let mut defmt_helpers = DefmtHelpers::build(
             #[cfg(feature = "defmt_watch")]
             event_tx.clone(),
-        )
-        .unwrap();
+        )?;
 
         let mut buffer = Buffer::build(
             line_ending,
@@ -421,8 +406,7 @@ impl App {
             event_tx.clone(),
             #[cfg(feature = "defmt")]
             settings.defmt.clone(),
-        )
-        .unwrap();
+        )?;
 
         #[cfg(feature = "defmt")]
         if let Some(last_elf) = defmt_helpers.recent_elfs.last().map(ToOwned::to_owned)
@@ -452,9 +436,7 @@ impl App {
         #[cfg(feature = "macros")]
         let mut macros = Macros::new();
         #[cfg(feature = "macros")]
-        macros
-            .load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))
-            .unwrap();
+        macros.load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))?;
 
         // debug!("{buffer:#?}");
         Ok(Self {
@@ -496,7 +478,7 @@ impl App {
             serial_buf_rx,
 
             #[cfg(feature = "espflash")]
-            espflash: EspFlashHelper::build().unwrap(),
+            espflash: EspFlashHelper::build()?,
 
             #[cfg(feature = "defmt")]
             defmt_helpers,
@@ -734,7 +716,7 @@ impl App {
                     self.notifs.notify_str(&e, Color::Red);
                     self.action_queue.clear();
                 }
-                _ => self.espflash.consume_event(esp_event),
+                _ => self.espflash.consume_event(esp_event, &self.ctrl_c_tx),
             },
             #[cfg(feature = "logging")]
             Event::Logging(LoggingEvent::FinishedReconsumption) => self
@@ -938,6 +920,16 @@ impl App {
     }
     // TODO fuzz this
     fn handle_key_press(&mut self, key: KeyEvent) {
+        // Intentionally putting this before the Ctrl-C ack-er,
+        // so it can be used to break any potential hung instances during flashing
+        // (not that I've encountered that behavior *yet*),
+        // since I don't think I can unstick the serial worker thread
+        // if it's stuck in external crate code.
+        #[cfg(feature = "espflash")]
+        if self.espflash.popup_active() {
+            return;
+        }
+
         if is_ctrl_c(&key) {
             match self.ctrl_c_tx.try_send(()) {
                 Ok(()) => (),

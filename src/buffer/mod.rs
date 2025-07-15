@@ -35,7 +35,7 @@ use crate::{
     errors::HandleResult,
     settings::Rendering,
     traits::{ByteSuffixCheck, LineHelpers, interleave_by},
-    tui::color_rules::{ColorRuleError, ColorRules},
+    tui::color_rules::{ColorRuleLoadError, ColorRules},
 };
 
 #[cfg(feature = "defmt")]
@@ -568,7 +568,7 @@ impl StyledLines {
         frame: &defmt_decoder::Frame<'_>,
         color_rules: &ColorRules,
     ) {
-        // choosing to skip pushing instead of filtering
+        // choosing to skip pushing instead of filtering at render time
         // to keep consistent with other logic that expects
         // invisible lines to not be pushed,
         // and to skip further handling for those lines.
@@ -710,7 +710,7 @@ impl Buffer {
         #[cfg(feature = "logging")] logging: Logging,
         #[cfg(feature = "logging")] event_tx: Sender<Event>,
         #[cfg(feature = "defmt")] defmt: Defmt,
-    ) -> Result<Self, ColorRuleError> {
+    ) -> Result<Self, ColorRuleLoadError> {
         let line_ending: LineEnding = line_ending.into();
         #[cfg(feature = "logging")]
         let (log_handle, log_thread) = LoggingHandle::new(

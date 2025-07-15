@@ -1,3 +1,5 @@
+use serde_with::{DisplayFromStr, TryFromInto};
+
 use std::{cmp::Ordering, ops::Range, path::Path, str::FromStr};
 
 use ansi_to_tui::LossyFlavor;
@@ -11,6 +13,7 @@ use ratatui::{
     text::Line,
 };
 use regex::bytes::Regex;
+use serde_with::serde_as;
 use tracing::{debug, info};
 
 use crate::traits::{LineHelpers, LineMutator};
@@ -39,14 +42,34 @@ enum RuleType {
 #[derive(Debug, serde::Deserialize)]
 struct ColorRulesFile {
     #[serde(default)]
-    regex: Vec<SerializedRule>,
+    regex: Vec<SerializedRegexRule>,
     #[serde(default)]
-    literal: Vec<SerializedRule>,
+    literal: Vec<SerializedLiteralRule>,
 }
+
+#[serde_as]
 #[derive(Debug, serde::Deserialize)]
-struct SerializedRule {
+struct SerializedRegexRule {
+    #[serde_as(as = "TryFromInto<String>")]
+    rule: Regex,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default)]
+    color: Option<ratatui::style::Color>,
+    #[serde(default)]
+    line: bool,
+    #[serde(default)]
+    hide: bool,
+    #[serde(default)]
+    censor: bool,
+}
+
+#[serde_as]
+#[derive(Debug, serde::Deserialize)]
+struct SerializedLiteralRule {
     rule: CompactString,
-    color: Option<CompactString>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default)]
+    color: Option<ratatui::style::Color>,
     #[serde(default)]
     line: bool,
     #[serde(default)]
@@ -56,23 +79,19 @@ struct SerializedRule {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum ColorRuleError {
+pub enum ColorRuleLoadError {
     #[error("error reading color rules file")]
     FileRead(#[source] std::io::Error),
     #[error("error saving color rules file")]
     FileWrite(#[source] std::io::Error),
     #[error("error deserializing color rules")]
     Deser(#[from] toml::de::Error),
-    #[error("rule must either be hiding, censoring, or coloring")]
-    UnspecifiedRule,
-    #[error("invalid regex: \"{0}\" due to {1}")]
-    InvalidRegex(String, regex::Error),
-    #[error("unrecognized color: \"{0}\"")]
-    UnrecognizedColor(String),
+    #[error("rule must either be hiding, censoring, or coloring: \"{0}\"")]
+    UnspecifiedRule(String),
 }
 
 impl ColorRules {
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, ColorRuleError> {
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, ColorRuleLoadError> {
         let path = path.as_ref();
 
         if !path.exists() {
@@ -81,12 +100,12 @@ impl ColorRules {
                 path,
                 include_bytes!("../../example_configs/yap_colors.toml.blank"),
             )
-            .map_err(ColorRuleError::FileWrite)?;
+            .map_err(ColorRuleLoadError::FileWrite)?;
 
             return Ok(Self::default());
         }
 
-        let buffer = fs::read_to_string(path).map_err(ColorRuleError::FileRead)?;
+        let buffer = fs::read_to_string(path).map_err(ColorRuleLoadError::FileRead)?;
         let ColorRulesFile { regex, literal } = toml::from_str(&buffer)?;
 
         let mut regex_lines = Vec::new();
@@ -95,32 +114,21 @@ impl ColorRules {
         let mut literal_words = Vec::new();
 
         for rule in regex {
-            let color_res_opt = rule
-                .color
-                .as_ref()
-                .map(|color_str| Color::from_str(color_str).map_err(|_| color_str));
-
-            let color_opt = match color_res_opt.transpose() {
-                Ok(c) => c,
-                Err(unrecognized) => {
-                    return Err(ColorRuleError::UnrecognizedColor(unrecognized.to_string()));
-                }
-            };
-
+            let regex = rule.rule;
             let rule_type = {
                 if rule.hide {
                     RuleType::Hide
                 } else if rule.censor {
-                    RuleType::Censor(color_opt)
-                } else if let Some(color) = color_opt {
+                    RuleType::Censor(rule.color)
+                } else if let Some(color) = rule.color {
                     RuleType::Color(color)
                 } else {
-                    return Err(ColorRuleError::UnspecifiedRule);
+                    return Err(ColorRuleLoadError::UnspecifiedRule(
+                        regex.as_str().to_owned(),
+                    ));
                 }
             };
 
-            let regex = Regex::new(&rule.rule)
-                .map_err(|e| ColorRuleError::InvalidRegex(rule.rule.to_string(), e))?;
             if rule.line {
                 regex_lines.push((RegexRule { regex }, rule_type));
             } else {
@@ -129,27 +137,15 @@ impl ColorRules {
         }
 
         for rule in literal {
-            let color_res = rule
-                .color
-                .as_ref()
-                .map(|color_str| Color::from_str(color_str).map_err(|_| color_str));
-
-            let color_opt = match color_res.transpose() {
-                Ok(c) => c,
-                Err(unrecognized) => {
-                    return Err(ColorRuleError::UnrecognizedColor(unrecognized.to_string()));
-                }
-            };
-
             let rule_type = {
                 if rule.hide {
                     RuleType::Hide
                 } else if rule.censor {
-                    RuleType::Censor(color_opt)
-                } else if let Some(color) = color_opt {
+                    RuleType::Censor(rule.color)
+                } else if let Some(color) = rule.color {
                     RuleType::Color(color)
                 } else {
-                    return Err(ColorRuleError::UnspecifiedRule);
+                    return Err(ColorRuleLoadError::UnspecifiedRule(rule.rule.to_string()));
                 }
             };
 

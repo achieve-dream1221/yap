@@ -12,7 +12,7 @@ use crate::{
     config_adjacent_path,
     settings::HexHighlightStyle,
     traits::{ToggleBool, interleave_by},
-    tui::color_rules::{ColorRuleError, ColorRules},
+    tui::color_rules::{ColorRuleLoadError, ColorRules},
 };
 
 use super::{Buffer, UserEcho, buf_line::BufLine, hex_spans::*};
@@ -320,7 +320,7 @@ impl Buffer {
     //     self.line_ending.as_ref().as_bytes()
     // }
 
-    pub fn reload_color_rules(&mut self) -> Result<(), ColorRuleError> {
+    pub fn reload_color_rules(&mut self) -> Result<(), ColorRuleLoadError> {
         self.color_rules = ColorRules::load_from_file(config_adjacent_path(COLOR_RULES_PATH))?;
         self.reconsume_raw_buffer();
         Ok(())

@@ -506,7 +506,9 @@ ctrl-b = "show-behavior"
 'ctrl-.' = "show-portsettings"
 
 ctrl-f = "reload-colors"
+
 ctrl-h = "show-keybinds"
+ctrl-k = "show-keybinds"
 'ctrl-/' = "show-keybinds"
 "#;
 
@@ -515,6 +517,7 @@ pub const CONFIG_TOML_PATH: &str = "yap_keybinds.toml";
 #[derive(Deserialize)]
 pub struct Keybinds {
     #[serde(deserialize_with = "deserialize_keybinds_map")]
+    #[serde(default)]
     pub keybindings: IndexMap<KeyCombination, Vec<String>>,
     #[serde(skip)]
     pub port_settings_hint: Option<CompactString>,
@@ -628,6 +631,10 @@ impl Keybinds {
         let mut overridable = Self::overridable_defaults();
 
         let user_settings: Self = toml::from_str(input)?;
+
+        if user_settings.keybindings.is_empty() {
+            return Ok(overridable);
+        }
 
         overridable.keybindings.extend(user_settings.keybindings);
 
