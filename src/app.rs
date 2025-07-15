@@ -423,7 +423,10 @@ impl App {
             ) {
                 Ok(None) => (),
                 Ok(Some(locs_err)) => {
-                    Err(locs_err)?;
+                    use tracing::warn;
+                    // TODO notify_str when we have history, so this won't clobber
+                    // anything important.
+                    warn!("Location Error from loaded ELF: {locs_err}");
                 }
                 Err(e) => {
                     let text = format!("loading last defmt ELF failed! {e}");

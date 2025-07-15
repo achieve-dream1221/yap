@@ -24,7 +24,7 @@ portable = []
 ansi-to-tui = { git = "https://github.com/nullstalgia/ansi-to-tui", branch = "lossy_and_line_endings" }
 # ansi-to-tui = { path = "../ansi-to-tui" }
 # ansi-to-tui = "7.0.0"
-arboard = "3.4.1"
+arboard = { version = "3.6.0", features = ["wayland-data-control"] }
 arc-swap = "1.7.1"
 better-panic = "0.3.0"
 bstr = "1.12.0"

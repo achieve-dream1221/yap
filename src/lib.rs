@@ -182,7 +182,9 @@ fn run_inner(cli_args: YapCli, app_settings: Settings) -> color_eyre::Result<()>
                 }
             };
 
-            if ctrl_c_recieved_at.is_some() && ctrl_c_rx.try_recv().is_ok() {
+            // Order matters, try to consume any un-seen acks even if we weren't expect one
+            // such as from espflash action completion.
+            if ctrl_c_rx.try_recv().is_ok() && ctrl_c_recieved_at.is_some() {
                 _ = ctrl_c_recieved_at.take();
             }
 
@@ -230,6 +232,7 @@ fn run_inner(cli_args: YapCli, app_settings: Settings) -> color_eyre::Result<()>
             &mut app.defmt_helpers.watcher_handle,
         ) {
             Ok(None) => (),
+            // If any kind of error occurs with a CLI-supplied ELF, break early.
             Ok(Some(locs_err)) => {
                 Err(locs_err)?;
             }

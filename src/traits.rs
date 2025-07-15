@@ -118,8 +118,6 @@ impl FirstChars for str {
 
 pub trait LineHelpers<'a> {
     /// Removes all tabs, carriage returns, newlines, and control characters from all spans in the line.
-    ///
-    /// Any changed spans become owned if they weren't already. Unchanged spans are untouched. (Subject to change.)
     fn remove_unsavory_chars(&mut self, replace: bool);
     /// Returns `true` if either the `Line` or any of it's `Spans` are styled.
     fn is_styled(&self) -> bool;

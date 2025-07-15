@@ -242,22 +242,25 @@ impl BufLine {
 
         let dark_gray = Style::new().dark_gray();
 
-        let indices_and_len = std::iter::once(&self.range_in_raw_buffer).filter_map(|i| {
-            if !rendering.rendering.show_indices {
-                return None;
-            }
-            Some(Span::styled(
-                make_index_info(i, rendering.rendering.indices_as_hex),
-                dark_gray,
-            ))
-        });
+        let indices_and_len = rendering
+            .rendering
+            .show_indices
+            .then(|| {
+                Span::styled(
+                    make_index_info(
+                        &self.range_in_raw_buffer,
+                        rendering.rendering.indices_as_hex,
+                    ),
+                    dark_gray,
+                )
+            })
+            .into_iter();
 
-        let timestamp = std::iter::once(&self.timestamp).filter_map(|t| {
-            if !rendering.rendering.timestamps {
-                return None;
-            }
-            Some(Span::styled(t.format(TIME_FORMAT).to_string(), dark_gray))
-        });
+        let timestamp = rendering
+            .rendering
+            .timestamps
+            .then(|| Span::styled(self.timestamp.format(TIME_FORMAT).to_string(), dark_gray))
+            .into_iter();
 
         // let timestamp = std::iter::once(Span::styled(
         //     Cow::Borrowed(self.timestamp_str.as_ref()),

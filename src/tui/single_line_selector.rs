@@ -138,7 +138,7 @@ impl StatefulWidget for &SingleLineSelector<'_> {
 
         let borrowed_line = source_line.borrowed_spans_iter();
 
-        let space_iter = once(Span::raw(" ")).filter(|_| self.space_padding);
+        let space_iter = self.space_padding.then_some(Span::raw(" ")).into_iter();
 
         // ugly but works for the moment
         let line = {
