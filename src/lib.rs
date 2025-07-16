@@ -3,7 +3,10 @@
 use std::{
     net::{SocketAddr, TcpStream},
     path::Path,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -113,9 +116,10 @@ pub fn run() -> color_eyre::Result<()> {
 
     let mut log_path = config_adjacent_path(get_executable_name());
     log_path.set_extension("log");
-    let _log_guard = initialize_logging(settings.get_log_level(), log_path, listener_address)?;
+    let (_log_guard, tcp_log_health) =
+        initialize_logging(settings.get_log_level(), log_path, listener_address)?;
 
-    let result = run_inner(cli_args, settings);
+    let result = run_inner(cli_args, settings, tcp_log_health);
     if let Err(e) = &result {
         error!("App closed with error:");
         for (index, err) in e.chain().enumerate() {
@@ -126,7 +130,11 @@ pub fn run() -> color_eyre::Result<()> {
     result
 }
 
-fn run_inner(cli_args: YapCli, app_settings: Settings) -> color_eyre::Result<()> {
+fn run_inner(
+    cli_args: YapCli,
+    app_settings: Settings,
+    tcp_log_health: Arc<TcpStreamHealth>,
+) -> color_eyre::Result<()> {
     let (tx, rx) = crossbeam::channel::unbounded::<app::Event>();
     let crossterm_tx = tx.clone();
     let (ctrl_c_tx, ctrl_c_rx) = crossbeam::channel::bounded::<()>(1);
@@ -222,7 +230,7 @@ fn run_inner(cli_args: YapCli, app_settings: Settings) -> color_eyre::Result<()>
     //     error!("Failed to enable key combining! {e}");
     // };
 
-    let mut app = App::build(tx, rx, ctrl_c_tx, app_settings)?;
+    let mut app = App::build(tx, rx, ctrl_c_tx, app_settings, tcp_log_health)?;
 
     if let Some(defmt_path) = cli_args.defmt_elf {
         match app::_try_load_defmt_elf(
@@ -307,11 +315,64 @@ pub fn is_ctrl_c(key: &crossterm::event::KeyEvent) -> bool {
         && key.modifiers == KeyModifiers::CONTROL
 }
 
+/// Shared health flag to be wrapped in an Arc and distributed.
+pub struct TcpStreamHealth {
+    ok: AtomicBool,
+}
+impl TcpStreamHealth {
+    pub fn new(value: bool) -> Self {
+        Self {
+            ok: AtomicBool::new(value),
+        }
+    }
+}
+impl TcpStreamHealth {
+    pub fn is_ok(&self) -> bool {
+        self.ok.load(Ordering::Relaxed)
+    }
+
+    fn mark_failed(&self) {
+        self.ok.store(false, Ordering::Relaxed);
+    }
+}
+
+/// A simple newtype to monitor for failures during writing,
+/// to hide a "connected" message on the main menu.
+struct WrappedTcpStream {
+    stream: TcpStream,
+    health: Arc<TcpStreamHealth>,
+}
+impl WrappedTcpStream {
+    fn new(stream: TcpStream, health: Arc<TcpStreamHealth>) -> Self {
+        Self { stream, health }
+    }
+}
+impl std::io::Write for WrappedTcpStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self.stream.write(buf) {
+            Ok(n) => Ok(n),
+            Err(e) => {
+                self.health.mark_failed();
+                Err(e)
+            }
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.stream.flush() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.health.mark_failed();
+                Err(e)
+            }
+        }
+    }
+}
+
 pub fn initialize_logging<P: AsRef<Path>>(
     max_level: Level,
     log_file_path: P,
     log_socket_addr: Option<SocketAddr>,
-) -> color_eyre::Result<WorkerGuard> {
+) -> color_eyre::Result<(WorkerGuard, Arc<TcpStreamHealth>)> {
     let log_file_path = log_file_path.as_ref();
     use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
     // use tracing::info;
@@ -345,11 +406,14 @@ pub fn initialize_logging<P: AsRef<Path>>(
         // .with(console)
         .with(env_filter)
         .with(fmt_layer);
+    let tcp_socket_health = Arc::new(TcpStreamHealth::new(true));
 
     // Try to connect to tcp_log_listener
     if let Some(listener_addr) = log_socket_addr
         && let Ok(stream) = TcpStream::connect_timeout(&listener_addr, Duration::from_millis(50))
     {
+        let stream = WrappedTcpStream::new(stream, tcp_socket_health.clone());
+
         let tcp_layer = tracing_subscriber::fmt::layer()
             .with_writer(Mutex::new(stream))
             // .pretty()
@@ -361,9 +425,10 @@ pub fn initialize_logging<P: AsRef<Path>>(
             .with_filter(LevelFilter::from_level(max_level));
         registry.with(tcp_layer).init();
     } else {
+        tcp_socket_health.mark_failed();
         registry.init();
     }
-    Ok(guard)
+    Ok((guard, tcp_socket_health))
 }
 
 /// Returns the directory that logs, config, and other files should be placed in by default.

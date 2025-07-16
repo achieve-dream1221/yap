@@ -49,6 +49,7 @@ use crate::buffer::LoggingHandle;
 #[cfg(feature = "defmt_watch")]
 use crate::buffer::defmt::elf_watcher::ElfWatchHandle;
 use crate::{
+    TcpStreamHealth,
     buffer::Buffer,
     event_carousel::CarouselHandle,
     history::UserInput,
@@ -333,6 +334,7 @@ pub struct App {
     // TODO
     // error_message: Option<String>,
     ctrl_c_tx: Sender<()>,
+    tcp_log_health: Arc<TcpStreamHealth>,
 }
 
 impl App {
@@ -341,6 +343,7 @@ impl App {
         event_rx: Receiver<Event>,
         ctrl_c_tx: Sender<()>,
         settings: Settings,
+        tcp_log_health: Arc<TcpStreamHealth>,
     ) -> Result<Self> {
         let keybinds = Keybinds::build()?;
 
@@ -483,6 +486,7 @@ impl App {
             user_broke_connection: false,
 
             ctrl_c_tx,
+            tcp_log_health,
         })
     }
     fn is_running(&self) -> bool {
@@ -2643,6 +2647,51 @@ impl App {
                 frame.render_widget(big_text, vertical_slices[0]);
 
                 self.port_selection(frame, vertical_slices[1]);
+
+                let mut misc_lines = Vec::new();
+
+                let bindings_with_unrecognized_actions = {
+                    self.keybinds
+                        .keybindings
+                        .iter()
+                        .filter(|(kc, v)| {
+                            v.iter().any(|a| self.get_action_from_string(a).is_none())
+                        })
+                        .count()
+                };
+
+                let show_keybinds_hint = self
+                    .keybinds
+                    .show_keybinds_hint
+                    .as_ref()
+                    .map(CompactString::as_str)
+                    .unwrap_or("UNBOUND");
+                if bindings_with_unrecognized_actions > 0 {
+                    let line = Line::raw(format!(
+                        "{bindings_with_unrecognized_actions} keybindings with unknown actions, {show_keybinds_hint} to see all bindings."
+                    ))
+                    .centered()
+                    .yellow();
+                    misc_lines.push(line);
+                } else {
+                    let line = Line::raw(format!("{show_keybinds_hint} to see all keybindings."))
+                        .centered()
+                        .dark_gray();
+                    misc_lines.push(line);
+                }
+
+                if let Some(socket_addr) = &self.settings.misc.log_tcp_socket
+                    && self.tcp_log_health.is_ok()
+                {
+                    let line = line!["Logging to TCP Listener at: ", socket_addr.to_string()]
+                        .centered()
+                        .dark_gray();
+                    misc_lines.push(line);
+                }
+
+                // if !misc_lines.is_empty() {
+                frame.render_widget(Paragraph::new(misc_lines), vertical_slices[2]);
+                // }
             }
             Menu::Terminal(prompt) => self.terminal_menu(frame, frame.area(), prompt),
         }

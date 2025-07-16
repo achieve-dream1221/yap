@@ -523,6 +523,8 @@ pub struct Keybinds {
     pub keybindings: IndexMap<KeyCombination, Vec<String>>,
     #[serde(skip)]
     pub port_settings_hint: Option<CompactString>,
+    #[serde(skip)]
+    pub show_keybinds_hint: Option<CompactString>,
 }
 
 // fn serialize_macros_map<S>(
@@ -621,7 +623,7 @@ impl Keybinds {
         };
         Ok(keybinds)
     }
-    fn fill_port_settings_hint(&mut self) {
+    fn fill_hints(&mut self) {
         self.port_settings_hint = self
             .keybindings
             .iter()
@@ -636,12 +638,27 @@ impl Keybinds {
                 )
             })
             .map(|(kc, _)| kc.to_compact_string());
+
+        self.show_keybinds_hint = self
+            .keybindings
+            .iter()
+            .find(|(_, actions)| {
+                if actions.len() != 1 {
+                    return false;
+                }
+
+                matches!(
+                    actions[0].parse::<AppAction>(),
+                    Ok(AppAction::Base(BaseAction::ShowKeybinds))
+                )
+            })
+            .map(|(kc, _)| kc.to_compact_string());
     }
     fn overridable_defaults() -> Self {
         let mut deserialized: Self =
             toml::from_str(OVERRIDABLE_DEFAULTS).expect("hardcoded default should be valid");
 
-        deserialized.fill_port_settings_hint();
+        deserialized.fill_hints();
 
         deserialized
     }
@@ -653,10 +670,10 @@ impl Keybinds {
         if user_settings.keybindings.is_empty() {
             return Ok(overridable);
         }
-
+        // Anything the user has supplied with the same key will be overwritten.
         overridable.keybindings.extend(user_settings.keybindings);
 
-        overridable.fill_port_settings_hint();
+        overridable.fill_hints();
 
         Ok(overridable)
     }
