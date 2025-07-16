@@ -1,7 +1,10 @@
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    time::{Duration, Instant},
+};
 
 use camino::Utf8PathBuf;
-use compact_str::CompactString;
+use compact_str::{CompactString, format_compact};
 use espflash::{flasher::DeviceInfo, target::Chip};
 use fs_err as fs;
 use ratatui::{
@@ -13,6 +16,7 @@ use tracing::{debug, warn};
 
 use crate::{
     config_adjacent_path,
+    notifications::Notifications,
     serial::esp::{EspEvent, FlashProgress},
     traits::{LastIndex, LineHelpers},
 };
@@ -358,11 +362,13 @@ pub enum EspPopup {
     Erasing { chip: CompactString },
 }
 
-#[derive(Debug)]
+#[derive(Default)]
 pub struct EspFlashHelper {
     popup: Option<EspPopup>,
     bins: Vec<EspBins>,
     elfs: Vec<EspElf>,
+    pub first_erase_press: Option<Instant>,
+    pub unchecked_bootloader: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -385,9 +391,9 @@ impl EspFlashHelper {
             let SerializedEspFiles { bins, elfs } = toml::from_str(&profiles_toml)?;
 
             Ok(Self {
-                popup: None,
                 bins,
                 elfs,
+                ..Default::default()
             })
         } else {
             warn!("espflash profiles file was missing! creating...");
@@ -396,15 +402,31 @@ impl EspFlashHelper {
                 include_str!("../../example_configs/yap_espflash_profiles.toml.blank").as_bytes(),
             )
             .map_err(EspProfileError::FileWrite)?;
-            Ok(Self {
-                popup: None,
-                bins: vec![],
-                elfs: vec![],
-            })
+            Ok(Self::default())
         }
     }
-    pub fn consume_event(&mut self, event: EspEvent, ctrl_c_tx: &crossbeam::channel::Sender<()>) {
+    pub fn consume_event(
+        &mut self,
+        event: EspEvent,
+        notifs: &mut Notifications,
+        ctrl_c_tx: &crossbeam::channel::Sender<()>,
+    ) {
         match event {
+            EspEvent::BootloaderSuccess { chip } => notifs.notify_str(
+                format!("{chip} successfully reset into bootloader!"),
+                Color::Green,
+            ),
+            EspEvent::EraseSuccess { chip } => {
+                notifs.notify_str(format!("{chip} flash erased!"), Color::Green)
+            }
+            EspEvent::BootloaderAttempt => notifs.notify_str(
+                "Attempted ESP reset into bootloader! (Unchecked)",
+                Color::LightYellow,
+            ),
+            EspEvent::HardResetAttempt => {
+                notifs.notify_str("Attempted ESP hard reset!", Color::LightYellow)
+            }
+
             EspEvent::DeviceInfo(info) => {
                 debug!("{info:#?}");
                 let DeviceInfo {
@@ -416,7 +438,13 @@ impl EspFlashHelper {
                     mac_address: mac_address_opt,
                 } = info;
 
-                let mac_address = mac_address_opt.as_deref().unwrap_or("???");
+                let mac_address: Cow<'_, str> = mac_address_opt
+                    .map(|mac| mac.to_ascii_uppercase().into())
+                    .unwrap_or("???".into());
+                let revision: Cow<'_, str> = revision
+                    .map(|(major, minor)| format!("v{major}.{minor}").into())
+                    .unwrap_or("???".into());
+                let features = features.join(", ");
 
                 let rows: Vec<Row> = vec![
                     Row::new([
@@ -425,7 +453,7 @@ impl EspFlashHelper {
                     ]),
                     Row::new([
                         line!["Revision:"].right_aligned(),
-                        line![format!("{revision:?}")].centered(),
+                        line![revision].centered(),
                     ]),
                     Row::new([
                         line!["Crystal Osc. Frequency:"].right_aligned(),
@@ -437,17 +465,17 @@ impl EspFlashHelper {
                     ]),
                     Row::new([
                         line!["Features:"].right_aligned(),
-                        line![format!("{features:?}")].centered(),
+                        line![features].centered(),
                     ]),
                     Row::new([
                         line!["MAC Address:"].right_aligned(),
-                        line![format!("{mac_address}")].centered(),
+                        line![mac_address].centered(),
                     ]),
                 ];
 
                 let table = Table::new(
                     rows,
-                    [Constraint::Percentage(60), Constraint::Percentage(40)],
+                    [Constraint::Percentage(45), Constraint::Percentage(55)],
                 )
                 .column_highlight_style(Style::new())
                 .row_highlight_style(Style::new());
@@ -508,7 +536,11 @@ impl EspFlashHelper {
             EspEvent::Connected { chip } => self.popup = Some(EspPopup::Connected { chip }),
             EspEvent::EraseStart { chip } => self.popup = Some(EspPopup::Erasing { chip }),
             EspEvent::PortReturned => {
-                self.popup = None;
+                // Always dismiss a popup *unless* it's the device info,
+                // since otherwise it'll just be instantly dismissed.
+                if !self.device_info_shown() {
+                    self.popup = None;
+                }
                 match ctrl_c_tx.try_send(()) {
                     Ok(()) => (),
                     // Already an ack to be seen, don't need to act.
@@ -518,7 +550,7 @@ impl EspFlashHelper {
                     }
                 }
             }
-            _ => (),
+            EspEvent::Error(_) => unreachable!("should be handled by caller"),
         }
     }
     pub fn reset_popup(&mut self) {
@@ -526,6 +558,9 @@ impl EspFlashHelper {
     }
     pub fn popup_active(&self) -> bool {
         self.popup.is_some()
+    }
+    pub fn device_info_shown(&self) -> bool {
+        matches!(&self.popup, Some(EspPopup::DeviceInfo(_)))
     }
     pub fn render_espflash(&self, frame: &mut Frame, screen: Rect) {
         let center_area = centered_rect_size(
@@ -735,9 +770,14 @@ impl LastIndex for EspFlashHelper {
     }
 }
 
+pub const ERASE_FLASH_CONFIRM_PERIOD: Duration = Duration::from_millis(1500);
+
 pub const ESPFLASH_BUTTON_COUNT: usize = 4;
 
-pub fn espflash_buttons(unchecked_bootloader: bool) -> Table<'static> {
+pub fn espflash_buttons(
+    unchecked_bootloader: bool,
+    awaiting_erase_confirm: bool,
+) -> Table<'static> {
     let selected_row_style = Style::new().reversed();
     let first_column_style = Style::new().reset();
 
@@ -747,13 +787,15 @@ pub fn espflash_buttons(unchecked_bootloader: bool) -> Table<'static> {
             Text::raw("Reboot!").centered().italic(),
         ]),
         Row::new([
+            Text::raw("ESP->Bootloader ").right_aligned(),
+            // < > ?
             Text::raw(if unchecked_bootloader {
-                "ESP->Bootloader (Unchecked) "
+                "Reboot! (Unchecked)"
             } else {
-                "ESP->Bootloader "
+                "Reboot!"
             })
-            .right_aligned(),
-            Text::raw("Reboot!").centered().italic(),
+            .centered()
+            .italic(),
         ]),
         Row::new([
             Text::raw("ESP->Device Info").right_aligned(),
@@ -761,7 +803,13 @@ pub fn espflash_buttons(unchecked_bootloader: bool) -> Table<'static> {
         ]),
         Row::new([
             Text::raw("ESP->Erase Flash").right_aligned(),
-            Text::raw("Erase!").centered().italic(),
+            Text::raw(if awaiting_erase_confirm {
+                "Confirm?"
+            } else {
+                "Erase!"
+            })
+            .centered()
+            .italic(),
         ]),
     ];
 

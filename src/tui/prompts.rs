@@ -36,8 +36,10 @@ pub trait PromptKeybind: Clone + strum::VariantArray + strum::EnumProperty {
 #[repr(u8)]
 #[strum(serialize_all = "title_case")]
 pub enum DisconnectPrompt {
+    #[strum(props(keybind = "p"))]
+    BackToPortSelection,
     #[strum(props(keybind = "d"))]
-    Disconnect,
+    DisconnectFromPort,
     #[strum(props(keybind = "s"))]
     OpenPortSettings,
     #[strum(props(keybind = "e"))]
@@ -54,10 +56,10 @@ impl PromptKeybind for DisconnectPrompt {}
 #[repr(u8)]
 #[strum(serialize_all = "title_case")]
 pub enum AttemptReconnectPrompt {
-    #[strum(props(keybind = "r"))]
-    AttemptReconnect,
     #[strum(props(keybind = "p"))]
     BackToPortSelection,
+    #[strum(props(keybind = "r"))]
+    AttemptReconnect,
     #[strum(props(keybind = "s"))]
     OpenPortSettings,
     #[strum(props(keybind = "e"))]

@@ -704,20 +704,13 @@ impl App {
             Event::Serial(SerialEvent::UnsentTx(unsent)) => todo!("{unsent:?}"),
             #[cfg(feature = "espflash")]
             Event::Serial(SerialEvent::EspFlash(esp_event)) => match esp_event {
-                EspEvent::BootloaderSuccess { chip } => self
-                    .notifs
-                    .notify_str(format!("{chip} rebooted into bootloader!"), Color::Green),
-                EspEvent::EraseSuccess { chip } => self
-                    .notifs
-                    .notify_str(format!("{chip} flash erased!"), Color::Green),
-                EspEvent::HardResetAttempt => self
-                    .notifs
-                    .notify_str("Attempted ESP hard reset!", Color::LightYellow),
                 EspEvent::Error(e) => {
                     self.notifs.notify_str(&e, Color::Red);
                     self.action_queue.clear();
                 }
-                _ => self.espflash.consume_event(esp_event, &self.ctrl_c_tx),
+                _ => self
+                    .espflash
+                    .consume_event(esp_event, &mut self.notifs, &self.ctrl_c_tx),
             },
             #[cfg(feature = "logging")]
             Event::Logging(LoggingEvent::FinishedReconsumption) => self
@@ -797,6 +790,20 @@ impl App {
                 debug!("Requested tick recieved from: {origin}");
                 self.failed_send_at
                     .take_if(|i| i.elapsed() >= FAILED_SEND_VISUAL_TIME);
+                #[cfg(feature = "espflash")]
+                {
+                    use crate::tui::esp::ERASE_FLASH_CONFIRM_PERIOD;
+
+                    if let Some(duration) = self
+                        .espflash
+                        .first_erase_press
+                        .as_ref()
+                        .map(Instant::elapsed)
+                        && duration >= ERASE_FLASH_CONFIRM_PERIOD
+                    {
+                        _ = self.espflash.first_erase_press.take();
+                    }
+                }
             }
             Event::Tick(Tick::Tx) => {
                 self.repeating_line_flip.flip();
@@ -927,7 +934,7 @@ impl App {
         // since I don't think I can unstick the serial worker thread
         // if it's stuck in external crate code.
         #[cfg(feature = "espflash")]
-        if self.espflash.popup_active() {
+        if self.espflash.popup_active() && !self.espflash.device_info_shown() {
             return;
         }
 
@@ -937,6 +944,13 @@ impl App {
                 Err(TrySendError::Full(_)) => panic!("Ctrl-C ack buffer full??"),
                 Err(TrySendError::Disconnected(_)) => panic!("Failed to acknowledge Ctrl-C!"),
             }
+        }
+
+        // Dismiss the device info popup with any key.
+        #[cfg(feature = "espflash")]
+        if self.espflash.device_info_shown() {
+            self.espflash.reset_popup();
+            return;
         }
 
         let key_combo = KeyCombination::from(key);
@@ -1867,7 +1881,11 @@ impl App {
                 }
             }
             #[cfg(feature = "espflash")]
-            Some(Popup::ToolMenu(ToolMenu::EspFlash)) => (),
+            Some(Popup::ToolMenu(ToolMenu::EspFlash)) => {
+                if self.popup_menu_scroll == 3 {
+                    self.espflash.unchecked_bootloader.flip();
+                }
+            }
             #[cfg(feature = "logging")]
             Some(Popup::SettingsMenu(SettingsMenu::Logging)) => {
                 if self.popup_menu_scroll == 1 {
@@ -1968,7 +1986,11 @@ impl App {
                 }
             }
             #[cfg(feature = "espflash")]
-            Some(Popup::ToolMenu(ToolMenu::EspFlash)) => (),
+            Some(Popup::ToolMenu(ToolMenu::EspFlash)) => {
+                if self.popup_menu_scroll == 3 {
+                    self.espflash.unchecked_bootloader.flip();
+                }
+            }
             #[cfg(feature = "logging")]
             Some(Popup::SettingsMenu(SettingsMenu::Logging)) => {
                 if self.popup_menu_scroll == 1 {
@@ -2130,6 +2152,9 @@ impl App {
                         0 => self
                             .run_method_from_action(EspAction::EspHardReset.into())
                             .unwrap(),
+                        1 if self.espflash.unchecked_bootloader => self
+                            .run_method_from_action(EspAction::EspBootloaderUnchecked.into())
+                            .unwrap(),
                         1 if ctrl_pressed || shift_pressed => self
                             .run_method_from_action(EspAction::EspBootloaderUnchecked.into())
                             .unwrap(),
@@ -2140,17 +2165,46 @@ impl App {
                             .run_method_from_action(EspAction::EspDeviceInfo.into())
                             .unwrap(),
                         3 => {
-                            if self.settings.espflash.easy_erase_flash
-                                || (shift_pressed || ctrl_pressed)
+                            use crate::tui::esp::ERASE_FLASH_CONFIRM_PERIOD;
+                            let tx = self.event_tx.clone();
+                            self.carousel
+                                .add_oneshot(
+                                    "UnreadyEraseFlash",
+                                    Box::new(move || {
+                                        tx.send(Tick::Requested("UnreadyEraseFlash").into())
+                                            .map_err(|e| e.to_string())
+                                    }),
+                                    ERASE_FLASH_CONFIRM_PERIOD,
+                                )
+                                .unwrap();
+
+                            let erase_now = if let Some(duration) = self
+                                .espflash
+                                .first_erase_press
+                                .as_ref()
+                                .map(Instant::elapsed)
+                                && duration <= ERASE_FLASH_CONFIRM_PERIOD
                             {
+                                true
+                            } else if self.settings.espflash.skip_erase_confirm {
+                                true
+                            } else if shift_pressed || ctrl_pressed {
+                                true
+                            } else {
+                                false
+                            };
+
+                            self.espflash.first_erase_press = if erase_now {
                                 self.run_method_from_action(EspAction::EspEraseFlash.into())
                                     .unwrap();
+                                None
                             } else {
                                 self.notifs.notify_str(
-                                    "Press Shift/Ctrl+Enter to erase flash!",
+                                    "Press again to confirm erasing flash!",
                                     Color::Yellow,
                                 );
-                            }
+                                Some(Instant::now())
+                            };
                         }
                         unknown => unreachable!("unknown espflash command index {unknown}"),
                     }
@@ -2362,7 +2416,7 @@ impl App {
                 self.show_popup_menu(ShowPopupAction::ShowPortSettings);
                 self.menu = Menu::Terminal(TerminalPrompt::None);
             }
-            DisconnectPrompt::Disconnect if shift_pressed || ctrl_pressed => {
+            DisconnectPrompt::DisconnectFromPort => {
                 // This is intentionally being set true unconditionally here, and also when the event pops.
                 // This is so that I or a user can forcibly trigger the pausing of reconnections/the appearance of the
                 // manual reconnection Esc popup.
@@ -2377,7 +2431,7 @@ impl App {
                 // .notify_str("Can't break connection!", Color::Red);
                 // }
             }
-            DisconnectPrompt::Disconnect => {
+            DisconnectPrompt::BackToPortSelection => {
                 self.serial.disconnect().unwrap();
                 // Refresh port listings
                 self.ports.clear();
@@ -2400,7 +2454,7 @@ impl App {
         use PortSelectionElement as Pse;
         match choice {
             AttemptReconnectPrompt::ExitApp => self.shutdown(),
-            AttemptReconnectPrompt::AttemptReconnect if shift_pressed && ctrl_pressed => {
+            AttemptReconnectPrompt::AttemptReconnect if self.user_broke_connection => {
                 self.user_broke_connection = false;
                 self.menu = Menu::Terminal(TerminalPrompt::None);
                 self.notifs
@@ -3664,7 +3718,13 @@ impl App {
                     self.popup_table_state.select_first_column();
                     self.popup_table_state.select(Some(corrected_index));
 
-                    frame.render_widget(esp::espflash_buttons(false), settings_area);
+                    frame.render_widget(
+                        esp::espflash_buttons(
+                            self.espflash.unchecked_bootloader,
+                            self.espflash.first_erase_press.is_some(),
+                        ),
+                        settings_area,
+                    );
                     frame.render_widget(&line_block, new_separator);
                     frame.render_stateful_widget(
                         self.espflash.profiles_table(),
@@ -3714,7 +3774,10 @@ impl App {
                     self.popup_table_state.select_first_column();
                     self.popup_table_state.select(corrected_index);
                     frame.render_stateful_widget(
-                        esp::espflash_buttons(false),
+                        esp::espflash_buttons(
+                            self.espflash.unchecked_bootloader,
+                            self.espflash.first_erase_press.is_some(),
+                        ),
                         settings_area,
                         &mut self.popup_table_state,
                     );
@@ -4006,9 +4069,14 @@ impl App {
                 );
             }
             TerminalPrompt::AttemptReconnectPrompt => {
+                let user_broke_connection = if self.user_broke_connection {
+                    Some("(Reconnections paused!)")
+                } else {
+                    None
+                };
                 AttemptReconnectPrompt::render_prompt_block_popup(
                     Some("Reconnect to port?"),
-                    None,
+                    user_broke_connection,
                     Style::new().red(),
                     frame,
                     area,
@@ -4185,6 +4253,10 @@ impl App {
     }
     fn refresh_scratch(&mut self) {
         self.scratch = self.settings.clone();
+        #[cfg(feature = "espflash")]
+        {
+            self.espflash.unchecked_bootloader = false;
+        }
     }
     fn show_popup(&mut self, popup: Popup) {
         self.popup = Some(popup);

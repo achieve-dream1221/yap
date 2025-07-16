@@ -443,9 +443,10 @@ impl From<defmt_parser::Level> for Level {
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
 #[derivative(Default)]
 pub struct Espflash {
-    /// Skip requirement for holding Shift/Ctrl when selecting Erase Flash on ESP32 Flashing menu.
+    /// Skip requirement for double-pressing Enter within a period of time
+    /// when selecting Erase Flash on ESP32 Flashing menu.
     #[serde(default)]
-    pub easy_erase_flash: bool,
+    pub skip_erase_confirm: bool,
 }
 
 #[cfg(feature = "defmt")]

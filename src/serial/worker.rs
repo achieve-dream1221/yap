@@ -826,7 +826,7 @@ impl SerialWorker {
 
                     connection.reset_to_flash(true)?;
 
-                    self.event_tx.send(EspEvent::HardResetAttempt.into())?;
+                    self.event_tx.send(EspEvent::BootloaderAttempt.into())?;
 
                     connection.into_serial()
                 }
