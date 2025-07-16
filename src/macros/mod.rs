@@ -64,15 +64,18 @@ pub struct Macros {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum MacrosLoadError {
-    #[error("error reading macro file")]
-    File(#[from] std::io::Error),
-    // #[error("error deserializing macro content")]
-    // Deser(#[from] toml::de::Error),
+#[error("error reading macro file")]
+pub struct MacrosLoadError(#[from] std::io::Error);
+
+#[derive(Debug, thiserror::Error)]
+#[error("error deserializing macro contents at: {path}")]
+pub struct MacrosDeserError {
+    path: Utf8PathBuf,
+    source: toml::de::Error,
 }
 
 impl Macros {
-    pub fn new() -> Self {
+    pub fn empty() -> Self {
         Self {
             // scrollbar_state: ScrollbarState::new(test_macros.len()),
             all: BTreeMap::new(),
@@ -149,13 +152,13 @@ impl Macros {
             .filtered_macro_iter()
             .map(|m| (m.0.name.as_str(), m))
             .map(|(title, (tag, string))| {
-                let mut filtered_keybinds = keybinds
+                let mut single_action_keys = keybinds
                     .keybindings
                     .iter()
                     .filter(|(kc, km)| km.len() == 1)
                     .map(|(kc, km)| (kc, &km[0]));
 
-                let macro_string = filtered_keybinds
+                let macro_string = single_action_keys
                     .clone()
                     .find(|(kc, km)| {
                         let Ok(keybind_as_tag) = km.parse::<MacroNameTag>() else {
@@ -165,7 +168,7 @@ impl Macros {
                     })
                     .or_else(|| {
                         if fuzzy_macro_name_match {
-                            filtered_keybinds.find(|(kc, km)| {
+                            single_action_keys.find(|(kc, km)| {
                                 let Ok(keybind_as_tag) = km.parse::<MacroNameTag>() else {
                                     return false;
                                 };
@@ -274,12 +277,15 @@ impl Macros {
     //         .expect("attempted removal of non-existant element");
     // }
 
-    pub fn load_from_folder<P: AsRef<Path>>(&mut self, folder: P) -> Result<(), MacrosLoadError> {
-        // TODO maybe have: "Macros Reloaded! X loaded, Y had errors."
-        // TODO never return on error, just log and notify user to check logs for details.
+    pub fn load_from_folder<P: AsRef<Path>>(
+        folder: P,
+    ) -> Result<(Self, Vec<MacrosDeserError>), MacrosLoadError> {
+        let mut instance = Macros::empty();
+        let mut deser_errors = Vec::new();
         fn visit_dir(
             dir: &Path,
             new_macros: &mut BTreeMap<MacroNameTag, MacroContent>,
+            deser_errors: &mut Vec<MacrosDeserError>,
         ) -> Result<(), MacrosLoadError> {
             for entry in fs::read_dir(dir)? {
                 let entry = match entry {
@@ -300,7 +306,7 @@ impl Macros {
 
                 if metadata.is_dir() {
                     // Recurse into subdirectory
-                    if let Err(e) = visit_dir(&entry.path(), new_macros) {
+                    if let Err(e) = visit_dir(&entry.path(), new_macros, deser_errors) {
                         error!(
                             "Error traversing subdirectory {}: {e}",
                             entry.path().display()
@@ -315,7 +321,7 @@ impl Macros {
                     continue;
                 }
 
-                let Ok(file_name) = Utf8PathBuf::from_path_buf(entry.path()) else {
+                let Ok(file_path) = Utf8PathBuf::from_path_buf(entry.path()) else {
                     warn!(
                         "Macro path \"{}\" is not valid UTF-8! Skipping...",
                         entry.path().display()
@@ -323,7 +329,7 @@ impl Macros {
                     continue;
                 };
 
-                if let Some(extension) = file_name.extension() {
+                if let Some(extension) = file_path.extension() {
                     if extension != "toml" {
                         continue;
                     }
@@ -331,29 +337,34 @@ impl Macros {
                     continue;
                 }
 
-                let mut file = match load_macros_from_path(&entry.path()) {
+                let file_contents = fs::read_to_string(&file_path)?;
+
+                let mut deserialized: MacroFile = match toml::from_str(&file_contents) {
                     Ok(file) => file,
                     Err(e) => {
-                        error!(
-                            "Failed to read macros from file: {}. {e}",
-                            entry.path().display()
-                        );
+                        error!("Failed to read macros from file: {file_path}. {e}");
+                        deser_errors.push(MacrosDeserError {
+                            path: file_path,
+                            source: e,
+                        });
                         continue;
                     }
                 };
 
-                if let Some(fallback_category) = &file.category_name {
-                    file.macros
+                if let Some(fallback_category) = &deserialized.category_name {
+                    deserialized
+                        .macros
                         .iter_mut()
                         .filter(|m| m.category.is_none())
                         .for_each(|m| m.category = Some(fallback_category.to_owned()));
                 } else {
-                    file.macros
+                    deserialized
+                        .macros
                         .iter_mut()
                         .filter(|m| m.category.is_none())
                         .for_each(|m| {
                             m.category = Some(
-                                file_name
+                                file_path
                                     .file_stem()
                                     .expect("expected to remove toml extension")
                                     .into(),
@@ -361,7 +372,7 @@ impl Macros {
                         });
                 }
 
-                for ser_macro in file.macros {
+                for ser_macro in deserialized.macros {
                     let (mut tag, content) = ser_macro.into_tag_and_content();
 
                     if let Some(category) = &mut tag.category {
@@ -382,12 +393,12 @@ impl Macros {
 
         if folder.exists() {
             let mut new_macros = BTreeMap::new();
-            visit_dir(folder.as_ref(), &mut new_macros)?;
-            self.all = new_macros;
+            visit_dir(folder.as_ref(), &mut new_macros, &mut deser_errors)?;
+            instance.all = new_macros;
         } else {
             fs::create_dir_all(folder)?;
         }
-        Ok(())
+        Ok((instance, deser_errors))
     }
 }
 
@@ -435,11 +446,6 @@ impl SerializedMacro {
             MacroContent::new_with_line_ending(&content, line_ending, sensitive),
         )
     }
-}
-fn load_macros_from_path(path: &Path) -> color_eyre::Result<MacroFile> {
-    let file = toml::from_str(fs_err::read_to_string(path)?.as_str())?;
-
-    Ok(file)
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]

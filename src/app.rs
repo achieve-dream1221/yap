@@ -437,10 +437,14 @@ impl App {
         }
 
         #[cfg(feature = "macros")]
-        let mut macros = Macros::new();
-        #[cfg(feature = "macros")]
-        macros.load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))?;
-
+        let macros = {
+            let (macros, errors) =
+                Macros::load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))?;
+            for e in errors {
+                return Err(e)?;
+            }
+            macros
+        };
         // debug!("{buffer:#?}");
         Ok(Self {
             state: RunningState::Running,
@@ -1488,10 +1492,25 @@ impl App {
 
             #[cfg(feature = "macros")]
             A::MacroBuiltin(MacroBuiltinAction::ReloadMacros) => {
-                self.macros
-                    .load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))
-                    .unwrap();
-                self.notifs.notify_str("Reloaded Macros!", Color::Green);
+                match Macros::load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))
+                {
+                    Ok((macros, errors)) => {
+                        let err_len = errors.len();
+                        self.macros = macros;
+                        if errors.is_empty() {
+                            self.notifs.notify_str("Reloaded all Macros!", Color::Green);
+                        } else {
+                            self.notifs.notify_str(
+                                format!("Reloaded all Macros! {err_len} files had errors!"),
+                                Color::Yellow,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        self.notifs
+                            .notify_str(format!("Error opening macros! {e}"), Color::Red);
+                    }
+                }
             }
 
             A::Base(BaseAction::ReloadColors) => {
