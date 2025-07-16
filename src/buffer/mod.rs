@@ -1,6 +1,6 @@
 #[cfg(feature = "defmt")]
 use std::sync::Arc;
-use std::{borrow::Cow, cmp::Ordering, ops::Range, thread::JoinHandle};
+use std::{cmp::Ordering, ops::Range, thread::JoinHandle};
 
 use ansi_to_tui::{IntoText, LossyFlavor};
 use bstr::{ByteSlice, ByteVec};

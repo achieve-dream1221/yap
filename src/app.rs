@@ -433,7 +433,7 @@ impl App {
         let macros = {
             let (macros, errors) =
                 Macros::load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))?;
-            for e in errors {
+            if let Some(e) = errors.into_iter().next() {
                 return Err(e)?;
             }
             macros
@@ -1612,9 +1612,9 @@ impl App {
                 let tx = self.event_tx.clone();
                 std::thread::spawn(move || {
                     let file_opt_res = native_dialog::DialogBuilder::file()
-                        .add_filter("ELF (Executable and Linkable Format)", &["elf"])
-                        .add_filter("All Files", &[""])
-                        .set_location(&"")
+                        .add_filter("ELF (Executable and Linkable Format)", ["elf"])
+                        .add_filter("All Files", [""])
+                        .set_location("")
                         .open_single_file()
                         .show();
                     if let Ok(Some(file)) = file_opt_res {
@@ -2188,10 +2188,8 @@ impl App {
                                 true
                             } else if self.settings.espflash.skip_erase_confirm {
                                 true
-                            } else if shift_pressed || ctrl_pressed {
-                                true
                             } else {
-                                false
+                                shift_pressed || ctrl_pressed
                             };
 
                             self.espflash.first_erase_press = if erase_now {
@@ -4451,8 +4449,6 @@ pub fn _try_load_defmt_elf(
         Ok((new_decoder, locations_err_opt)) => {
             let decoder_arc = Arc::new(new_decoder);
             let _ = decoder_opt.insert(decoder_arc.clone());
-            // self.notifs
-            //     .notify_str("defmt data parsed from ELF!", Color::Green);
             recent_elfs.elf_loaded(path)?;
             #[cfg(feature = "logging")]
             logging
@@ -4465,9 +4461,7 @@ pub fn _try_load_defmt_elf(
         }
         Err(e) => {
             error!("error loading defmt elf {e}");
-            return Err(e)?;
-            // self.notifs
-            //     .notify_str(format!("defmt Error: {e}"), Color::Red);
+            Err(e)?
         }
     }
 }

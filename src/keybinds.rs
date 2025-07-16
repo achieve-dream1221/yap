@@ -1,5 +1,7 @@
 // Since I can't rely on prefix from strum
 #![allow(clippy::enum_variant_names)]
+// For RequiresPort, makes more sense to me to keep same format.
+#![allow(clippy::match_like_matches_macro)]
 
 use std::fmt;
 use std::str::FromStr;
@@ -693,7 +695,7 @@ mod test {
     fn test_default_config_deser() {
         let keybinds = Keybinds::from_str(include_str!("../example_configs/yap_keybinds.toml"))
             .expect("example configs should be valid");
-        assert!(keybinds.keybindings.len() > 0);
+        assert!(!keybinds.keybindings.is_empty());
 
         let port_settings_bind = keybinds.keybindings.get(&crokey::key!(ctrl - '.')).unwrap();
         assert_eq!(port_settings_bind[0], "show-portsettings");
@@ -725,7 +727,7 @@ pub fn print_all_actions() {
 
             println!("{variant}{styled_doc}");
         }
-        println!("");
+        println!();
     }
 
     print_variants::<ShowPopupAction>("Show Popup Actions");

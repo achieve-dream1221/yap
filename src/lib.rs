@@ -20,11 +20,10 @@ use panic_handler::initialize_panic_handler;
 use ratatui::crossterm::{
     self,
     event::{DisableMouseCapture, EnableMouseCapture, MouseButton, MouseEventKind},
-    terminal,
 };
 
 use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
-use tracing::{Level, debug, error, info, level_filters::LevelFilter};
+use tracing::{Level, debug, error, level_filters::LevelFilter};
 use tracing_appender::non_blocking::WorkerGuard;
 
 use crate::{
@@ -295,9 +294,7 @@ fn run_inner(
                 crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
                 result
             }
-            _ => {
-                return Err(color_eyre::eyre::eyre!("Invalid USB address format"));
-            }
+            _ => Err(color_eyre::eyre::eyre!("Invalid USB address format")),
         }
     } else {
         let terminal = ratatui::init();

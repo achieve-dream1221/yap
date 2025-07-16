@@ -16,6 +16,7 @@ pub struct SingleLineSelector<'a> {
     // text_style: Style,
 }
 
+#[derive(Default)]
 pub struct SingleLineSelectorState {
     pub current_index: usize,
     pub active: bool,
@@ -194,10 +195,7 @@ impl SingleLineSelector<'_> {
 
 impl SingleLineSelectorState {
     pub fn new() -> Self {
-        SingleLineSelectorState {
-            current_index: 0,
-            active: false,
-        }
+        SingleLineSelectorState::default()
     }
     pub fn with_selected(mut self, new_index: usize) -> Self {
         self.select(new_index);

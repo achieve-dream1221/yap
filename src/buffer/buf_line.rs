@@ -8,9 +8,8 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-#[cfg(feature = "defmt")]
-use defmt_parser::Level;
-
+// #[cfg(feature = "defmt")]
+// use defmt_parser::Level;
 #[cfg(feature = "defmt")]
 use crate::settings::Defmt;
 use crate::{

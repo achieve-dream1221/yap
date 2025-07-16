@@ -3,14 +3,11 @@
 use std::{borrow::Cow, collections::BTreeMap, ops::Range};
 
 use bstr::ByteVec;
-use compact_str::{ToCompactString, format_compact};
 use itertools::Itertools;
-use memchr::memmem::Finder;
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
 };
-use tracing::debug;
 
 use crate::buffer::{HEX_UPPER, LineEnding};
 
@@ -159,8 +156,7 @@ impl<'a> LineHelpers<'a> for Line<'a> {
         let mut line_char_index = 0;
         self.spans
             .iter()
-            .map(|s| s.content.chars())
-            .flatten()
+            .flat_map(|s| s.content.chars())
             .for_each(|c| {
                 if is_char_unsavory(c) {
                     chars_to_escape.insert(line_char_index, c);
@@ -324,9 +320,7 @@ impl<'a> LineMutator<'a> for Line<'a> {
         let total_len = self.spans.iter().map(|s| s.content.len()).sum();
         assert!(
             index <= total_len,
-            "Insertion operation index out of bounds: the index is {} but the total length is {}",
-            index,
-            total_len
+            "Insertion operation index out of bounds: the index is {index} but the total length is {total_len}"
         );
 
         if total_len == 0 {
@@ -634,7 +628,7 @@ fn overlap_region(a: (usize, usize), b: (usize, usize)) -> (Option<usize>, Optio
 ///
 /// Assumes the range is on valid char boundaries, **will panic otherwise!**
 #[inline]
-fn split_span_content<'a>(content: &'a str, range: Range<usize>) -> (&'a str, &'a str, &'a str) {
+fn split_span_content(content: &str, range: Range<usize>) -> (&str, &str, &str) {
     let pre = &content[..range.start];
     let mid = &content[range.start..range.end];
     let post = &content[range.end..];

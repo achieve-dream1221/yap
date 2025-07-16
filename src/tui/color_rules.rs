@@ -1,12 +1,11 @@
 use serde_with::{DisplayFromStr, TryFromInto};
 
-use std::{cmp::Ordering, ops::Range, path::Path, str::FromStr};
+use std::{cmp::Ordering, ops::Range, path::Path};
 
 use ansi_to_tui::LossyFlavor;
 use bstr::ByteSlice;
-use compact_str::{CompactString, CompactStringExt};
+use compact_str::CompactString;
 use fs_err as fs;
-use itertools::Itertools;
 use memchr::memmem::Finder;
 use ratatui::{
     style::{Color, Style},
@@ -14,7 +13,7 @@ use ratatui::{
 };
 use regex::bytes::Regex;
 use serde_with::serde_as;
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::traits::{LineHelpers, LineMutator};
 

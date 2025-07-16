@@ -1,8 +1,7 @@
 use std::{
-    io::{Read, Write},
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    io::Write,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
-    str::FromStr,
     time::Duration,
 };
 
@@ -14,7 +13,6 @@ use serde_with::{NoneAsEmptyString, serde_as};
 use serialport::{DataBits, FlowControl, Parity, StopBits};
 use struct_table::StructTable;
 use strum::VariantArray;
-use tracing::{info, level_filters::LevelFilter};
 
 // Copied a lot from my other project, redefaulter
 // https://github.com/nullstalgia/redefaulter/blob/ad81fad9468891b50daaac3215b0532386b6d1aa/src/settings/mod.rs
@@ -586,7 +584,7 @@ pub struct PortSettings {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Ignored {
     #[serde(default)]
-    ///
+    /// Devices in VID:PID[:SERIAL] format to not show in port selection.
     pub usb: Vec<IgnoreableUsb>,
 }
 

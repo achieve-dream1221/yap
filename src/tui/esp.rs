@@ -4,7 +4,7 @@ use std::{
 };
 
 use camino::Utf8PathBuf;
-use compact_str::{CompactString, format_compact};
+use compact_str::CompactString;
 use espflash::{flasher::DeviceInfo, target::Chip};
 use fs_err as fs;
 use ratatui::{

@@ -6,9 +6,7 @@ use std::{
 use bstr::ByteVec;
 use camino::Utf8PathBuf;
 use compact_str::CompactString;
-use crokey::KeyCombination;
 use fs_err::{self as fs};
-use indexmap::IndexMap;
 use itertools::Either;
 use ratatui::{
     layout::Constraint,
@@ -20,7 +18,6 @@ use tracing::{error, warn};
 use tui_input::Input;
 
 use crate::{
-    config_adjacent_path,
     keybinds::Keybinds,
     traits::{HasEscapedBytes, LastIndex},
     tui::single_line_selector::SingleLineSelectorState,
@@ -393,7 +390,7 @@ impl Macros {
 
         if folder.exists() {
             let mut new_macros = BTreeMap::new();
-            visit_dir(folder.as_ref(), &mut new_macros, &mut deser_errors)?;
+            visit_dir(folder, &mut new_macros, &mut deser_errors)?;
             instance.all = new_macros;
         } else {
             fs::create_dir_all(folder)?;

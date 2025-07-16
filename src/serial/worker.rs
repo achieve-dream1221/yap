@@ -698,9 +698,10 @@ impl SerialWorker {
         );
         // info!("port.baud_rate {}", self.port.as_ref().unwrap().baud_rate()?);
 
-        if let Err(_) = self
+        if self
             .event_tx
             .send(SerialEvent::Connected(reconnect_type).into())
+            .is_err()
         {
             let text = "App handle closed after successful port connection!";
             error!("{text}");
