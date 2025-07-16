@@ -15,8 +15,9 @@ fn main() {
             .unwrap_or_else(|_| panic!("Could not copy {file}"));
     }
 
-    // Invalidate the build if the files change
-    for file in &items_to_copy {
-        println!("cargo:rerun-if-changed={file}");
-    }
+    // Don't need to invalidate anything presently,
+    // as all current files are read by the app after being compiled and ran.
+    // for file in &items_to_copy {
+    //     println!("cargo:rerun-if-changed={file}");
+    // }
 }

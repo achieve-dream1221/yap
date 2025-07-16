@@ -107,12 +107,14 @@ pub struct DefmtRecentElfs {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DefmtRecentError {
-    #[error("failed deserializing recent elfs")]
+    #[error("failed reading recent defmt elfs")]
+    FileRead(#[source] std::io::Error),
+    #[error("failed saving recent defmt elfs")]
+    FileWrite(#[source] std::io::Error),
+    #[error("invalid recent defmt elf file content")]
     Deser(#[from] toml::de::Error),
-    #[error("failed serializing recent elfs")]
+    #[error("failed serializing recent defmt elfs")]
     Ser(#[from] toml::ser::Error),
-    #[error("failed recent elfs file op")]
-    File(#[from] std::io::Error),
 }
 
 impl DefmtRecentElfs {
@@ -120,14 +122,15 @@ impl DefmtRecentElfs {
         let toml_path = config_adjacent_path(DEFMT_RECENT_PATH);
 
         if toml_path.exists() {
-            let recent_toml = fs::read_to_string(toml_path)?;
+            let recent_toml = fs::read_to_string(toml_path).map_err(DefmtRecentError::FileRead)?;
 
             toml::from_str(&recent_toml).map_err(Into::into)
         } else {
             fs::write(
                 toml_path,
                 toml::to_string(&DefmtRecentElfs::default())?.as_bytes(),
-            )?;
+            )
+            .map_err(DefmtRecentError::FileWrite)?;
 
             Ok(DefmtRecentElfs::default())
         }
@@ -148,7 +151,8 @@ impl DefmtRecentElfs {
         fs::write(
             config_adjacent_path(DEFMT_RECENT_PATH),
             recent_toml.as_bytes(),
-        )?;
+        )
+        .map_err(DefmtRecentError::FileWrite)?;
 
         Ok(())
     }

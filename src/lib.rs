@@ -117,7 +117,10 @@ pub fn run() -> color_eyre::Result<()> {
 
     let result = run_inner(cli_args, settings);
     if let Err(e) = &result {
-        error!("Fatal error: {e}");
+        error!("App closed with error:");
+        for (index, err) in e.chain().enumerate() {
+            error!("{index}: {err}");
+        }
     }
 
     result

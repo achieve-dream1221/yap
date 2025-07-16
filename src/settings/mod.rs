@@ -609,7 +609,7 @@ impl Default for PortSettings {
 }
 
 impl Settings {
-    pub fn load<P: AsRef<Path>>(path: P) -> color_eyre::Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, SettingsError> {
         let path = path.as_ref();
         if !path.exists() {
             let default = Settings {
@@ -619,27 +619,43 @@ impl Settings {
             default.save()?;
             return Ok(default);
         }
-        let settings_toml = fs::read_to_string(path)?;
+        let settings_toml = fs::read_to_string(path).map_err(SettingsError::FileRead)?;
         let mut config: Settings = toml::from_str(&settings_toml)?;
         config.path = path.into();
         config.save()?;
         Ok(config)
     }
-    pub fn save(&self) -> color_eyre::Result<()> {
+    pub fn save(&self) -> Result<(), SettingsError> {
         assert_ne!(self.path.components().count(), 0);
         self.save_at(&self.path)?;
         Ok(())
     }
     // TODO write all enum variants next to each field?
-    fn save_at(&self, config_path: &Path) -> color_eyre::Result<()> {
+    fn save_at(&self, config_path: &Path) -> Result<(), SettingsError> {
         let toml_config = toml::to_string(self)?;
-        let mut file = fs::File::create(config_path)?;
-        file.write_all(toml_config.as_bytes())?;
-        file.flush()?;
-        file.sync_all()?;
+        fs::File::create(config_path)
+            .and_then(|mut file| {
+                file.write_all(toml_config.as_bytes())?;
+                file.flush()?;
+                file.sync_all()
+            })
+            .map_err(SettingsError::FileWrite)?;
+
         Ok(())
     }
     pub fn get_log_level(&self) -> tracing::Level {
         tracing::Level::from(&self.misc.log_level)
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SettingsError {
+    #[error("failed reading from app settings file")]
+    FileRead(#[source] std::io::Error),
+    #[error("failed saving to app settings file")]
+    FileWrite(#[source] std::io::Error),
+    #[error("invalid app settings")]
+    Deser(#[from] toml::de::Error),
+    #[error("failed settings serialization")]
+    Ser(#[from] toml::ser::Error),
 }

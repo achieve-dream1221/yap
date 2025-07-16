@@ -64,11 +64,11 @@ pub struct Macros {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("error reading macro file")]
+#[error("failed reading macro file")]
 pub struct MacrosLoadError(#[from] std::io::Error);
 
 #[derive(Debug, thiserror::Error)]
-#[error("error deserializing macro contents at: {path}")]
+#[error("invalid macro in: {path}")]
 pub struct MacrosDeserError {
     path: Utf8PathBuf,
     source: toml::de::Error,

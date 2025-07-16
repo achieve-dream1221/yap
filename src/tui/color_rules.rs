@@ -80,11 +80,11 @@ struct SerializedLiteralRule {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ColorRuleLoadError {
-    #[error("error reading color rules file")]
+    #[error("failed reading from color rules file")]
     FileRead(#[source] std::io::Error),
-    #[error("error saving color rules file")]
+    #[error("failed saving to color rules file")]
     FileWrite(#[source] std::io::Error),
-    #[error("error deserializing color rules")]
+    #[error("invalid color rule format")]
     Deser(#[from] toml::de::Error),
     #[error("rule must either be hiding, censoring, or coloring: \"{0}\"")]
     UnspecifiedRule(String),

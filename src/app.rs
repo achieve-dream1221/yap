@@ -221,11 +221,11 @@ pub enum SettingsMenu {
 #[repr(u8)]
 #[strum(serialize_all = "title_case")]
 pub enum ToolMenu {
+    #[cfg(feature = "macros")]
+    Macros,
     #[cfg(feature = "espflash")]
     #[strum(serialize = "ESP32 Flashing")]
     EspFlash,
-    #[cfg(feature = "macros")]
-    Macros,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -342,17 +342,7 @@ impl App {
         ctrl_c_tx: Sender<()>,
         settings: Settings,
     ) -> Result<Self> {
-        let keybinds_path = config_adjacent_path(crate::keybinds::CONFIG_TOML_PATH);
-        let keybinds = if keybinds_path.exists() {
-            let keybinds_input = fs::read_to_string(keybinds_path)?;
-            Keybinds::from_str(&keybinds_input)?
-        } else {
-            fs::write(
-                keybinds_path,
-                include_str!("../example_configs/yap_keybinds.toml.blank").as_bytes(),
-            )?;
-            Keybinds::overridable_defaults()
-        };
+        let keybinds = Keybinds::build()?;
 
         let mut user_input = UserInput::default();
 
@@ -550,7 +540,7 @@ impl App {
             let end3 = start3.elapsed();
             max_rx_handle = max_rx_handle.max(end2);
             max_event_handle = max_event_handle.max(end3);
-            debug!(
+            trace!(
                 "Frame took {:?} to draw (max: {max_draw:?}), {:?} to handle RX (max: {max_rx_handle:?}), {:?} to handle event (max: {max_event_handle:?}) ",
                 end1, end2, end3
             );
@@ -1159,23 +1149,8 @@ impl App {
             }
             // KeyCode::Tab => self.tab_pressed(),
             key!(ctrl - r) if self.popup == Some(Popup::CurrentKeybinds) => {
-                // TODO make into an action?
-                self.keybinds = match fs::read_to_string(config_adjacent_path(
-                    crate::keybinds::CONFIG_TOML_PATH,
-                )) {
-                    Ok(keybinds_input) => match Keybinds::from_str(&keybinds_input) {
-                        Ok(kb) => kb,
-                        Err(e) => {
-                            error!("Failed parsing keybinds config! {e}");
-                            Keybinds::overridable_defaults()
-                        }
-                    },
-                    Err(e) => {
-                        error!("Failed reading keybinds config! {e}");
-                        Keybinds::overridable_defaults()
-                    }
-                };
-                self.notifs.notify_str("Reloaded Keybinds!", Color::Green);
+                self.run_method_from_action(AppAction::Base(BaseAction::ReloadKeybinds))
+                    .unwrap();
             }
             #[cfg(feature = "macros")]
             key!(ctrl - r) if self.popup == Some(Popup::ToolMenu(ToolMenu::Macros)) => {
@@ -1498,26 +1473,50 @@ impl App {
                         let err_len = errors.len();
                         self.macros = macros;
                         if errors.is_empty() {
-                            self.notifs.notify_str("Reloaded all Macros!", Color::Green);
+                            self.notifs
+                                .notify_str("Reloaded Macros Successfully!", Color::Green);
                         } else {
                             self.notifs.notify_str(
-                                format!("Reloaded all Macros! {err_len} files had errors!"),
+                                format!("Reloaded Macros! {err_len} files had errors!"),
                                 Color::Yellow,
                             );
                         }
                     }
                     Err(e) => {
                         self.notifs
-                            .notify_str(format!("Error opening macros! {e}"), Color::Red);
+                            .notify_str(format!("Error opening macros: {e}!"), Color::Red);
                     }
                 }
             }
 
             A::Base(BaseAction::ReloadColors) => {
-                self.buffer.reload_color_rules().unwrap();
-                self.notifs
-                    .notify_str("Reloaded Color Rules!", Color::Green);
+                if let Err(e) = self.buffer.reload_color_rules() {
+                    self.notifs.notify_str(
+                        format!("Error reloading Color Rules: {e}! See log for details."),
+                        Color::Red,
+                    );
+                    let report = color_eyre::Report::new(e);
+                    error!("Error reloading Color Rules: {report:#}");
+                } else {
+                    self.notifs
+                        .notify_str("Reloaded Color Rules!", Color::Green);
+                }
             }
+
+            A::Base(BaseAction::ReloadKeybinds) => match Keybinds::build() {
+                Ok(new) => {
+                    self.keybinds = new;
+                    self.notifs.notify_str("Reloaded Keybinds!", Color::Green);
+                }
+                Err(e) => {
+                    self.notifs.notify_str(
+                        format!("Error reloading Keybinds: {e}! See log for details."),
+                        Color::Red,
+                    );
+                    let report = color_eyre::Report::new(e);
+                    error!("Error reloading Keybinds: {report:#}");
+                }
+            },
 
             #[cfg(feature = "logging")]
             A::Logging(LoggingAction::Sync) => {
@@ -1562,9 +1561,25 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             A::Esp(EspAction::ReloadProfiles) => {
-                self.notifs
-                    .notify_str("Reloaded espflash profiles!", Color::Green);
-                self.espflash.reload().unwrap();
+                assert!(
+                    !self.espflash.popup_active(),
+                    "Shouldn't be able to reload profiles while using one!"
+                );
+                match EspFlashHelper::build() {
+                    Ok(new_helper) => {
+                        self.espflash = new_helper;
+                        self.notifs
+                            .notify_str("Reloaded espflash profiles!", Color::Green);
+                    }
+                    Err(e) => {
+                        self.notifs.notify_str(
+                            format!("Error reloading espflash profiles: {e}! See log for details."),
+                            Color::Red,
+                        );
+                        let report = color_eyre::Report::new(e);
+                        error!("Error reloading espflash profiles: {report:#}");
+                    }
+                }
             }
             #[cfg(feature = "defmt")]
             A::ShowDefmtSelect(DefmtSelectAction::SelectRecent) => {

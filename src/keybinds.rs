@@ -14,7 +14,7 @@ use strum::{EnumMessage, VariantArray, VariantNames};
 
 #[cfg(feature = "macros")]
 use crate::macros::MacroNameTag;
-use crate::traits::RequiresPort;
+use crate::{config_adjacent_path, traits::RequiresPort};
 
 #[derive(
     Debug,
@@ -112,6 +112,8 @@ pub enum BaseAction {
     ShowKeybinds,
     /// Reload all Color Rules.
     ReloadColors,
+    /// Reload all Keybinds.
+    ReloadKeybinds,
 }
 
 impl RequiresPort for BaseAction {
@@ -603,7 +605,23 @@ where
 }
 
 impl Keybinds {
-    pub fn fill_port_settings_hint(&mut self) {
+    pub fn build() -> Result<Self, KeybindLoadError> {
+        let keybinds_path = config_adjacent_path(crate::keybinds::CONFIG_TOML_PATH);
+        let keybinds = if keybinds_path.exists() {
+            let keybinds_input =
+                fs::read_to_string(keybinds_path).map_err(KeybindLoadError::FileRead)?;
+            Keybinds::from_str(&keybinds_input)?
+        } else {
+            fs::write(
+                keybinds_path,
+                include_str!("../example_configs/yap_keybinds.toml.blank").as_bytes(),
+            )
+            .map_err(KeybindLoadError::FileWrite)?;
+            Keybinds::overridable_defaults()
+        };
+        Ok(keybinds)
+    }
+    fn fill_port_settings_hint(&mut self) {
         self.port_settings_hint = self
             .keybindings
             .iter()
@@ -619,7 +637,7 @@ impl Keybinds {
             })
             .map(|(kc, _)| kc.to_compact_string());
     }
-    pub fn overridable_defaults() -> Self {
+    fn overridable_defaults() -> Self {
         let mut deserialized: Self =
             toml::from_str(OVERRIDABLE_DEFAULTS).expect("hardcoded default should be valid");
 
@@ -627,7 +645,7 @@ impl Keybinds {
 
         deserialized
     }
-    pub fn from_str(input: &str) -> Result<Self, toml::de::Error> {
+    fn from_str(input: &str) -> Result<Self, toml::de::Error> {
         let mut overridable = Self::overridable_defaults();
 
         let user_settings: Self = toml::from_str(input)?;
@@ -757,4 +775,14 @@ pub fn print_all_actions() {
     println!(
         "\n\nA custom delay can be set between actions using {pause}. This will always take precedence over yap.toml's `action_chain_delay`."
     );
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum KeybindLoadError {
+    #[error("failed reading from keybinds file")]
+    FileRead(#[source] std::io::Error),
+    #[error("failed saving to keybinds file")]
+    FileWrite(#[source] std::io::Error),
+    #[error("invalid keybinds file")]
+    Deser(#[from] toml::de::Error),
 }

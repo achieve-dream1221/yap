@@ -367,19 +367,21 @@ pub struct EspFlashHelper {
 
 #[derive(Debug, thiserror::Error)]
 pub enum EspProfileError {
-    #[error("failed deserializing espflash profiles")]
+    #[error("failed reading profiles file")]
+    FileRead(#[source] std::io::Error),
+    #[error("failed saving to profiles file")]
+    FileWrite(#[source] std::io::Error),
+    #[error("invalid espflash profile")]
     Deser(#[from] toml::de::Error),
     // #[error("failed serializing espflash profiles: {0}")]
     // Ser(#[from] toml::ser::Error),
-    #[error("failed reading espflash profiles")]
-    File(#[from] std::io::Error),
 }
 
 impl EspFlashHelper {
     pub fn build() -> Result<Self, EspProfileError> {
         let toml_path = config_adjacent_path(ESP_PROFILES_PATH);
         if toml_path.exists() {
-            let profiles_toml = fs::read_to_string(toml_path)?;
+            let profiles_toml = fs::read_to_string(toml_path).map_err(EspProfileError::FileRead)?;
             let SerializedEspFiles { bins, elfs } = toml::from_str(&profiles_toml)?;
 
             Ok(Self {
@@ -392,24 +394,14 @@ impl EspFlashHelper {
             fs::write(
                 toml_path,
                 include_str!("../../example_configs/yap_espflash_profiles.toml.blank").as_bytes(),
-            )?;
+            )
+            .map_err(EspProfileError::FileWrite)?;
             Ok(Self {
                 popup: None,
                 bins: vec![],
                 elfs: vec![],
             })
         }
-    }
-    pub fn reload(&mut self) -> Result<(), EspProfileError> {
-        self.reset_popup();
-
-        let meow = fs::read_to_string(config_adjacent_path(ESP_PROFILES_PATH))?;
-        let SerializedEspFiles { bins, elfs } = toml::from_str(&meow)?;
-
-        self.bins = bins;
-        self.elfs = elfs;
-
-        Ok(())
     }
     pub fn consume_event(&mut self, event: EspEvent, ctrl_c_tx: &crossbeam::channel::Sender<()>) {
         match event {
