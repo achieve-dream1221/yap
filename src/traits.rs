@@ -218,26 +218,10 @@ impl<'a> LineHelpers<'a> for Line<'a> {
         // );
     }
     fn is_styled(&self) -> bool {
-        if self.style != Style::default() {
-            return true;
-        }
-        for span in &self.spans {
-            if span.style != Style::default() {
-                return true;
-            }
-        }
-        false
+        self.style != Style::default() || self.spans.iter().any(|s| s.style != Style::default())
     }
     fn is_empty(&self) -> bool {
-        if self.spans.is_empty() {
-            return true;
-        }
-        for span in &self.spans {
-            if !span.content.is_empty() {
-                return false;
-            }
-        }
-        true
+        self.spans.is_empty() || self.spans.iter().all(|s| s.content.is_empty())
     }
     fn style_all_spans(&mut self, new_style: Style) {
         for span in self.spans.iter_mut() {
