@@ -21,6 +21,8 @@ const DEFMT_RECENT_PATH: &str = "yap_defmt_recent.toml";
 
 const DEFMT_RECENT_MAX_AMOUNT: usize = 10;
 
+pub const DEFMT_BUTTONS: usize = 2;
+
 #[derive(Debug, PartialEq)]
 pub enum DefmtPopupSelection {
     SelectElf,

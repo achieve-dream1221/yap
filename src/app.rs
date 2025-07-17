@@ -762,12 +762,28 @@ impl App {
             Event::Tick(Tick::Scroll) => {
                 self.popup_hint_scroll += 1;
 
+                let mut scroll_millis = 400;
+
+                // Adjust scroll_millis based on text_scroll_speed setting:
+                // Negative values = slower scrolling, positive values = faster scrolling
+                let modifer = self.settings.behavior.text_scroll_speed;
+                if modifer < 0 {
+                    let factor = 1.0 + (-modifer as f32) * 0.5;
+                    scroll_millis = (scroll_millis as f32 * factor) as u64;
+                } else if modifer > 0 {
+                    let factor = 1.0 / (1.0 + (modifer as f32) * 0.5);
+                    scroll_millis = (scroll_millis as f32 * factor) as u64;
+                    if scroll_millis < 40 {
+                        scroll_millis = 40; // lower bound
+                    }
+                }
+
                 if self.popup.is_some() {
                     let tx = self.event_tx.clone();
                     self.carousel.add_oneshot(
                         "ScrollText",
                         Box::new(move || tx.send(Tick::Scroll.into()).map_err(|e| e.to_string())),
-                        Duration::from_millis(400),
+                        Duration::from_millis(scroll_millis),
                     )?;
                 }
             }
@@ -1877,7 +1893,7 @@ impl App {
                     return;
                 }
                 self.macros.categories_selector.prev();
-                if self.popup_menu_scroll >= 2 {
+                if self.popup_menu_scroll >= ALWAYS_PRESENT_SELECTOR_COUNT {
                     if self.macros.none_visible() {
                         self.popup_menu_scroll = 1;
                     } else {
@@ -1887,13 +1903,14 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             Some(Popup::ToolMenu(ToolMenu::EspFlash)) => {
-                if self.popup_menu_scroll == 3 {
+                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + 1 {
                     self.espflash.unchecked_bootloader.flip();
                 }
             }
             #[cfg(feature = "logging")]
             Some(Popup::SettingsMenu(SettingsMenu::Logging)) => {
-                if self.popup_menu_scroll == 1 {
+                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + Logging::VISIBLE_FIELDS
+                {
                     return;
                 }
 
@@ -1905,7 +1922,9 @@ impl App {
             }
             #[cfg(feature = "defmt")]
             Some(Popup::SettingsMenu(SettingsMenu::Defmt)) => {
-                if self.popup_menu_scroll <= 2 {
+                use crate::tui::defmt::DEFMT_BUTTONS;
+
+                if self.popup_menu_scroll < ALWAYS_PRESENT_SELECTOR_COUNT + DEFMT_BUTTONS {
                     return;
                 }
 
@@ -1982,7 +2001,7 @@ impl App {
                     return;
                 }
                 self.macros.categories_selector.next();
-                if self.popup_menu_scroll >= 2 {
+                if self.popup_menu_scroll >= ALWAYS_PRESENT_SELECTOR_COUNT {
                     if self.macros.none_visible() {
                         self.popup_menu_scroll = 1;
                     } else {
@@ -1992,13 +2011,14 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             Some(Popup::ToolMenu(ToolMenu::EspFlash)) => {
-                if self.popup_menu_scroll == 3 {
+                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + 1 {
                     self.espflash.unchecked_bootloader.flip();
                 }
             }
             #[cfg(feature = "logging")]
             Some(Popup::SettingsMenu(SettingsMenu::Logging)) => {
-                if self.popup_menu_scroll == 1 {
+                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + Logging::VISIBLE_FIELDS
+                {
                     return;
                 }
 
@@ -2010,7 +2030,9 @@ impl App {
             }
             #[cfg(feature = "defmt")]
             Some(Popup::SettingsMenu(SettingsMenu::Defmt)) => {
-                if self.popup_menu_scroll <= 2 {
+                use crate::tui::defmt::DEFMT_BUTTONS;
+
+                if self.popup_menu_scroll < ALWAYS_PRESENT_SELECTOR_COUNT + DEFMT_BUTTONS {
                     return;
                 }
 
@@ -2228,7 +2250,7 @@ impl App {
             }
             #[cfg(feature = "defmt")]
             Some(Popup::SettingsMenu(SettingsMenu::Defmt)) => {
-                if self.popup_menu_scroll == 2 {
+                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT {
                     // open file selector
                     if shift_pressed || ctrl_pressed {
                         self.run_app_action(AppAction::ShowDefmtSelect(
@@ -2241,9 +2263,10 @@ impl App {
                     }
 
                     return Ok(());
-                } else if self.popup_menu_scroll == 3 {
+                } else if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + 1 {
                     // open recent selector
                     self.show_popup(Popup::DefmtRecentElf);
+                    self.popup_menu_scroll = 0;
                     return Ok(());
                 }
                 // Otherwise, save settings.

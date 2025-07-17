@@ -289,6 +289,13 @@ pub struct Logging {
 #[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
 #[derivative(Default)]
 pub struct Behavior {
+    #[table(allow_unknown_values)]
+    #[serde(default)]
+    #[table(display = ["-3", "-2", "-1", "Default", "+1", "+2", "+3"])]
+    #[table(values = [-3, -2, -1, 0, 1, 2, 3])]
+    /// Text scroll speed modifier, positive increases, negative decreases.
+    pub text_scroll_speed: i8,
+
     #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]
     /// Use text box to type in before sending, with history. If disabled, sends keyboard inputs directly (TODO).
