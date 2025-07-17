@@ -28,7 +28,7 @@ use strum::VariantArray;
 use crate::{
     app::DEFAULT_BAUD,
     buffer::UserEcho,
-    serial::{IgnoreableUsb, Reconnections},
+    serial::{DeserializedUsb, Reconnections},
 };
 
 pub mod ser;
@@ -587,7 +587,7 @@ pub struct PortSettings {
 pub struct Ignored {
     #[serde(default)]
     /// Devices in VID:PID[:SERIAL] format to not show in port selection.
-    pub usb: Vec<IgnoreableUsb>,
+    pub usb: Vec<DeserializedUsb>,
 }
 
 impl Default for PortSettings {

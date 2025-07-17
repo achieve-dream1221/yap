@@ -1,55 +1,116 @@
+use std::num::ParseIntError;
+
 use serialport::UsbPortInfo;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct IgnoreableUsb {
+pub struct DeserializedUsb {
     /// Vendor ID
     pub vid: u16,
     /// Product ID
     pub pid: u16,
     /// Serial number (arbitrary string)
-    pub serial: Option<String>,
+    pub serial_number: Option<String>,
 }
 
-impl PartialEq<UsbPortInfo> for IgnoreableUsb {
+impl PartialEq<UsbPortInfo> for DeserializedUsb {
     fn eq(&self, other: &UsbPortInfo) -> bool {
         self.vid == other.vid
             && self.pid == other.pid
-            && match (&self.serial, &other.serial_number) {
+            && match (&self.serial_number, &other.serial_number) {
                 (None, _) => true,
-                (Some(serial), Some(other_serial)) => serial == other_serial,
-                // if we're ignoring a serial # but they don't have a serial
+                (Some(serial_num), Some(other_serial_num)) => serial_num == other_serial_num,
+                // if we're checking for a specific serial number but the checked device doesn't have one.
                 (Some(_), None) => false,
             }
     }
 }
 
-impl std::fmt::Display for IgnoreableUsb {
+impl From<UsbPortInfo> for DeserializedUsb {
+    fn from(value: UsbPortInfo) -> Self {
+        let UsbPortInfo {
+            vid,
+            pid,
+            serial_number,
+            ..
+        } = value;
+        Self {
+            vid,
+            pid,
+            serial_number,
+        }
+    }
+}
+impl From<DeserializedUsb> for UsbPortInfo {
+    fn from(value: DeserializedUsb) -> Self {
+        let DeserializedUsb {
+            vid,
+            pid,
+            serial_number,
+        } = value;
+        Self {
+            vid,
+            pid,
+            serial_number,
+            manufacturer: None,
+            product: None,
+        }
+    }
+}
+
+impl std::fmt::Display for DeserializedUsb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.serial {
+        match &self.serial_number {
             Some(serial) => write!(f, "{:04X}:{:04X}:{}", self.vid, self.pid, serial),
             None => write!(f, "{:04X}:{:04X}", self.vid, self.pid),
         }
     }
 }
 
-impl std::str::FromStr for IgnoreableUsb {
-    type Err = String;
+#[derive(Debug, thiserror::Error)]
+pub enum DeserializeUsbError {
+    #[error("missing USB VID")]
+    MissingVid,
+    #[error("missing USB PID")]
+    MissingPid,
+    #[error("invalid USB VID")]
+    ParseVid(#[source] ParseIntError),
+    #[error("invalid USB PID")]
+    ParsePid(#[source] ParseIntError),
+    #[error("empty USB serial number")]
+    EmptySerial,
+}
+
+impl std::str::FromStr for DeserializedUsb {
+    type Err = DeserializeUsbError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut parts = s.splitn(3, ':');
-        let vid = parts.next().ok_or("Missing VID")?;
-        let pid = parts.next().ok_or("Missing PID")?;
+        let vid = parts.next().ok_or(Self::Err::MissingVid)?;
+        let pid = parts.next().ok_or(Self::Err::MissingPid)?;
         let serial = parts.next();
 
-        let vid = u16::from_str_radix(vid, 16).map_err(|e| format!("VID parse error: {e}"))?;
-        let pid = u16::from_str_radix(pid, 16).map_err(|e| format!("PID parse error: {e}"))?;
-        let serial = serial.map(|s| s.to_string());
+        let vid = u16::from_str_radix(vid, 16).map_err(Self::Err::ParseVid)?;
+        let pid = u16::from_str_radix(pid, 16).map_err(Self::Err::ParsePid)?;
+        let serial_number = match serial {
+            Some(s) => {
+                let trim = s.trim();
+                if trim.is_empty() {
+                    return Err(Self::Err::EmptySerial);
+                }
+                Some(trim.to_string())
+            }
+            None => None,
+        };
 
-        Ok(IgnoreableUsb { vid, pid, serial })
+        Ok(DeserializedUsb {
+            vid,
+            pid,
+            serial_number,
+        })
     }
 }
 
-impl serde::Serialize for IgnoreableUsb {
+impl serde::Serialize for DeserializedUsb {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -58,7 +119,7 @@ impl serde::Serialize for IgnoreableUsb {
     }
 }
 
-impl<'de> serde::Deserialize<'de> for IgnoreableUsb {
+impl<'de> serde::Deserialize<'de> for DeserializedUsb {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -66,13 +127,13 @@ impl<'de> serde::Deserialize<'de> for IgnoreableUsb {
         struct Visitor;
 
         impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = IgnoreableUsb;
+            type Value = DeserializedUsb;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str("a string in the format VID:PID or VID:PID:SERIAL")
             }
 
-            fn visit_str<E>(self, value: &str) -> Result<IgnoreableUsb, E>
+            fn visit_str<E>(self, value: &str) -> Result<DeserializedUsb, E>
             where
                 E: serde::de::Error,
             {

@@ -3,6 +3,7 @@
 use std::{
     net::{SocketAddr, TcpStream},
     path::Path,
+    str::FromStr,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -26,10 +27,7 @@ use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
 use tracing::{Level, debug, error, level_filters::LevelFilter};
 use tracing_appender::non_blocking::WorkerGuard;
 
-use crate::{
-    cli::{CliError, YapCli},
-    settings::Settings,
-};
+use crate::{cli::YapCli, serial::DeserializedUsb, settings::Settings};
 
 mod app;
 mod buffer;
@@ -253,48 +251,32 @@ fn run_inner(
     }
 
     if let Some(port) = cli_args.port {
-        let mut usb_split = port.split(':');
-        let first_part = usb_split.next();
-        let second_part = usb_split.next();
-        let third_part = usb_split.next();
+        if port.contains(':') {
+            let usb_query = DeserializedUsb::from_str(&port)?;
+            let port_info = SerialPortInfo {
+                port_name: String::new(),
+                port_type: SerialPortType::UsbPort(UsbPortInfo::from(usb_query)),
+            };
 
-        match (first_part, second_part, third_part) {
-            // not a USB address
-            (Some(_), None, None) => {
-                let port_info = SerialPortInfo {
-                    port_name: port,
-                    port_type: SerialPortType::Unknown,
-                };
-                app.try_cli_connect(port_info, cli_args.baud)?;
-                let terminal = ratatui::init();
-                crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-                let result = app.run(terminal);
-                ratatui::restore();
-                crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
-                result
-            }
-            // assume USB VID:PID[:SERIAL] format
-            (Some(vid_str), Some(pid_str), serial) => {
-                let port_info = SerialPortInfo {
-                    port_name: String::new(),
-                    port_type: SerialPortType::UsbPort(UsbPortInfo {
-                        vid: u16::from_str_radix(vid_str, 16).map_err(CliError::VidParse)?,
-                        pid: u16::from_str_radix(pid_str, 16).map_err(CliError::PidParse)?,
-                        serial_number: serial.map(ToOwned::to_owned),
-
-                        manufacturer: None,
-                        product: None,
-                    }),
-                };
-                app.try_cli_connect(port_info, cli_args.baud)?;
-                let terminal = ratatui::init();
-                crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-                let result = app.run(terminal);
-                ratatui::restore();
-                crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
-                result
-            }
-            _ => Err(color_eyre::eyre::eyre!("Invalid USB address format")),
+            app.try_cli_connect(port_info, cli_args.baud)?;
+            let terminal = ratatui::init();
+            crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+            let result = app.run(terminal);
+            ratatui::restore();
+            crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+            result
+        } else {
+            let port_info = SerialPortInfo {
+                port_name: port,
+                port_type: SerialPortType::Unknown,
+            };
+            app.try_cli_connect(port_info, cli_args.baud)?;
+            let terminal = ratatui::init();
+            crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+            let result = app.run(terminal);
+            ratatui::restore();
+            crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+            result
         }
     } else {
         let terminal = ratatui::init();

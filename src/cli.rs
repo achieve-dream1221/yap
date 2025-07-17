@@ -25,11 +25,6 @@ pub struct YapCli {
     #[clap(short, long)]
     pub print_actions: bool,
 }
-
-#[derive(Debug, thiserror::Error)]
-pub enum CliError {
-    #[error("error parsing USB VID")]
-    VidParse(#[source] ParseIntError),
-    #[error("error parsing USB PID")]
-    PidParse(#[source] ParseIntError),
-}
+// #[derive(Debug, thiserror::Error)]
+// pub enum CliError {
+// }
