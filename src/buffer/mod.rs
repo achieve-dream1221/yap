@@ -32,7 +32,6 @@ use crate::{
         tui::COLOR_RULES_PATH,
     },
     changed, config_adjacent_path,
-    errors::HandleResult,
     settings::Rendering,
     traits::{ByteSuffixCheck, LineHelpers, interleave_by},
     tui::color_rules::{ColorRuleLoadError, ColorRules},
@@ -45,6 +44,9 @@ use crate::buffer::{
 };
 #[cfg(feature = "defmt")]
 use crate::settings::DefmtSupport;
+
+#[cfg(feature = "logging")]
+pub use crate::buffer::logging::LoggingWorkerMissing;
 
 #[cfg(feature = "logging")]
 use crate::settings::Logging;
@@ -1270,7 +1272,7 @@ impl Buffer {
 
     #[cfg(feature = "logging")]
     /// Relog contents in buffer
-    pub fn relog_buffer(&mut self) -> HandleResult<()> {
+    pub fn relog_buffer(&mut self) -> Result<(), LoggingWorkerMissing> {
         use crossbeam::channel::unbounded;
 
         if self.raw.inner.is_empty() {
@@ -1476,8 +1478,12 @@ impl Buffer {
     }
 
     #[cfg(feature = "logging")]
-    pub fn update_logging_settings(&mut self, logging: Logging) {
-        self.log_handle.update_settings(logging).unwrap();
+    pub fn update_logging_settings(
+        &mut self,
+        logging: Logging,
+    ) -> Result<(), LoggingWorkerMissing> {
+        self.log_handle.update_settings(logging)?;
+        Ok(())
     }
     pub fn intentional_disconnect_clear(&mut self) {
         #[cfg(feature = "logging")]

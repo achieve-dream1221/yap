@@ -8,7 +8,6 @@ use tracing::{debug, error};
 
 use crate::{
     app::Event,
-    errors::HandleResult,
     serial::Reconnections,
     settings::{Ignored, PortSettings},
 };
@@ -53,6 +52,16 @@ pub enum PortCommand {
         dtr: bool,
         rts: bool,
     },
+}
+
+type HandleResult<T> = Result<T, SerialWorkerMissing>;
+#[derive(Debug, thiserror::Error)]
+#[error("serial worker rx handle dropped")]
+pub struct SerialWorkerMissing;
+impl<T> From<crossbeam::channel::SendError<T>> for SerialWorkerMissing {
+    fn from(_: crossbeam::channel::SendError<T>) -> Self {
+        Self
+    }
 }
 
 #[derive(Clone)]
@@ -101,14 +110,18 @@ impl SerialHandle {
         handle.request_port_scan()?;
         Ok((handle, worker))
     }
-    pub fn connect(&self, port: &SerialPortInfo, settings: PortSettings) -> HandleResult<()> {
+    pub fn request_connect(
+        &self,
+        port: &SerialPortInfo,
+        settings: PortSettings,
+    ) -> HandleResult<()> {
         self.command_tx.send(SerialWorkerCommand::Connect {
             port: port.to_owned(),
             settings,
         })?;
         Ok(())
     }
-    pub fn cli_connect(
+    pub fn try_connect_now(
         &self,
         port: SerialPortInfo,
         settings: PortSettings,
@@ -125,13 +138,13 @@ impl SerialHandle {
 
         Ok(oneshot_rx)
     }
-    pub fn break_connection(&self) -> HandleResult<()> {
+    pub fn request_break_connection(&self) -> HandleResult<()> {
         self.command_tx.send(SerialWorkerCommand::Disconnect {
             user_wants_break: true,
         })?;
         Ok(())
     }
-    pub fn disconnect(&self) -> HandleResult<()> {
+    pub fn request_disconnect(&self) -> HandleResult<()> {
         self.command_tx.send(SerialWorkerCommand::Disconnect {
             user_wants_break: false,
         })?;

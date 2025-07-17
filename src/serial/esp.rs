@@ -6,7 +6,7 @@ use super::{
     SerialEvent,
     handle::{PortCommand, SerialHandle, SerialWorkerCommand},
 };
-use crate::{app::Event, errors::HandleResult, tui::esp::EspProfile};
+use crate::{app::Event, serial::handle::SerialWorkerMissing, tui::esp::EspProfile};
 
 #[derive(Debug)]
 pub enum EspCommand {
@@ -27,6 +27,8 @@ impl From<EspCommand> for SerialWorkerCommand {
         SerialWorkerCommand::PortCommand(PortCommand::Esp(value))
     }
 }
+
+type HandleResult<T> = Result<T, SerialWorkerMissing>;
 
 impl SerialHandle {
     pub fn esp_restart(&self, restart_type: EspRestartType) -> HandleResult<()> {

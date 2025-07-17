@@ -6,16 +6,23 @@ use std::{
 use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, bounded};
 use tracing::{debug, error, warn};
 
-use crate::errors::HandleResult;
-
 enum CarouselCommand {
     AddEvent(CarouselEvent),
     Shutdown(Sender<()>),
 }
 
-// #[derive(Clone)]
 pub struct CarouselHandle {
     command_tx: Sender<CarouselCommand>,
+}
+
+type HandleResult<T> = Result<T, CarouselWorkerMissing>;
+#[derive(Debug, thiserror::Error)]
+#[error("carousel rx handle dropped")]
+pub struct CarouselWorkerMissing;
+impl<T> From<crossbeam::channel::SendError<T>> for CarouselWorkerMissing {
+    fn from(_: crossbeam::channel::SendError<T>) -> Self {
+        Self
+    }
 }
 
 // impl Drop for CarouselHandle {}
@@ -117,7 +124,7 @@ struct CarouselWorker {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum CarouselError {
+enum CarouselWorkerError {
     #[error("closure returned error")]
     EventTrigger,
     #[error("failed to reply to shutdown request in time")]
@@ -127,7 +134,7 @@ enum CarouselError {
 }
 
 impl CarouselWorker {
-    fn work_loop(&mut self) -> Result<(), CarouselError> {
+    fn work_loop(&mut self) -> Result<(), CarouselWorkerError> {
         let mut sleep_time = Duration::from_secs(5);
         let mut send_error = false;
         loop {
@@ -142,7 +149,7 @@ impl CarouselWorker {
                 Ok(CarouselCommand::Shutdown(shutdown_tx)) => {
                     if shutdown_tx.send(()).is_err() {
                         error!("Failed to reply to shutdown request!");
-                        return Err(CarouselError::ShutdownReply);
+                        return Err(CarouselWorkerError::ShutdownReply);
                     } else {
                         break Ok(());
                     }
@@ -150,7 +157,7 @@ impl CarouselWorker {
                 Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => {
                     warn!("Handle dropped, closing carousel thread!");
-                    return Err(CarouselError::HandleDropped);
+                    return Err(CarouselWorkerError::HandleDropped);
                 }
             };
             let now = Instant::now();
@@ -189,7 +196,7 @@ impl CarouselWorker {
                 });
 
             if send_error {
-                break Err(CarouselError::EventTrigger);
+                break Err(CarouselWorkerError::EventTrigger);
             }
 
             // Removing any expired oneshots

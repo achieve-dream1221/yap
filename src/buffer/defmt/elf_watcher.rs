@@ -11,7 +11,7 @@ use notify::{
 };
 use tracing::{debug, error, info};
 
-use crate::{app::Event, errors::HandleResult};
+use crate::app::Event;
 
 #[derive(Debug)]
 pub enum ElfWatchEvent {
@@ -90,6 +90,16 @@ impl ElfWatchHandle {
             error!("Couldn't send ELF watcher shutdown.");
             Err(())
         }
+    }
+}
+
+type HandleResult<T> = Result<T, ElfWatcherMissing>;
+#[derive(Debug, thiserror::Error)]
+#[error("elf watcher rx handle dropped")]
+pub struct ElfWatcherMissing;
+impl<T> From<crossbeam::channel::SendError<T>> for ElfWatcherMissing {
+    fn from(_: crossbeam::channel::SendError<T>) -> Self {
+        Self
     }
 }
 

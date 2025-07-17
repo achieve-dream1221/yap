@@ -34,7 +34,7 @@ use crate::{
 mod app;
 mod buffer;
 mod cli;
-mod errors;
+
 mod event_carousel;
 mod history;
 mod keybinds;
