@@ -1119,11 +1119,8 @@ impl Buffer {
             return;
         }
 
-        // let _ = std::mem::take(&mut self.lines);
         self.styled_lines.rx.clear();
 
-        // Taking these variables out of `self` temporarily to allow running &mut self methods while holding
-        // references to these.
         let user_timestamps: Vec<_> = self
             .styled_lines
             .tx
@@ -1150,6 +1147,7 @@ impl Buffer {
             .collect();
         let orig_buf_len = self.raw.inner.len();
         let timestamps_len = self.raw.buffer_timestamps.len();
+        // Replacing with a blank copy so we can call the same `&mut self` methods.
         let rx_buffer = std::mem::replace(
             &mut self.raw,
             RawBuffer::with_capacities(orig_buf_len, timestamps_len),
@@ -1268,10 +1266,6 @@ impl Buffer {
             );
         });
 
-        // Returning variables we stole back to self.
-        // (excluding the raw buffer since that got reconsumed gradually back into self)
-        // self.raw.buffer_timestamps = rx_timestamps;
-        // self.styled_lines.tx = user_lines;
         self.scroll_by(0);
     }
 
@@ -1301,12 +1295,9 @@ impl Buffer {
             })
             .collect();
         let orig_buf_len = self.raw.inner.len();
-        let timestamps_len = self.raw.buffer_timestamps.len();
-        let user_echo = self.rendering.echo_user_input;
 
-        // No lines to append to.
+        // Set to default values.
         self.styled_lines.last_rx_was_complete = true;
-
         #[cfg(feature = "defmt")]
         {
             self.defmt_raw_malformed = false;

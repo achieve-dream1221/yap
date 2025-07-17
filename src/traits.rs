@@ -2,14 +2,13 @@
 
 use std::{borrow::Cow, collections::BTreeMap, ops::Range};
 
+use crate::buffer::{HEX_UPPER, LineEnding};
 use bstr::ByteVec;
 use itertools::Itertools;
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
 };
-
-use crate::buffer::{HEX_UPPER, LineEnding};
 
 // use crate::tui::buffer::LineEnding;
 
@@ -163,7 +162,6 @@ impl<'a> LineHelpers<'a> for Line<'a> {
                 }
                 line_char_index += c.len_utf8();
             });
-        // debug!("took {:?} to see whats fuckd", now.elapsed());
         // let now2 = Instant::now();
         let dark_gray = Style::new().dark_gray();
 
@@ -172,7 +170,9 @@ impl<'a> LineHelpers<'a> for Line<'a> {
             let corrected = index.checked_add_signed(offset).expect("overflow!");
             let char_len = char.len_utf8();
 
+            // let now = Instant::now();
             self.remove_slice(corrected..corrected + char_len);
+            // debug!("took {:?} to scream", now.elapsed());
             let replacement_len = match char {
                 // TODO handle tab width properly?
                 '\t' => {
@@ -534,12 +534,11 @@ impl<'a> LineMutator<'a> for Line<'a> {
         // #[cfg(debug_assertions)]
         // debug!("Removing slice {:?}", range);
 
-        let mut new_spans = Vec::with_capacity(self.spans.len());
-        let old_spans = std::mem::take(&mut self.spans);
-
         let mut current = 0;
 
-        for span in old_spans.into_iter() {
+        let mut held_output = None;
+
+        for (index, span) in self.spans.iter_mut().enumerate() {
             let span_len = span.content.len();
             let span_start = current;
             let span_end = current + span_len;
@@ -552,45 +551,72 @@ impl<'a> LineMutator<'a> for Line<'a> {
                     // This span is at least partly in the removal range.
                     let offset_start = overlap_start - span_start;
                     let offset_end = overlap_end - span_start;
-                    let orig_style = span.style;
 
                     // Doubled up to give borrow checker more detailed info.
-                    match span.content {
+                    match &span.content {
                         Cow::Borrowed(borrowed) => {
                             let (pre, _mid, post) =
                                 split_span_content(borrowed, offset_start..offset_end);
 
-                            if !pre.is_empty() {
-                                new_spans.push(Span::styled(Cow::Borrowed(pre), orig_style));
-                            }
-                            if !post.is_empty() {
-                                new_spans.push(Span::styled(Cow::Borrowed(post), orig_style));
+                            match (pre.is_empty(), post.is_empty()) {
+                                // empty! easy to handle
+                                (true, true) => span.content = Cow::Borrowed(""),
+                                // pre has content
+                                (false, true) => {
+                                    span.content = Cow::Borrowed(pre);
+                                }
+                                // post has content!
+                                // but this means we can leave now, as nothing else can
+                                // be cut after it
+                                (true, false) => {
+                                    span.content = Cow::Borrowed(post);
+                                    break;
+                                }
+                                // both had content!
+                                // but this means we can just leave early!
+                                (false, false) => {
+                                    span.content = Cow::Borrowed(pre);
+                                    held_output = Some((index + 1, Span::styled(post, span.style)));
+                                    break;
+                                }
                             }
                         }
                         Cow::Owned(owned) => {
                             let (pre, _mid, post) =
                                 split_span_content(&owned, offset_start..offset_end);
 
-                            if !pre.is_empty() {
-                                new_spans
-                                    .push(Span::styled(Cow::Owned(pre.to_owned()), orig_style));
-                            }
-                            if !post.is_empty() {
-                                new_spans
-                                    .push(Span::styled(Cow::Owned(post.to_owned()), orig_style));
+                            match (pre.is_empty(), post.is_empty()) {
+                                // empty! easy to handle
+                                (true, true) => span.content = Cow::Borrowed(""),
+                                // pre has content
+                                (false, true) => {
+                                    span.content = Cow::Owned(pre.to_owned());
+                                }
+                                // post has content!
+                                (true, false) => {
+                                    span.content = Cow::Owned(post.to_owned());
+                                    break;
+                                }
+                                // both had content!!
+                                (false, false) => {
+                                    held_output = Some((
+                                        index + 1,
+                                        Span::styled(post.to_owned(), span.style),
+                                    ));
+                                    span.content = Cow::Owned(pre.to_owned());
+                                    break;
+                                }
                             }
                         }
                     }
-                } else {
-                    new_spans.push(span);
                 }
-            } else {
-                new_spans.push(span);
             }
             current += span_len;
         }
-        // new_spans.shrink_to_fit();
-        self.spans = new_spans;
+        if let Some((index, retained_span)) = held_output {
+            self.spans.insert(index, retained_span);
+        }
+        // self.spans.retain(|s| !s.content.is_empty());
     }
 }
 
