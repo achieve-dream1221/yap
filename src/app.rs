@@ -38,7 +38,7 @@ use struct_table::{ArrowKey, StructTable};
 use strum::{VariantArray, VariantNames};
 use takeable::Takeable;
 
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use tui_big_text::{BigText, PixelSize};
 use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 
@@ -525,11 +525,26 @@ impl App {
             // A channel is ready!
             let start2 = Instant::now();
 
-            match self.serial_buf_rx.try_recv() {
-                Ok(buf) => self.handle_event(Event::RxBuffer(buf), &mut terminal)?,
-                Err(crossbeam::channel::TryRecvError::Empty) => (),
-                Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                    return Err(NoSenders::SerialRx)?;
+            // If we're on our serial terminal screen...
+            if matches!(&self.menu, Menu::Terminal(_)) {
+                // Normal byte-recieving behavior.
+                match self.serial_buf_rx.try_recv() {
+                    Ok(buf) => self.handle_event(Event::RxBuffer(buf), &mut terminal)?,
+                    Err(crossbeam::channel::TryRecvError::Empty) => (),
+                    Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                        return Err(NoSenders::SerialRx)?;
+                    }
+                }
+            } else {
+                // Otherwise, discard whatever we get.
+                let mut bytes_discarded = 0;
+                while let Ok(vec_to_discard) = self.serial_buf_rx.try_recv() {
+                    bytes_discarded += vec_to_discard.len();
+                }
+                if bytes_discarded > 0 {
+                    warn!(
+                        "RX buffer(s) received on port selection screen, discarding {bytes_discarded} bytes!"
+                    );
                 }
             }
 
