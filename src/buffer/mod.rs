@@ -83,9 +83,9 @@ pub struct BufferState {
 }
 
 #[derive(Debug, Clone)]
-struct RangeSlice<'a> {
-    range: Range<usize>,
-    slice: &'a [u8],
+pub struct RangeSlice<'a> {
+    pub range: Range<usize>,
+    pub slice: &'a [u8],
 }
 
 impl<'a> AsRef<[u8]> for RangeSlice<'a> {
@@ -142,6 +142,17 @@ impl<'a> RangeSlice<'a> {
             range: offset..offset + child.len(),
             slice: child,
         }
+    }
+}
+
+impl<'a> std::fmt::Display for RangeSlice<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{start}..{end}",
+            start = self.range.start,
+            end = self.range.end + 1
+        )
     }
 }
 
@@ -547,13 +558,11 @@ impl StyledLines {
                     }
                 };
 
-                color_rules
-                    .apply_onto(truncated, line, lossy_flavor)
-                    .map(|mut l| {
-                        l.remove_unsavory_chars(kit.render.rendering.escape_unprintable_bytes);
-                        let line: Line<'static> = l.new_owned();
-                        BufLine::port_text_line(line, kit, line_ending)
-                    })
+                color_rules.apply_onto(truncated, line).map(|mut l| {
+                    l.remove_unsavory_chars(kit.render.rendering.escape_unprintable_bytes);
+                    let line: Line<'static> = l.new_owned();
+                    BufLine::port_text_line(line, kit, line_ending)
+                })
             }
 
             if let Some(new_bufline) = slice_as_port_text(kit_for_new, color_rules, line_ending) {
@@ -603,11 +612,7 @@ impl StyledLines {
             let mut message_line = Line::default();
             message_line.push_span(Span::raw(line));
 
-            if let Some(mut line) = color_rules.apply_onto(
-                line.as_bytes(),
-                message_line,
-                LossyFlavor::ReplacementChar(None),
-            ) {
+            if let Some(mut line) = color_rules.apply_onto(line.as_bytes(), message_line) {
                 line.remove_unsavory_chars(kit.render.rendering.escape_unprintable_bytes);
                 let owned_line = line.new_owned();
 

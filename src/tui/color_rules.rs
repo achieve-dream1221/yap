@@ -1,9 +1,7 @@
 use serde_with::{DisplayFromStr, TryFromInto};
 
-use std::{cmp::Ordering, ops::Range, path::Path};
+use std::{ops::Range, path::Path};
 
-use ansi_to_tui::LossyFlavor;
-use bstr::ByteSlice;
 use compact_str::CompactString;
 use fs_err as fs;
 use memchr::memmem::Finder;
@@ -13,9 +11,12 @@ use ratatui::{
 };
 use regex::bytes::Regex;
 use serde_with::serde_as;
-use tracing::info;
+use tracing::{debug, info};
 
-use crate::traits::{LineHelpers, LineMutator};
+use crate::{
+    buffer::RangeSlice,
+    traits::{LineHelpers, LineMutator},
+};
 
 #[derive(Debug, Default)]
 pub struct ColorRules {
@@ -164,12 +165,11 @@ impl ColorRules {
         })
     }
 
-    pub fn apply_onto<'a>(
-        &self,
-        original: &[u8],
-        mut line: Line<'a>,
-        lossy_flavor: LossyFlavor,
-    ) -> Option<Line<'a>> {
+    pub fn apply_onto<'a>(&self, original: &'a [u8], mut line: Line<'a>) -> Option<Line<'a>> {
+        if line.is_empty() {
+            return None;
+        }
+        // tracing::debug!("{}", original.len());
         // let now = std::time::Instant::now();
 
         struct ByteVisiblityTracker {
@@ -184,37 +184,47 @@ impl ColorRules {
                 let mut new_start = None;
                 let mut new_end = None;
 
-                let Range { start, end } = in_original;
+                let Range {
+                    start: req_start,
+                    end: req_end,
+                } = in_original;
 
                 for append in &self.records {
                     match append {
-                        Bytes::Visible(len) => {
+                        Bytes::Untouched(len) => {
+                            assert_ne!(*len, 0, "can't have 0 length visible slice");
                             let next_orig = orig_idx + len;
                             let next_rendered = rendered_idx + len;
 
                             // Is start inside this block?
-                            if new_start.is_none() && start >= orig_idx && start < next_orig {
-                                new_start = Some(rendered_idx + (start - orig_idx));
+                            if new_start.is_none() && req_start >= orig_idx && req_start < next_orig
+                            {
+                                new_start = Some(rendered_idx + (req_start - orig_idx));
                             }
                             // Is end inside this block?
-                            if new_end.is_none() && end > orig_idx && end <= next_orig {
-                                new_end = Some(rendered_idx + (end - orig_idx));
+                            if new_end.is_none() && req_end > orig_idx && req_end <= next_orig {
+                                new_end = Some(rendered_idx + (req_end - orig_idx));
                             }
 
                             orig_idx = next_orig;
                             rendered_idx = next_rendered;
                         }
-                        Bytes::Replaced { original, new } => {
-                            let next_orig = orig_idx + original;
-                            let next_rendered = rendered_idx + new;
+                        Bytes::Replaced {
+                            original_len,
+                            new_len,
+                        } => {
+                            assert_ne!(*original_len, 0, "can't have 0 length redacted slice");
+                            let next_orig = orig_idx + original_len;
+                            let next_rendered = rendered_idx + new_len;
 
-                            // If the start is buried in replaced area, snap to end of replacement
-                            if new_start.is_none() && start >= orig_idx && start < next_orig {
-                                new_start = Some(rendered_idx + (*new).saturating_sub(1));
+                            // If the start is buried in replaced area, use beginning of replacement
+                            if new_start.is_none() && req_start >= orig_idx && req_start < next_orig
+                            {
+                                new_start = Some(rendered_idx);
                             }
                             // If the end is buried in replaced area, snap to end of replacement
-                            if new_end.is_none() && end > orig_idx && end <= next_orig {
-                                new_end = Some(rendered_idx + (*new).saturating_sub(0));
+                            if new_end.is_none() && req_end > orig_idx && req_end <= next_orig {
+                                new_end = Some(rendered_idx + *new_len);
                             }
 
                             orig_idx = next_orig;
@@ -228,195 +238,92 @@ impl ColorRules {
                     }
                 }
 
-                // TODO verify this?
-                // If not found, might be after all appended blocks.
-                if new_start.is_none() {
-                    new_start = Some(rendered_idx);
-                }
-                if new_end.is_none() {
-                    new_end = Some(rendered_idx);
-                }
+                // if new_start.is_none() && new_end.is_none() {
+                //     break;
+                // }
 
-                let start = new_start.unwrap_or(0);
-                let end = new_end.unwrap_or(start);
+                let (Some(start), Some(end)) = (new_start, new_end) else {
+                    panic!(
+                        "no bound found for given range? len: {in_original:?} -> {new_start:?}, {new_end:?}"
+                    );
+                };
 
-                if start <= end { Some(start..end) } else { None }
+                if start < end { Some(start..end) } else { None }
             }
 
-            fn visible_text(&mut self, text: &str, unconsumed: &[u8], cursor: &mut usize) {
-                let str_index = unconsumed
-                    .find(text)
-                    .expect("str not found within parent slice?");
-
-                if str_index > 0 {
-                    self.records.push(Bytes::Replaced {
-                        original: str_index,
-                        new: 0,
-                    });
-                }
-
-                self.records.push(Bytes::Visible(text.len()));
-
-                *cursor += text.len() + str_index;
+            fn push_untouched(&mut self, len: usize) {
+                self.records.push(Bytes::Untouched(len));
             }
-            fn replaced(&mut self, original: usize, new: usize, cursor: &mut usize) {
-                self.records.push(Bytes::Replaced { original, new });
-                *cursor += original;
+            fn push_replaced(&mut self, original_len: usize, new_len: usize) {
+                self.records.push(Bytes::Replaced {
+                    original_len,
+                    new_len,
+                });
             }
             // Might make more sense to keep the existing removed_ranges logic,
             // since this would break AXM rules with the visibility tracker in the iterator
-            // /// Amend existing records to set this range in original as hidden
-            // fn hide_visible(&mut self, range: Range<usize>) {
-            //     let mut passed_len = 0;
-            //     let (index, visible) = self
-            //         .records
-            //         .iter()
-            //         .find_position(|a| {
-            //             passed_len += a.len();
-            //             passed_len >= range.start
-            //         })
-            //         .expect("failed to find existing visible record!");
-
-            //     let (pre, mid, post): (Option<Append>, Option<Append>, Option<Append>) = {
-            //         let Append::Visible(len) = &visible else {
-            //             panic!("hide_visible can only operate on visible blocks");
-            //         };
-            //         let pre_len = range.start - (passed_len - visible.len());
-            //         let mid_len = (range.end - range.start).min(*len - pre_len);
-            //         let post_len = len - pre_len - mid_len;
-            //         let pre = if pre_len > 0 {
-            //             Some(Append::Visible(pre_len))
-            //         } else {
-            //             None
-            //         };
-            //         let mid = if mid_len > 0 {
-            //             Some(Append::Replaced {
-            //                 original: mid_len,
-            //                 new: 0,
-            //             })
-            //         } else {
-            //             None
-            //         };
-            //         let post = if post_len > 0 {
-            //             Some(Append::Visible(post_len))
-            //         } else {
-            //             None
-            //         };
-            //         (pre, mid, post)
-            //     };
-
-            //     self.records.splice(
-            //         index..index + 1,
-            //         [pre, mid, post].into_iter().filter_map(|s| s),
-            //     );
-            // }
+            // fn hide_visible(&mut self, range: Range<usize>)
         }
 
         let mut visibility = ByteVisiblityTracker {
             records: Vec::with_capacity(line.spans.len()),
         };
+        #[derive(Debug)]
         enum Bytes {
-            Visible(usize),
-            Replaced { original: usize, new: usize },
+            Untouched(usize),
+            Replaced { original_len: usize, new_len: usize },
         }
-        // impl Bytes {
-        //     fn len(&self) -> usize {
-        //         match self {
-        //             Bytes::Visible(len) => *len,
-        //             Bytes::Replaced { original, .. } => *original,
-        //         }
-        //     }
-        // }
-
-        fn determine_if_visible(span_a: &str, span_b: &str, unconsumed: &[u8]) -> bool {
-            let span_a_index = unconsumed.find(span_a.as_bytes());
-
-            match span_a_index {
-                // must be an ansi_to_tui replacement,
-                // char doesnt exist in slice.
-                None => false,
-                Some(a_idx) => {
-                    let span_b_index = unconsumed.find(span_b.as_bytes());
-                    match span_b_index {
-                        // this one is likely a part of the original data
-                        // since we were able to find it in the original slice,
-                        // but the upcoming span likely isn't.
-                        None => true,
-                        Some(b_idx) => {
-                            match a_idx.cmp(&b_idx) {
-                                // Replacement string was not added by us!
-                                // a_idx existing in original before b_idx means
-                                Ordering::Less | Ordering::Equal => true,
-                                // confirmed to be an ansi_to_tui replacement,
-                                // since another was found after content we haven't gotten to yet
-                                Ordering::Greater => false,
-                            }
-                        }
-                    }
+        impl Bytes {
+            fn original_len(&self) -> usize {
+                match self {
+                    Bytes::Untouched(len) => *len,
+                    Bytes::Replaced { original_len, .. } => *original_len,
                 }
             }
         }
 
         let line_len: usize = line.iter().map(|s| s.content.len()).sum();
-        let mut cursor = 0;
-        if line.spans.len() == 1 {
-            let content = &line.spans[0].content;
-            if let Some(_content_idx) = original.find(content.as_bytes()) {
-                visibility.visible_text(content.as_ref(), original, &mut cursor);
-            }
-        } else {
-            for spans in line.spans.windows(2) {
-                let unconsumed = &original[cursor..];
 
-                let [span_a, span_b] = spans else {
-                    unreachable!();
-                };
+        let mut last_end = 0;
+        let mut queued_replacement = 0;
+        for span in line.spans.iter() {
+            let orig_ptr_range = original.as_ptr_range();
 
-                match span_a.content.as_ref() {
-                    // could've been added by ansi_to_tui during escaping, uncertain
-                    maybe_replaced @ "�"
-                        if matches!(lossy_flavor, LossyFlavor::ReplacementChar(_)) =>
-                    {
-                        if determine_if_visible(&span_a.content, &span_b.content, unconsumed) {
-                            visibility.visible_text(&span_a.content, unconsumed, &mut cursor);
-                        } else {
-                            let utf8_chunk = unconsumed.utf8_chunks().next().unwrap();
-                            visibility.replaced(utf8_chunk.invalid().len(), maybe_replaced.len(), &mut cursor);
-                        }
-                    }
-                    // could've been added by ansi_to_tui during escaping, uncertain
-                    maybe_escaped
-                        if matches!(lossy_flavor, LossyFlavor::EscapedBytes(_))
-                            && maybe_escaped.starts_with("\\x")
-                            // && maybe_escaped.len() == 4
-                            // && maybe_escaped[2..]
-                            // .chars()
-                            // .all(|c| c.is_ascii_hexdigit() && c.is_uppercase())
-                            =>
-                    {
-                        if determine_if_visible(&span_a.content, &span_b.content, unconsumed) {
-                            visibility.visible_text(&span_a.content, unconsumed, &mut cursor);
-                        } else {
-                            let utf8_chunk = unconsumed.utf8_chunks().next().unwrap();
-                            visibility.replaced(
-                                utf8_chunk.invalid().len(),
-                                maybe_escaped.len(),
-                                &mut cursor,
-                            );
-                        }
-                    }
+            let span_bytes = span.content.as_bytes();
 
-                    exists_within_orig => {
-                        visibility.visible_text(exists_within_orig, unconsumed, &mut cursor)
-                    }
+            let span_within_original = orig_ptr_range.contains(&span_bytes.as_ptr());
+
+            if span_within_original {
+                let RangeSlice { range, .. } =
+                    unsafe { RangeSlice::from_parent_and_child(original, span_bytes) };
+
+                if range.start > last_end {
+                    visibility.push_replaced(range.start - last_end, queued_replacement);
+                    queued_replacement = 0;
                 }
+                visibility.push_untouched(span_bytes.len());
+                last_end = range.end;
+            } else {
+                queued_replacement += span_bytes.len();
             }
         }
 
+        if last_end < original.len() {
+            visibility.push_replaced(original.len() - last_end, 0);
+        }
+
+        assert_eq!(
+            visibility
+                .records
+                .iter()
+                .map(|b| b.original_len())
+                .sum::<usize>(),
+            original.len(),
+            "every byte must be accounted for"
+        );
+
         // debug!("indexing slice took {:?}", now.elapsed());
         // let now2 = Instant::now();
-
-        // let rope = builder.finish();
 
         // For style_all_spans, we don't care -- just color the whole line.
         // For style_slice, we use byte_to_char to map the matched byte span to the rendered string indices.
