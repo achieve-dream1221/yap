@@ -349,7 +349,7 @@ impl App {
 
         let mut user_input = UserInput::default();
 
-        let saved_baud_rate = settings.last_port_settings.baud_rate;
+        let saved_baud_rate = settings.serial.baud_rate;
         let selected_baud_index = COMMON_BAUD
             .iter()
             .position(|b| *b == saved_baud_rate)
@@ -366,7 +366,7 @@ impl App {
         let (serial_handle, serial_thread) = SerialHandle::build(
             event_tx.clone(),
             serial_buf_tx,
-            settings.last_port_settings.clone(),
+            settings.serial.clone(),
             settings.ignored.clone(),
         )
         .expect("Failed to build serial worker!");
@@ -382,7 +382,7 @@ impl App {
             Duration::from_secs(1),
         )?;
 
-        let line_ending = settings.last_port_settings.rx_line_ending.as_bytes();
+        let line_ending = settings.serial.rx_line_ending.as_bytes();
 
         #[cfg(feature = "defmt")]
         let mut defmt_helpers = DefmtHelpers::build(
@@ -679,7 +679,7 @@ impl App {
                         self.notifs.notify_str(text, Color::Red);
                     }
                     SerialDisconnectReason::Error(error) => {
-                        let reconnect_text = match &self.settings.last_port_settings.reconnections {
+                        let reconnect_text = match &self.settings.serial.reconnections {
                             Reconnections::Disabled => "Not attempting to reconnect.",
                             Reconnections::LooseChecks => "Attempting to reconnect (loose checks).",
                             Reconnections::StrictChecks => {
@@ -867,11 +867,10 @@ impl App {
             (None, _) => (line![span!(italic; "{macro_tag}")], Color::Green),
         };
 
-        let default_macro_line_ending =
-            self.settings.last_port_settings.macro_line_ending.as_bytes(
-                &self.settings.last_port_settings.rx_line_ending,
-                &self.settings.last_port_settings.tx_line_ending,
-            );
+        let default_macro_line_ending = self.settings.serial.macro_line_ending.as_bytes(
+            &self.settings.serial.rx_line_ending,
+            &self.settings.serial.tx_line_ending,
+        );
 
         let macro_line_ending = if let Some(line_ending) = &macro_content.escaped_line_ending {
             Cow::Owned(Vec::unescape_bytes(line_ending))
@@ -1850,7 +1849,7 @@ impl App {
             }
             Some(Popup::SettingsMenu(SettingsMenu::SerialPort)) => {
                 self.scratch
-                    .last_port_settings
+                    .serial
                     .handle_input(ArrowKey::Left, self.get_corrected_popup_index().unwrap())
                     .unwrap();
             }
@@ -1955,7 +1954,7 @@ impl App {
             }
             Some(Popup::SettingsMenu(SettingsMenu::SerialPort)) => {
                 self.scratch
-                    .last_port_settings
+                    .serial
                     .handle_input(ArrowKey::Right, self.get_corrected_popup_index().unwrap())
                     .unwrap();
             }
@@ -2048,12 +2047,12 @@ impl App {
             }
             Some(Popup::ErrorMessage(_)) | Some(Popup::CurrentKeybinds) => self.dismiss_popup(),
             Some(Popup::SettingsMenu(SettingsMenu::SerialPort)) => {
-                self.settings.last_port_settings = self.scratch.last_port_settings.clone();
+                self.settings.serial = self.scratch.serial.clone();
                 self.buffer
-                    .update_line_ending(self.scratch.last_port_settings.rx_line_ending.as_bytes());
+                    .update_line_ending(self.scratch.serial.rx_line_ending.as_bytes());
 
                 self.serial
-                    .update_settings(self.scratch.last_port_settings.clone())
+                    .update_settings(self.scratch.serial.clone())
                     .unwrap();
 
                 if matches!(self.menu, Menu::Terminal(_)) {
@@ -2314,13 +2313,13 @@ impl App {
                             COMMON_BAUD[self.baud_selection_state.current_index]
                         };
 
-                    self.scratch.last_port_settings.baud_rate = baud_rate;
+                    self.scratch.serial.baud_rate = baud_rate;
 
-                    self.settings.last_port_settings = self.scratch.last_port_settings.clone();
+                    self.settings.serial = self.scratch.serial.clone();
                     self.settings.save().unwrap();
 
                     self.serial
-                        .connect(info, self.scratch.last_port_settings.clone())
+                        .connect(info, self.scratch.serial.clone())
                         .unwrap();
 
                     self.menu = Menu::Terminal(TerminalPrompt::None);
@@ -2335,9 +2334,8 @@ impl App {
                     let user_input = self.user_input.input_box.value();
 
                     if self.settings.behavior.fake_shell {
-                        let user_le = &self.settings.last_port_settings.tx_line_ending;
-                        let user_le_bytes =
-                            user_le.as_bytes(&self.settings.last_port_settings.rx_line_ending);
+                        let user_le = &self.settings.serial.tx_line_ending;
+                        let user_le_bytes = user_le.as_bytes(&self.settings.serial.rx_line_ending);
                         self.serial
                             .send_str(
                                 user_input,
@@ -3066,7 +3064,7 @@ impl App {
                 self.popup_table_state.select_first_column();
 
                 frame.render_stateful_widget(
-                    self.scratch.last_port_settings.as_table(),
+                    self.scratch.serial.as_table(),
                     settings_area,
                     &mut self.popup_table_state,
                 );
@@ -4050,7 +4048,7 @@ impl App {
 
         match prompt {
             TerminalPrompt::DisconnectPrompt => {
-                let reconns_paused = if self.settings.last_port_settings.reconnections.allowed()
+                let reconns_paused = if self.settings.serial.reconnections.allowed()
                     && port_state.is_premature_disconnect()
                 {
                     Some("(Auto-reconnections paused while open)")
@@ -4332,7 +4330,7 @@ impl App {
     ) -> color_eyre::Result<()> {
         let connect_result_rx =
             self.serial
-                .cli_connect(port_info, self.settings.last_port_settings.clone(), baud)?;
+                .cli_connect(port_info, self.settings.serial.clone(), baud)?;
 
         match connect_result_rx.recv_timeout(Duration::from_secs(15)) {
             // Got a connection result, if it's Ok(()), we'll keep going, otherwise it'll bail early.

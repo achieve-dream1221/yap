@@ -53,16 +53,14 @@ const DEFAULT_LOG_SOCKET: SocketAddr = {
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
 #[derivative(Default)]
 pub struct Settings {
-    #[serde(skip)]
-    pub path: PathBuf,
+    #[serde(default)]
+    pub serial: PortSettings,
     #[serde(default)]
     pub rendering: Rendering,
     #[serde(default)]
     pub behavior: Behavior,
     #[serde(default)]
     pub misc: Misc,
-    #[serde(default)]
-    pub last_port_settings: PortSettings,
     #[cfg(feature = "espflash")]
     #[serde(default)]
     pub espflash: Espflash,
@@ -72,8 +70,12 @@ pub struct Settings {
     #[cfg(feature = "logging")]
     #[serde(default)]
     pub logging: Logging,
+
     #[serde(default)]
     pub ignored: Ignored,
+
+    #[serde(skip)]
+    pub path: PathBuf,
 }
 
 #[serde_as]
