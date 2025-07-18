@@ -476,9 +476,7 @@ impl EspFlashHelper {
                 let table = Table::new(
                     rows,
                     [Constraint::Percentage(45), Constraint::Percentage(55)],
-                )
-                .column_highlight_style(Style::new())
-                .row_highlight_style(Style::new());
+                );
 
                 self.popup = Some(EspPopup::DeviceInfo(table));
             }
@@ -698,8 +696,7 @@ impl EspFlashHelper {
         }
     }
     pub fn profiles_table(&self) -> Table {
-        let selected_row_style = Style::new().reversed();
-        let first_column_style = Style::new().reset();
+        let cell_highlight_style = Style::new().reversed().italic();
 
         let rows: Vec<_> = self
             .profiles()
@@ -722,8 +719,7 @@ impl EspFlashHelper {
             rows,
             [Constraint::Percentage(60), Constraint::Percentage(40)],
         )
-        .column_highlight_style(first_column_style)
-        .row_highlight_style(selected_row_style)
+        .cell_highlight_style(cell_highlight_style)
     }
     pub fn profiles(&self) -> impl DoubleEndedIterator<Item = (&str, bool, bool)> {
         let elf_iter = self.elfs.iter().map(|e| (e.name.as_str(), true, e.ram));
@@ -778,8 +774,7 @@ pub fn espflash_buttons(
     unchecked_bootloader: bool,
     awaiting_erase_confirm: bool,
 ) -> Table<'static> {
-    let selected_row_style = Style::new().reversed();
-    let first_column_style = Style::new().reset();
+    let cell_highlight_style = Style::new().reversed().italic();
 
     let rows: Vec<Row> = vec![
         Row::new([
@@ -817,6 +812,5 @@ pub fn espflash_buttons(
         rows,
         [Constraint::Percentage(60), Constraint::Percentage(40)],
     )
-    .column_highlight_style(first_column_style)
-    .row_highlight_style(selected_row_style)
+    .cell_highlight_style(cell_highlight_style)
 }

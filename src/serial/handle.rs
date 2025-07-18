@@ -35,6 +35,7 @@ pub enum SerialWorkerCommand {
     Disconnect {
         user_wants_break: bool,
     },
+    NewIgnored(Ignored),
     Shutdown(Sender<()>),
 }
 
@@ -208,6 +209,12 @@ impl SerialHandle {
     pub fn request_reconnect(&self, strictness_opt: Option<Reconnections>) -> HandleResult<()> {
         self.command_tx
             .send(SerialWorkerCommand::RequestReconnect(strictness_opt))?;
+        Ok(())
+    }
+    /// Update the list of devices to not show in the Port Selection screen.
+    pub fn new_ignored(&self, ignored: Ignored) -> HandleResult<()> {
+        self.command_tx
+            .send(SerialWorkerCommand::NewIgnored(ignored))?;
         Ok(())
     }
 

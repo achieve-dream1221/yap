@@ -33,7 +33,7 @@ use ratatui::{
 #[cfg(feature = "defmt")]
 use ratatui_explorer::FileExplorer;
 use ratatui_macros::{horizontal, line, span, vertical};
-use serialport::{SerialPortInfo, SerialPortType};
+use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
 use struct_table::{ArrowKey, StructTable};
 use strum::{VariantArray, VariantNames};
 use takeable::Takeable;
@@ -57,7 +57,8 @@ use crate::{
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
     notifications::{EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notifications, PAUSE_TIME},
     serial::{
-        PrintablePortInfo, ReconnectType, Reconnections, SerialDisconnectReason, SerialEvent,
+        DeserializedUsb, PrintablePortInfo, ReconnectType, Reconnections, SerialDisconnectReason,
+        SerialEvent,
         handle::SerialHandle,
         worker::{InnerPortStatus, MOCK_PORT_NAME},
     },
@@ -66,7 +67,10 @@ use crate::{
     tui::{
         centered_rect_size,
         defmt::DefmtRecentError,
-        prompts::{AttemptReconnectPrompt, DisconnectPrompt, PromptKeybind, PromptTable},
+        prompts::{
+            AttemptReconnectPrompt, DisconnectPrompt, IgnorePortByNamePrompt,
+            IgnoreUsbDevicePrompt, PromptKeybind, PromptTable,
+        },
         show_keybinds,
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
@@ -87,7 +91,7 @@ use crate::buffer::defmt::elf_watcher::ElfWatchEvent;
 use crate::{
     config_adjacent_path,
     macros::{MacroNameTag, MacroNotFound, Macros},
-    tui::ALWAYS_PRESENT_SELECTOR_COUNT,
+    tui::POPUP_MENU_SELECTOR_COUNT,
 };
 
 #[cfg(feature = "macros")]
@@ -164,39 +168,10 @@ impl From<Tick> for Event {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
-    PortSelection(PortSelectionElement),
-    Terminal(TerminalPrompt),
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalPrompt {
-    #[default]
-    None,
-    DisconnectPrompt,
-    AttemptReconnectPrompt,
-}
-
-impl From<TerminalPrompt> for Menu {
-    fn from(value: TerminalPrompt) -> Self {
-        Self::Terminal(value)
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, EnumRotate)]
-pub enum PortSelectionElement {
-    #[default]
-    Ports,
-    BaudSelection,
-    CustomBaud,
-    MoreOptions,
-}
-
-impl From<PortSelectionElement> for Menu {
-    fn from(value: PortSelectionElement) -> Self {
-        Self::PortSelection(value)
-    }
+    PortSelection,
+    Terminal,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -244,6 +219,12 @@ enum Popup {
     DefmtNewElf(FileExplorer),
     #[cfg(feature = "defmt")]
     DefmtRecentElf,
+
+    DisconnectPrompt,
+    AttemptReconnectPrompt,
+    IgnoreByUsb(String, UsbPortInfo),
+    IgnoreByName(String),
+    ConnectionFailed(String),
 }
 
 #[cfg(any(feature = "espflash", feature = "macros"))]
@@ -285,20 +266,18 @@ enum NoSenders {
 pub struct App {
     state: RunningState,
     menu: Menu,
+    port_selection_scroll: usize,
 
     event_tx: Sender<Event>,
     event_rx: Receiver<Event>,
     serial_buf_rx: Receiver<Vec<u8>>,
 
-    table_state: TableState,
     baud_selection_state: SingleLineSelectorState,
+
     popup: Option<Popup>,
     popup_menu_scroll: usize,
     popup_hint_scroll: i32,
-    popup_table_state: TableState,
-    // popup_category_selector_state: SingleLineSelectorState,
-    // popup_scrollbar_state: ScrollbarState,
-    // popup_single_line_state: SingleLineSelectorState,
+
     notifs: Notifications,
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
@@ -370,7 +349,7 @@ impl App {
             event_tx.clone(),
             serial_buf_tx,
             settings.serial.clone(),
-            settings.ignored.clone(),
+            settings.ignored_devices.clone(),
         )
         .expect("Failed to build serial worker!");
 
@@ -444,13 +423,12 @@ impl App {
         // debug!("{buffer:#?}");
         Ok(Self {
             state: RunningState::Running,
-            menu: Menu::PortSelection(PortSelectionElement::Ports),
+            menu: Menu::PortSelection,
+            port_selection_scroll: 0,
             popup: None,
             popup_hint_scroll: -2,
-            table_state: TableState::new().with_selected(Some(0)),
             baud_selection_state: SingleLineSelectorState::new().with_selected(selected_baud_index),
             popup_menu_scroll: 0,
-            popup_table_state: TableState::new(),
             // popup_category_selector_state: SingleLineSelectorState::new(),
             // popup_scrollbar_state: ScrollbarState::default(),
             // popup_single_line_state: SingleLineSelectorState::new(),
@@ -526,7 +504,7 @@ impl App {
             let start2 = Instant::now();
 
             // If we're on our serial terminal screen...
-            if matches!(&self.menu, Menu::Terminal(_)) {
+            if self.menu == Menu::Terminal {
                 // Normal byte-recieving behavior.
                 match self.serial_buf_rx.try_recv() {
                     Ok(buf) => self.handle_event(Event::RxBuffer(buf), &mut terminal)?,
@@ -665,8 +643,8 @@ impl App {
                 }
 
                 // Dismiss attempt reconnect prompt if visible.
-                if let Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) = &self.menu {
-                    self.menu = Menu::Terminal(TerminalPrompt::None);
+                if let Some(Popup::AttemptReconnectPrompt) = &self.popup {
+                    self.popup = None;
                 }
 
                 self.buffer.scroll_by(0);
@@ -712,11 +690,11 @@ impl App {
             }
             Event::Serial(SerialEvent::Ports(ports)) => {
                 self.ports = ports;
-                if let Menu::PortSelection(PortSelectionElement::Ports) = &self.menu {
-                    if self.table_state.selected().is_none() {
-                        self.table_state.select(Some(0));
-                    }
-                }
+                // if let Menu::PortSelection(PortSelectionElement::Ports) = &self.menu {
+                //     if self.table_state.selected().is_none() {
+                //         self.table_state.select(Some(0));
+                //     }
+                // }
             }
             Event::Serial(SerialEvent::UnsentTx(unsent)) => todo!("{unsent:?}"),
             #[cfg(feature = "espflash")]
@@ -738,7 +716,17 @@ impl App {
                 .notifs
                 .notify_str(format!("Logging error: {error}"), Color::Red),
             Event::Tick(Tick::PerSecond) => match self.menu {
-                Menu::Terminal(TerminalPrompt::None) => {
+                Menu::Terminal => {
+                    // If disconnect prompt is open, pause reacting to the ticks
+                    if let Some(popup) = &self.popup
+                        && matches!(
+                            popup,
+                            Popup::AttemptReconnectPrompt | Popup::DisconnectPrompt
+                        )
+                    {
+                        return Ok(());
+                    }
+
                     let port_status = &self.serial.port_status.load().inner;
 
                     let reconnections_allowed =
@@ -752,10 +740,8 @@ impl App {
                         self.serial.request_reconnect(None)?;
                     }
                 }
-                // If disconnect prompt is open, pause reacting to the ticks
-                Menu::Terminal(TerminalPrompt::DisconnectPrompt)
-                | Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) => (),
-                Menu::PortSelection(_) => {
+
+                Menu::PortSelection => {
                     self.serial.request_port_scan()?;
                 }
             },
@@ -1050,8 +1036,8 @@ impl App {
             }
         }
 
-        match self.menu {
-            Menu::Terminal(TerminalPrompt::None) if self.popup.is_none() => {
+        match (self.menu, &self.popup) {
+            (Menu::Terminal, None) => {
                 at_terminal = true;
                 match key_combo {
                     // Consuming Ctrl+A so input_box.handle_event doesn't move my cursor.
@@ -1078,6 +1064,7 @@ impl App {
                         _ => (),
                     },
 
+                    // TODO
                     _terminal_input => {
                         // if let Ok(term_event) = terminput_crossterm::to_terminput(
                         //     crokey::crossterm::event::Event::Key(key),
@@ -1088,44 +1075,59 @@ impl App {
                     }
                 }
             }
-            Menu::Terminal(TerminalPrompt::None) => (),
-            Menu::Terminal(TerminalPrompt::DisconnectPrompt) => {
-                if let Some(pressed) = DisconnectPrompt::from_key_code(key.code)
-                    && !is_ctrl_c(&key)
-                {
+            (Menu::Terminal, Some(Popup::DisconnectPrompt)) if !is_ctrl_c(&key) => {
+                if let Some(pressed) = DisconnectPrompt::from_key_code(key.code) {
                     let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
                     let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
 
                     self.disconnect_prompt_choice(pressed, shift_pressed, ctrl_pressed)?;
                 }
             }
-            Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) => {
-                if let Some(pressed) = AttemptReconnectPrompt::from_key_code(key.code)
-                    && !is_ctrl_c(&key)
-                {
+            (Menu::Terminal, Some(Popup::AttemptReconnectPrompt)) if !is_ctrl_c(&key) => {
+                if let Some(pressed) = AttemptReconnectPrompt::from_key_code(key.code) {
                     let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
                     let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
 
                     self.reconnect_prompt_choice(pressed, shift_pressed, ctrl_pressed)?;
                 }
             }
-            Menu::PortSelection(PortSelectionElement::CustomBaud) => {
-                // filtering out just letters from being put into the custom baud entry
-                // extra checks will be needed at parse stage to ensure non-digit chars arent present
-                if !matches!(key.code, KeyCode::Char(c) if c.is_alphabetic()) {
-                    self.user_input
-                        .input_box
-                        .handle_event(&ratatui::crossterm::event::Event::Key(key));
+            (Menu::Terminal, Some(Popup::IgnoreByName(_))) if !is_ctrl_c(&key) => {
+                if let Some(pressed) = IgnorePortByNamePrompt::from_key_code(key.code) {
+                    self.ignore_port_name_prompt_choice(pressed)?;
                 }
             }
-            // might replace with PartialEq, Eq on Menu later, not sure
-            Menu::PortSelection(_) => at_port_selection = true,
+            (Menu::Terminal, Some(Popup::IgnoreByUsb(_, _))) if !is_ctrl_c(&key) => {
+                if let Some(pressed) = IgnoreUsbDevicePrompt::from_key_code(key.code) {
+                    self.ignore_usb_device_prompt_choice(pressed)?;
+                }
+            }
+
+            (Menu::Terminal, Some(_)) => (),
+
+            (Menu::PortSelection, None) => {
+                let is_custom_visible = self.baud_selection_state.on_last(COMMON_BAUD);
+                let is_baud_selected =
+                    self.port_selection_scroll == self.port_selection_item_count() - 2;
+
+                if is_custom_visible && is_baud_selected {
+                    // filtering out just letters from being put into the custom baud entry
+                    // extra checks will be needed at parse stage to ensure non-digit chars arent present
+                    if !matches!(key.code, KeyCode::Char(c) if c.is_alphabetic()) {
+                        self.user_input
+                            .input_box
+                            .handle_event(&ratatui::crossterm::event::Event::Key(key));
+                    }
+                } else {
+                    at_port_selection = true;
+                }
+            }
+            (Menu::PortSelection, Some(_)) => (),
         }
         let vim_scrollable_menu: bool = match (self.menu, &self.popup) {
             // (_, Some(PopupMenu::Macros), MacrosPrompt::Keybind) => false,
             #[cfg(feature = "macros")]
             (_, Some(Popup::ToolMenu(ToolMenu::Macros))) => false,
-            (Menu::Terminal(TerminalPrompt::None), None) => false,
+            (Menu::Terminal, None) => false,
             _ => true,
         };
         // TODO split this up into more functions based on menu
@@ -1134,12 +1136,15 @@ impl App {
             key!(q) if at_port_selection && self.popup.is_none() => self.shutdown(),
             key!(ctrl - shift - c) => self.shutdown(),
             // move into ctrl-c func?
-            key!(ctrl - c) => match self.menu {
-                Menu::Terminal(TerminalPrompt::DisconnectPrompt) => self.shutdown(),
-                Menu::Terminal(TerminalPrompt::None) => {
+            key!(ctrl - c) => match (self.menu, &self.popup) {
+                (_, Some(Popup::AttemptReconnectPrompt)) | (_, Some(Popup::DisconnectPrompt)) => {
+                    self.shutdown()
+                }
+                (Menu::Terminal, None) => {
+                    self.show_popup(Popup::DisconnectPrompt);
+                }
+                (_, Some(_)) => {
                     self.dismiss_popup();
-                    self.table_state.select(Some(0));
-                    self.menu = TerminalPrompt::DisconnectPrompt.into();
                 }
                 _ => self.shutdown(),
             },
@@ -1178,6 +1183,20 @@ impl App {
             key!(j) if vim_scrollable_menu => self.down_pressed(),
             key!(k) if vim_scrollable_menu => self.up_pressed(),
             key!(l) if vim_scrollable_menu => self.right_pressed(),
+            key!(i) if at_port_selection && self.port_selection_scroll < self.ports.len() => {
+                match self.ports.get(self.port_selection_scroll) {
+                    None => (),
+                    Some(SerialPortInfo {
+                        port_name,
+                        port_type: SerialPortType::UsbPort(usb),
+                    }) => {
+                        self.show_popup(Popup::IgnoreByUsb(port_name.to_owned(), usb.to_owned()));
+                    }
+                    Some(SerialPortInfo { port_name, .. }) => {
+                        self.show_popup(Popup::IgnoreByName(port_name.to_owned()))
+                    }
+                }
+            }
             key!(up) => self.up_pressed(),
             key!(down) => self.down_pressed(),
             key!(left) => self.left_pressed(),
@@ -1252,7 +1271,7 @@ impl App {
                     Color::Red,
                 );
                 return Ok(());
-            } else if action.requires_terminal_view() && !matches!(self.menu, Menu::Terminal(_)) {
+            } else if action.requires_terminal_view() && !matches!(self.menu, Menu::Terminal) {
                 self.notifs.notify_str(
                     "Action requires terminal view active! Not acting...",
                     Color::Red,
@@ -1430,7 +1449,7 @@ impl App {
         };
         use AppAction as A;
         match action {
-            A::Popup(popup) => self.show_popup_menu(popup),
+            A::Popup(popup) => self.show_popup_from_action(popup),
 
             A::Port(PortAction::ToggleDtr) => {
                 self.serial.toggle_signals(true, false)?;
@@ -1659,6 +1678,20 @@ impl App {
         };
         Ok(())
     }
+    fn show_reconnect_prompt(&self) -> bool {
+        let port_status_guard = self.serial.port_status.load();
+        let port_settings_guard = self.serial.port_settings.load();
+
+        if self.user_broke_connection
+            || (!port_status_guard.inner.is_connected()
+                && !port_status_guard.inner.is_lent_out()
+                && !port_settings_guard.reconnections.allowed())
+        {
+            true
+        } else {
+            false
+        }
+    }
     // fn tab_pressed(&mut self) {}
     fn esc_pressed(&mut self) {
         #[cfg(feature = "defmt")]
@@ -1674,31 +1707,16 @@ impl App {
         }
 
         match self.menu {
-            Menu::Terminal(TerminalPrompt::None) => {
-                self.table_state.select(Some(0));
-                let port_status_guard = self.serial.port_status.load();
-                let port_settings_guard = self.serial.port_settings.load();
-
-                if self.user_broke_connection
-                    || (!port_status_guard.inner.is_connected()
-                        && !port_status_guard.inner.is_lent_out()
-                        && !port_settings_guard.reconnections.allowed())
-                {
-                    self.menu = TerminalPrompt::AttemptReconnectPrompt.into();
-                } else {
-                    self.menu = TerminalPrompt::DisconnectPrompt.into();
-                }
+            Menu::Terminal if self.show_reconnect_prompt() => {
+                self.show_popup(Popup::AttemptReconnectPrompt)
             }
-            Menu::Terminal(TerminalPrompt::DisconnectPrompt)
-            | Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) => {
-                self.menu = TerminalPrompt::None.into();
-            }
-            Menu::PortSelection(_) => self.shutdown(),
+            Menu::Terminal => self.show_popup(Popup::DisconnectPrompt),
+            Menu::PortSelection => self.shutdown(),
         }
     }
     fn up_pressed(&mut self) {
         self.user_input.all_text_selected = false;
-
+        self.popup_hint_scroll = -2;
         match &self.popup {
             None => (),
             Some(Popup::ErrorMessage(_)) => (),
@@ -1706,16 +1724,12 @@ impl App {
                 self.popup_menu_scroll = self.popup_menu_scroll.saturating_sub(1);
             }
             #[cfg(not(any(feature = "espflash", feature = "macros")))]
-            Some(Popup::SettingsMenu(_)) => {
-                self.popup_hint_scroll = -2;
-                match self.popup_menu_scroll {
-                    0 => self.select_last_popup_item(),
-                    _ => self.popup_menu_scroll -= 1,
-                }
-            }
+            Some(Popup::SettingsMenu(_)) => match self.popup_menu_scroll {
+                0 => self.select_last_popup_item(),
+                _ => self.popup_menu_scroll -= 1,
+            },
             #[cfg(any(feature = "espflash", feature = "macros"))]
             Some(Popup::SettingsMenu(_)) | Some(Popup::ToolMenu(_)) => {
-                self.popup_hint_scroll = -2;
                 match self.popup_menu_scroll {
                     0 => self.select_last_popup_item(),
                     _ => self.popup_menu_scroll -= 1,
@@ -1725,45 +1739,34 @@ impl App {
             Some(Popup::DefmtNewElf(_)) => (),
             #[cfg(feature = "defmt")]
             Some(Popup::DefmtRecentElf) => match self.popup_menu_scroll {
-                0 => {
-                    self.popup_menu_scroll = self
-                        .defmt_helpers
-                        .recent_elfs
-                        .recents_len()
-                        .saturating_sub(1)
-                }
+                0 => self.select_last_popup_item(),
                 _ => self.popup_menu_scroll -= 1,
             },
+            Some(Popup::AttemptReconnectPrompt)
+            | Some(Popup::DisconnectPrompt)
+            | Some(Popup::IgnoreByName(_))
+            | Some(Popup::IgnoreByUsb(_, _)) => match self.popup_menu_scroll {
+                0 => self.select_last_popup_item(),
+                _ => self.popup_menu_scroll -= 1,
+            },
+
+            Some(Popup::ConnectionFailed(_)) => (),
         }
 
         if self.popup.is_some() {
             return;
         }
-
-        use PortSelectionElement as Pse;
         match self.menu {
-            Menu::PortSelection(e @ Pse::Ports) => match self.table_state.selected() {
-                Some(0) => self.menu = e.prev().into(),
-                Some(_) => self.scroll_menu_up(),
-                None => (),
+            Menu::PortSelection => match self.port_selection_scroll {
+                0 => self.port_selection_scroll = self.port_selection_item_count() - 1,
+                _ => self.port_selection_scroll -= 1,
             },
-            Menu::PortSelection(e) => self.menu = e.prev().into(),
-            Menu::Terminal(TerminalPrompt::None) => self.user_input.scroll_history(true),
-            Menu::Terminal(TerminalPrompt::DisconnectPrompt) => wrapping_prompt_scroll(
-                <DisconnectPrompt as VariantArray>::VARIANTS.len(),
-                &mut self.table_state,
-                true,
-            ),
-            Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) => wrapping_prompt_scroll(
-                <AttemptReconnectPrompt as VariantArray>::VARIANTS.len(),
-                &mut self.table_state,
-                true,
-            ),
+            Menu::Terminal => self.user_input.scroll_history(true),
         }
-        self.post_menu_vert_scroll(true);
     }
     fn down_pressed(&mut self) {
         self.user_input.all_text_selected = false;
+        self.popup_hint_scroll = -2;
         match &self.popup {
             None => (),
             Some(Popup::ErrorMessage(_)) => (),
@@ -1771,18 +1774,14 @@ impl App {
                 self.popup_menu_scroll += 1;
             }
             #[cfg(not(any(feature = "espflash", feature = "macros")))]
-            Some(Popup::SettingsMenu(_)) => {
-                self.popup_hint_scroll = -2;
-                match self.popup_menu_scroll {
-                    _ if self.last_popup_item_selected() => self.popup_menu_scroll = 0,
-                    _ => self.popup_menu_scroll += 1,
-                }
-            }
+            Some(Popup::SettingsMenu(_)) => match self.popup_menu_scroll {
+                _last if self.last_popup_item_selected() => self.popup_menu_scroll = 0,
+                _ => self.popup_menu_scroll += 1,
+            },
             #[cfg(any(feature = "espflash", feature = "macros"))]
             Some(Popup::SettingsMenu(_)) | Some(Popup::ToolMenu(_)) => {
-                self.popup_hint_scroll = -2;
                 match self.popup_menu_scroll {
-                    _ if self.last_popup_item_selected() => self.popup_menu_scroll = 0,
+                    _last if self.last_popup_item_selected() => self.popup_menu_scroll = 0,
                     _ => self.popup_menu_scroll += 1,
                 }
             }
@@ -1790,68 +1789,45 @@ impl App {
             Some(Popup::DefmtNewElf(_)) => (),
             #[cfg(feature = "defmt")]
             Some(Popup::DefmtRecentElf) => match self.popup_menu_scroll {
-                _ if self.popup_menu_scroll
-                    == self
-                        .defmt_helpers
-                        .recent_elfs
-                        .recents_len()
-                        .saturating_sub(1) =>
-                {
-                    self.popup_menu_scroll = 0
-                }
+                _last if self.last_popup_item_selected() => self.popup_menu_scroll = 0,
                 _ => self.popup_menu_scroll += 1,
             },
+            Some(Popup::AttemptReconnectPrompt)
+            | Some(Popup::DisconnectPrompt)
+            | Some(Popup::IgnoreByName(_))
+            | Some(Popup::IgnoreByUsb(_, _)) => match self.popup_menu_scroll {
+                _last if self.last_popup_item_selected() => self.popup_menu_scroll = 0,
+                _ => self.popup_menu_scroll += 1,
+            },
+
+            Some(Popup::ConnectionFailed(_)) => (),
         }
 
         if self.popup.is_some() {
             return;
         }
 
-        use PortSelectionElement as Pse;
         match self.menu {
-            Menu::PortSelection(e @ Pse::Ports) if self.table_state.on_last(&self.ports) => {
-                // self.table_state.select(None);
-                self.menu = e.next().into();
-            }
-            Menu::PortSelection(Pse::Ports) => {
-                self.scroll_menu_down();
-            }
-            Menu::PortSelection(e) => {
-                self.menu = e.next().into();
-            }
-            // Menu::PortSelection(_) => {
-            //     if self.single_line_state.active {
-            //         ()
-            //         // move down to More Options/Custom baud entry
-            //     } else {
-            //         match self.table_state.selected() {
-            //             None => (),
-            //             Some(index) if self.table_state.on_last(&self.ports) => {
-            //                 self.table_state.select(None);
-            //                 self.single_line_state.active = true;
-            //             }
-            //             Some(_) => self.scroll_menu_down(),
-            //         }
-            //     }
-            // },
-            Menu::Terminal(TerminalPrompt::None) => self.user_input.scroll_history(false),
-            Menu::Terminal(TerminalPrompt::DisconnectPrompt) => wrapping_prompt_scroll(
-                <DisconnectPrompt as VariantArray>::VARIANTS.len(),
-                &mut self.table_state,
-                false,
-            ),
-            Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) => wrapping_prompt_scroll(
-                <AttemptReconnectPrompt as VariantArray>::VARIANTS.len(),
-                &mut self.table_state,
-                false,
-            ),
+            Menu::PortSelection => match self.port_selection_scroll {
+                last if last >= self.port_selection_item_count() - 1 => {
+                    self.port_selection_scroll = 0
+                }
+                _ => self.port_selection_scroll += 1,
+            },
+
+            Menu::Terminal => self.user_input.scroll_history(false),
         }
-        self.post_menu_vert_scroll(false);
     }
     fn left_pressed(&mut self) {
         match &mut self.popup {
             None => (),
-            Some(Popup::CurrentKeybinds) | Some(Popup::ErrorMessage(_)) => (),
+            Some(Popup::AttemptReconnectPrompt)
+            | Some(Popup::DisconnectPrompt)
+            | Some(Popup::IgnoreByName(_))
+            | Some(Popup::IgnoreByUsb(_, _))
+            | Some(Popup::ConnectionFailed(_))
+            | Some(Popup::CurrentKeybinds)
+            | Some(Popup::ErrorMessage(_)) => (),
 
             #[cfg(not(any(feature = "espflash", feature = "macros")))]
             Some(Popup::PopupMenu(popup)) if self.popup_menu_scroll == 0 => {
@@ -1893,7 +1869,7 @@ impl App {
                     return;
                 }
                 self.macros.categories_selector.prev();
-                if self.popup_menu_scroll >= ALWAYS_PRESENT_SELECTOR_COUNT {
+                if self.popup_menu_scroll >= POPUP_MENU_SELECTOR_COUNT {
                     if self.macros.none_visible() {
                         self.popup_menu_scroll = 1;
                     } else {
@@ -1903,14 +1879,13 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             Some(Popup::ToolMenu(ToolMenu::EspFlash)) => {
-                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + 1 {
+                if self.popup_menu_scroll == POPUP_MENU_SELECTOR_COUNT + 1 {
                     self.espflash.unchecked_bootloader.flip();
                 }
             }
             #[cfg(feature = "logging")]
             Some(Popup::SettingsMenu(SettingsMenu::Logging)) => {
-                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + Logging::VISIBLE_FIELDS
-                {
+                if self.popup_menu_scroll == POPUP_MENU_SELECTOR_COUNT + Logging::VISIBLE_FIELDS {
                     return;
                 }
 
@@ -1924,7 +1899,7 @@ impl App {
             Some(Popup::SettingsMenu(SettingsMenu::Defmt)) => {
                 use crate::tui::defmt::DEFMT_BUTTONS;
 
-                if self.popup_menu_scroll < ALWAYS_PRESENT_SELECTOR_COUNT + DEFMT_BUTTONS {
+                if self.popup_menu_scroll < POPUP_MENU_SELECTOR_COUNT + DEFMT_BUTTONS {
                     return;
                 }
 
@@ -1942,7 +1917,9 @@ impl App {
         if self.popup.is_some() {
             return;
         }
-        if matches!(self.menu, Menu::PortSelection(_)) && self.baud_selection_state.active {
+        if matches!(self.menu, Menu::PortSelection)
+            && self.port_selection_scroll == self.ports.len()
+        {
             if self.baud_selection_state.current_index == 0 {
                 self.baud_selection_state.select(COMMON_BAUD.last_index());
             } else {
@@ -1960,7 +1937,13 @@ impl App {
         // }
         match &mut self.popup {
             None => (),
-            Some(Popup::CurrentKeybinds) | Some(Popup::ErrorMessage(_)) => (),
+            Some(Popup::AttemptReconnectPrompt)
+            | Some(Popup::DisconnectPrompt)
+            | Some(Popup::IgnoreByName(_))
+            | Some(Popup::IgnoreByUsb(_, _))
+            | Some(Popup::ConnectionFailed(_))
+            | Some(Popup::CurrentKeybinds)
+            | Some(Popup::ErrorMessage(_)) => (),
             #[cfg(not(any(feature = "espflash", feature = "macros")))]
             Some(Popup::PopupMenu(popup)) if self.popup_menu_scroll == 0 => {
                 self.cycle_settings_menu(true);
@@ -2001,7 +1984,7 @@ impl App {
                     return;
                 }
                 self.macros.categories_selector.next();
-                if self.popup_menu_scroll >= ALWAYS_PRESENT_SELECTOR_COUNT {
+                if self.popup_menu_scroll >= POPUP_MENU_SELECTOR_COUNT {
                     if self.macros.none_visible() {
                         self.popup_menu_scroll = 1;
                     } else {
@@ -2011,14 +1994,13 @@ impl App {
             }
             #[cfg(feature = "espflash")]
             Some(Popup::ToolMenu(ToolMenu::EspFlash)) => {
-                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + 1 {
+                if self.popup_menu_scroll == POPUP_MENU_SELECTOR_COUNT + 1 {
                     self.espflash.unchecked_bootloader.flip();
                 }
             }
             #[cfg(feature = "logging")]
             Some(Popup::SettingsMenu(SettingsMenu::Logging)) => {
-                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + Logging::VISIBLE_FIELDS
-                {
+                if self.popup_menu_scroll == POPUP_MENU_SELECTOR_COUNT + Logging::VISIBLE_FIELDS {
                     return;
                 }
 
@@ -2032,7 +2014,7 @@ impl App {
             Some(Popup::SettingsMenu(SettingsMenu::Defmt)) => {
                 use crate::tui::defmt::DEFMT_BUTTONS;
 
-                if self.popup_menu_scroll < ALWAYS_PRESENT_SELECTOR_COUNT + DEFMT_BUTTONS {
+                if self.popup_menu_scroll < POPUP_MENU_SELECTOR_COUNT + DEFMT_BUTTONS {
                     return;
                 }
 
@@ -2050,27 +2032,27 @@ impl App {
         if self.popup.is_some() {
             return;
         }
-        if matches!(self.menu, Menu::PortSelection(_))
-            && self.baud_selection_state.active
-            && self.baud_selection_state.next() >= COMMON_BAUD.len()
+        if matches!(self.menu, Menu::PortSelection)
+            && self.port_selection_scroll == self.ports.len()
         {
-            self.baud_selection_state.select(0);
+            if self.baud_selection_state.current_index == COMMON_BAUD.last_index() {
+                self.baud_selection_state.select(0);
+            } else {
+                self.baud_selection_state.next();
+            }
         }
     }
     fn enter_pressed(&mut self, ctrl_pressed: bool, shift_pressed: bool) -> Result<()> {
         let serial_healthy = self.serial.port_status.load().inner.is_connected();
         let popup_was_some = self.popup.is_some();
         // debug!("{:?}", self.menu);
-        use PortSelectionElement as Pse;
-        match self.popup {
+        match &self.popup {
             None => (),
-            Some(Popup::SettingsMenu(_))
-                if self.popup_menu_scroll < ALWAYS_PRESENT_SELECTOR_COUNT =>
-            {
+            Some(Popup::SettingsMenu(_)) if self.popup_menu_scroll < POPUP_MENU_SELECTOR_COUNT => {
                 return Ok(());
             }
             #[cfg(any(feature = "espflash", feature = "macros"))]
-            Some(Popup::ToolMenu(_)) if self.popup_menu_scroll < ALWAYS_PRESENT_SELECTOR_COUNT => {
+            Some(Popup::ToolMenu(_)) if self.popup_menu_scroll < POPUP_MENU_SELECTOR_COUNT => {
                 return Ok(());
             }
             Some(Popup::ErrorMessage(_)) | Some(Popup::CurrentKeybinds) => self.dismiss_popup(),
@@ -2081,7 +2063,7 @@ impl App {
 
                 self.serial.update_settings(self.scratch.serial.clone())?;
 
-                if matches!(self.menu, Menu::Terminal(_)) {
+                if matches!(self.menu, Menu::Terminal) {
                     if self.settings.behavior.retain_port_setting_changes {
                         self.settings.save()?;
                         self.notifs.notify_str("Port settings saved!", Color::Green);
@@ -2164,8 +2146,7 @@ impl App {
                 }
                 let selected = self.get_corrected_popup_index().unwrap();
                 // If a profile is selected
-                if self.popup_menu_scroll
-                    >= esp::ESPFLASH_BUTTON_COUNT + ALWAYS_PRESENT_SELECTOR_COUNT
+                if self.popup_menu_scroll >= esp::ESPFLASH_BUTTON_COUNT + POPUP_MENU_SELECTOR_COUNT
                 {
                     assert!(
                         !self.espflash.is_empty(),
@@ -2228,8 +2209,7 @@ impl App {
             #[cfg(feature = "logging")]
             Some(Popup::SettingsMenu(SettingsMenu::Logging)) => {
                 // if Sync Logs button was selected
-                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + Logging::VISIBLE_FIELDS
-                {
+                if self.popup_menu_scroll == POPUP_MENU_SELECTOR_COUNT + Logging::VISIBLE_FIELDS {
                     self.run_app_action(AppAction::Logging(LoggingAction::Sync))?;
                     return Ok(());
                 }
@@ -2250,7 +2230,7 @@ impl App {
             }
             #[cfg(feature = "defmt")]
             Some(Popup::SettingsMenu(SettingsMenu::Defmt)) => {
-                if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT {
+                if self.popup_menu_scroll == POPUP_MENU_SELECTOR_COUNT {
                     // open file selector
                     if shift_pressed || ctrl_pressed {
                         self.run_app_action(AppAction::ShowDefmtSelect(
@@ -2263,7 +2243,7 @@ impl App {
                     }
 
                     return Ok(());
-                } else if self.popup_menu_scroll == ALWAYS_PRESENT_SELECTOR_COUNT + 1 {
+                } else if self.popup_menu_scroll == POPUP_MENU_SELECTOR_COUNT + 1 {
                     // open recent selector
                     self.show_popup(Popup::DefmtRecentElf);
                     self.popup_menu_scroll = 0;
@@ -2285,11 +2265,11 @@ impl App {
             Some(Popup::DefmtNewElf(_)) => (),
             #[cfg(feature = "defmt")]
             Some(Popup::DefmtRecentElf) => {
-                if let Some(selected) = self.popup_table_state.selected() {
+                if !self.defmt_helpers.recent_elfs.is_empty() {
                     let elf_path = self
                         .defmt_helpers
                         .recent_elfs
-                        .nth_path(selected)
+                        .nth_path(self.popup_menu_scroll)
                         .unwrap()
                         .to_owned();
                     self.try_load_defmt_elf(
@@ -2297,46 +2277,100 @@ impl App {
                         #[cfg(feature = "defmt_watch")]
                         false,
                     );
-                    self.dismiss_popup();
                 }
+
+                self.dismiss_popup();
             }
+            Some(Popup::AttemptReconnectPrompt) => {
+                self.reconnect_prompt_choice(
+                    AttemptReconnectPrompt::try_from(self.popup_menu_scroll as u8).unwrap(),
+                    shift_pressed,
+                    ctrl_pressed,
+                )?;
+            }
+            Some(Popup::DisconnectPrompt) => {
+                self.disconnect_prompt_choice(
+                    DisconnectPrompt::try_from(self.popup_menu_scroll as u8).unwrap(),
+                    shift_pressed,
+                    ctrl_pressed,
+                )?;
+            }
+            Some(Popup::IgnoreByUsb(_, _)) => {
+                self.ignore_usb_device_prompt_choice(
+                    IgnoreUsbDevicePrompt::try_from(self.popup_menu_scroll as u8).unwrap(),
+                )?;
+            }
+            Some(Popup::IgnoreByName(_)) => {
+                self.ignore_port_name_prompt_choice(
+                    IgnorePortByNamePrompt::try_from(self.popup_menu_scroll as u8).unwrap(),
+                )?;
+            }
+            Some(Popup::ConnectionFailed(_)) => self.dismiss_popup(),
         }
         if self.popup.is_some() || popup_was_some {
             return Ok(());
         }
+
         match self.menu {
-            Menu::PortSelection(Pse::Ports) => {
-                if let Some(info) = self
-                    .table_state
-                    .selected()
-                    .and_then(|index| self.ports.get(index))
-                {
-                    info!("Port {}", info.port_name);
+            Menu::PortSelection => {
+                match (
+                    self.port_selection_scroll,
+                    self.ports.get(self.port_selection_scroll),
+                ) {
+                    (scroll, Some(port_info)) if scroll < self.ports.len() => {
+                        info!("Port {}", port_info.port_name);
 
-                    let baud_rate =
-                        if COMMON_BAUD.last_index_eq(self.baud_selection_state.current_index) {
-                            // TODO This should return an actual user-visible error
-                            self.user_input.input_box.value().parse()?
-                        } else {
-                            COMMON_BAUD[self.baud_selection_state.current_index]
+                        let baud_rate =
+                            if COMMON_BAUD.last_index_eq(self.baud_selection_state.current_index) {
+                                match self.user_input.input_box.value().parse() {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        todo!("{e}");
+                                        self.popup = Some(Popup::ConnectionFailed("".to_string()));
+                                        return Ok(());
+                                    }
+                                }
+                            } else {
+                                COMMON_BAUD[self.baud_selection_state.current_index]
+                            };
+
+                        self.scratch.serial.baud_rate = baud_rate;
+                        self.settings.save()?;
+
+                        let connect_result_rx = self.serial.try_connect_now(
+                            port_info.clone(),
+                            self.settings.serial.clone(),
+                            Some(baud_rate),
+                        )?;
+
+                        // TODO make a const value
+                        match connect_result_rx.recv_timeout(Duration::from_secs(15)) {
+                            // Got a connection result, if it's Ok(()), we'll keep going, otherwise it'll bail early.
+                            Ok(Ok(())) => {
+                                self.menu = Menu::Terminal;
+                            }
+                            Ok(Err(e)) => {
+                                todo!("{e}")
+                            }
+                            Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                                // color_eyre::eyre::bail!("Connection to supplied port timed out!")
+                            }
+                            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                                // color_eyre::eyre::bail!("Serial worker closed unexpectedly!")
+                            }
                         };
-
-                    self.scratch.serial.baud_rate = baud_rate;
-
-                    self.settings.serial = self.scratch.serial.clone();
-                    self.settings.save()?;
-
-                    self.serial
-                        .request_connect(info, self.scratch.serial.clone())?;
-
-                    self.menu = Menu::Terminal(TerminalPrompt::None);
+                    }
+                    (scroll, None) if scroll < self.ports.len() => {
+                        unreachable!()
+                    }
+                    (scroll, _) => {
+                        if scroll == self.port_selection_item_count() - 1 {
+                            self.show_popup_from_action(ShowPopupAction::ShowPortSettings);
+                        }
+                    }
                 }
             }
-            Menu::PortSelection(Pse::MoreOptions) => {
-                self.show_popup_menu(ShowPopupAction::ShowPortSettings)
-            }
-            Menu::PortSelection(_) => (),
-            Menu::Terminal(TerminalPrompt::None) => {
+            Menu::Terminal => {
                 if serial_healthy {
                     let user_input = self.user_input.input_box.value();
 
@@ -2377,29 +2411,23 @@ impl App {
                     )?;
                 }
             }
-            Menu::Terminal(TerminalPrompt::DisconnectPrompt) => {
-                if self.table_state.selected().is_none() {
-                    return Ok(());
-                }
-                let index = self.table_state.selected().unwrap() as u8;
-                self.disconnect_prompt_choice(
-                    DisconnectPrompt::try_from(index).unwrap(),
-                    shift_pressed,
-                    ctrl_pressed,
-                )?;
-            }
-            Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt) => {
-                if self.table_state.selected().is_none() {
-                    return Ok(());
-                }
-                let index = self.table_state.selected().unwrap() as u8;
-                self.reconnect_prompt_choice(
-                    AttemptReconnectPrompt::try_from(index).unwrap(),
-                    shift_pressed,
-                    ctrl_pressed,
-                )?;
-            }
         }
+        Ok(())
+    }
+    fn return_to_port_selection(&mut self) -> Result<()> {
+        self.serial.request_disconnect()?;
+        // Refresh port listings
+        self.ports.clear();
+        self.serial.request_port_scan()?;
+
+        self.buffer.intentional_disconnect_clear();
+        // Clear the input box, but keep the user history!
+        self.user_input.clear();
+
+        self.dismiss_popup();
+        self.menu = Menu::PortSelection;
+        self.port_selection_scroll = 0;
+
         Ok(())
     }
     fn disconnect_prompt_choice(
@@ -2408,13 +2436,11 @@ impl App {
         shift_pressed: bool,
         ctrl_pressed: bool,
     ) -> Result<()> {
-        use PortSelectionElement as Pse;
         match choice {
             DisconnectPrompt::ExitApp => self.shutdown(),
-            DisconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
+            DisconnectPrompt::Cancel => self.dismiss_popup(),
             DisconnectPrompt::OpenPortSettings => {
-                self.show_popup_menu(ShowPopupAction::ShowPortSettings);
-                self.menu = Menu::Terminal(TerminalPrompt::None);
+                self.show_popup(Popup::SettingsMenu(SettingsMenu::SerialPort));
             }
             DisconnectPrompt::DisconnectFromPort => {
                 // This is intentionally being set true unconditionally here, and also when the event pops.
@@ -2422,7 +2448,7 @@ impl App {
                 // manual reconnection Esc popup.
                 // TODO reconsider?
                 self.user_broke_connection = true;
-                self.menu = Menu::Terminal(TerminalPrompt::AttemptReconnectPrompt);
+                self.show_popup(Popup::AttemptReconnectPrompt);
                 self.serial.request_break_connection()?;
 
                 // let port_status_guard = self.serial.port_status.load();
@@ -2432,18 +2458,7 @@ impl App {
                 // .notify_str("Can't break connection!", Color::Red);
                 // }
             }
-            DisconnectPrompt::BackToPortSelection => {
-                self.serial.request_disconnect()?;
-                // Refresh port listings
-                self.ports.clear();
-                self.serial.request_port_scan()?;
-
-                self.buffer.intentional_disconnect_clear();
-                // Clear the input box, but keep the user history!
-                self.user_input.clear();
-
-                self.menu = Menu::PortSelection(Pse::Ports);
-            }
+            DisconnectPrompt::BackToPortSelection => self.return_to_port_selection()?,
         }
         Ok(())
     }
@@ -2453,12 +2468,11 @@ impl App {
         shift_pressed: bool,
         ctrl_pressed: bool,
     ) -> Result<()> {
-        use PortSelectionElement as Pse;
         match choice {
             AttemptReconnectPrompt::ExitApp => self.shutdown(),
             AttemptReconnectPrompt::AttemptReconnect if self.user_broke_connection => {
                 self.user_broke_connection = false;
-                self.menu = Menu::Terminal(TerminalPrompt::None);
+                self.dismiss_popup();
                 self.notifs
                     .notify_str("Unpausing reconnections!", Color::LightGreen);
             }
@@ -2476,107 +2490,137 @@ impl App {
                 self.serial
                     .request_reconnect(Some(Reconnections::StrictChecks))?;
             }
-            AttemptReconnectPrompt::Cancel => self.menu = Menu::Terminal(TerminalPrompt::None),
+            AttemptReconnectPrompt::Cancel => self.dismiss_popup(),
             AttemptReconnectPrompt::OpenPortSettings => {
-                self.show_popup_menu(ShowPopupAction::ShowPortSettings);
-                self.menu = Menu::Terminal(TerminalPrompt::None);
+                self.show_popup_from_action(ShowPopupAction::ShowPortSettings)
             }
 
-            AttemptReconnectPrompt::BackToPortSelection => {
-                // TODO make a common func for this?
-                self.serial.request_disconnect()?;
-                // Refresh port listings
-                self.ports.clear();
-                self.serial.request_port_scan()?;
-
-                self.buffer.intentional_disconnect_clear();
-                // Clear the input box, but keep the user history!
-                self.user_input.clear();
-
-                self.menu = Menu::PortSelection(Pse::Ports);
-            }
+            AttemptReconnectPrompt::BackToPortSelection => self.return_to_port_selection()?,
         }
         Ok(())
     }
-    fn post_menu_vert_scroll(&mut self, up: bool) {
-        if self.popup.is_some() {
-            return;
+    fn ignore_usb_device_prompt_choice(&mut self, choice: IgnoreUsbDevicePrompt) -> Result<()> {
+        let Some(Popup::IgnoreByUsb(name, usb)) = self.popup.take() else {
+            unreachable!("Can't ignore usb device without info!");
+        };
+
+        let mut usb_entry = DeserializedUsb::from(usb);
+
+        match choice {
+            IgnoreUsbDevicePrompt::Cancel => (),
+            IgnoreUsbDevicePrompt::IgnoreByName => self.add_ignored_name(name)?,
+            IgnoreUsbDevicePrompt::IgnoreByVidPid => {
+                usb_entry.serial_number = None;
+                self.add_ignored_usb(usb_entry)?;
+            }
+            IgnoreUsbDevicePrompt::IgnoreByVidPidSerial => self.add_ignored_usb(usb_entry)?,
         }
-        // Logic for skipping the Custom Baud Entry field if it's not visible
+        self.dismiss_popup();
+        Ok(())
+    }
+    fn ignore_port_name_prompt_choice(&mut self, choice: IgnorePortByNamePrompt) -> Result<()> {
+        let Some(Popup::IgnoreByName(name_to_ignore)) = self.popup.take() else {
+            unreachable!("Can't ignore port without a name!");
+        };
+
+        match choice {
+            IgnorePortByNamePrompt::Cancel => (),
+            IgnorePortByNamePrompt::IgnoreByName => self.add_ignored_name(name_to_ignore)?,
+        }
+        self.dismiss_popup();
+        Ok(())
+    }
+    fn add_ignored_name(&mut self, name: String) -> Result<()> {
+        if name == MOCK_PORT_NAME {
+            return Ok(());
+        }
+        self.settings.ignored_devices.name.push(name.to_owned());
+        self.settings.save()?;
+
+        self.serial
+            .new_ignored(self.settings.ignored_devices.clone())?;
+        self.ports.clear();
+        self.serial.request_port_scan()?;
+        Ok(())
+    }
+    fn add_ignored_usb(&mut self, usb: DeserializedUsb) -> Result<()> {
+        self.settings.ignored_devices.usb.push(usb);
+        self.settings.save()?;
+
+        self.serial
+            .new_ignored(self.settings.ignored_devices.clone())?;
+        self.ports.clear();
+        self.serial.request_port_scan()?;
+        Ok(())
+    }
+    /// Get max number of selectable elements for port selection screen.
+    ///
+    /// Panics if on a different screen.
+    fn port_selection_item_count(&self) -> usize {
+        assert!(matches!(&self.menu, Menu::PortSelection));
+
         let is_custom_visible = self.baud_selection_state.on_last(COMMON_BAUD);
-        use PortSelectionElement as Pse;
-        match self.menu {
-            Menu::PortSelection(e @ Pse::CustomBaud) if !is_custom_visible => {
-                if up {
-                    self.menu = e.prev().into();
-                } else {
-                    self.menu = e.next().into();
-                }
-            }
-            _ => (),
-        }
-        // Logic for selecting the correct index of port when swapping off/to the table
-        match self.menu {
-            Menu::PortSelection(Pse::Ports) => {
-                // Not using a match guard since it would always set it back to None
-                if self.table_state.selected().is_none() {
-                    if up {
-                        self.table_state.select_last();
-                    } else {
-                        self.table_state.select_first();
-                    }
-                }
-            }
-            Menu::PortSelection(_) => self.table_state.select(None),
-            _ => (),
-        }
-    }
-    // consider making these some kind of trait method?
-    // for the different menus and selections
-    // not sure, things are gonna get interesting with the key presses
-    fn scroll_menu_up(&mut self) {
-        self.table_state.scroll_up_by(1);
-    }
-    fn scroll_menu_down(&mut self) {
-        self.table_state.scroll_down_by(1);
+
+        self.ports.len()
+        + is_custom_visible as usize
+        + 1 // baud selector
+        + 1 // options button
     }
     /// Get max number of selectable elements for current popup.
     ///
     /// Panics if no popup is active.
     fn current_popup_selectable_item_count(&self) -> usize {
         match &self.popup {
+            None => unreachable!("no popup means no item count!"),
             #[cfg(feature = "defmt")]
-            Some(Popup::DefmtRecentElf) => self.defmt_helpers.recent_elfs.recents_len(),
-            Some(Popup::SettingsMenu(settings)) => match settings {
-                SettingsMenu::SerialPort => PortSettings::VISIBLE_FIELDS,
-                SettingsMenu::Behavior => Behavior::VISIBLE_FIELDS,
-                SettingsMenu::Rendering => Rendering::VISIBLE_FIELDS,
-                #[cfg(feature = "logging")]
-                SettingsMenu::Logging => {
-                    1 + // Start/Stop Logging button
+            Some(Popup::DefmtRecentElf) => self.defmt_helpers.recent_elfs.len(),
+            Some(Popup::SettingsMenu(settings)) => {
+                let items = match settings {
+                    SettingsMenu::SerialPort => PortSettings::VISIBLE_FIELDS,
+                    SettingsMenu::Behavior => Behavior::VISIBLE_FIELDS,
+                    SettingsMenu::Rendering => Rendering::VISIBLE_FIELDS,
+                    #[cfg(feature = "logging")]
+                    SettingsMenu::Logging => {
+                        1 + // Start/Stop Logging button
                 Logging::VISIBLE_FIELDS
-                }
-                #[cfg(feature = "defmt")]
-                SettingsMenu::Defmt => {
-                    2 + // Select New/Recent ELF buttons
+                    }
+                    #[cfg(feature = "defmt")]
+                    SettingsMenu::Defmt => {
+                        2 + // Select New/Recent ELF buttons
                 Defmt::VISIBLE_FIELDS
-                }
-            },
+                    }
+                };
+                items + POPUP_MENU_SELECTOR_COUNT
+            }
             #[cfg(any(feature = "espflash", feature = "macros"))]
-            Some(Popup::ToolMenu(tool)) => match tool {
-                #[cfg(feature = "macros")]
-                ToolMenu::Macros => {
-                    1 + // Macros' category selector
+            Some(Popup::ToolMenu(tool)) => {
+                let items = match tool {
+                    #[cfg(feature = "macros")]
+                    ToolMenu::Macros => {
+                        1 + // Macros' category selector
                     self.macros.visible_len()
-                }
+                    }
 
-                #[cfg(feature = "espflash")]
-                // TODO proper scrollbar for espflash profiles
-                ToolMenu::EspFlash => esp::ESPFLASH_BUTTON_COUNT + self.espflash.len(),
-            },
+                    #[cfg(feature = "espflash")]
+                    // TODO proper scrollbar for espflash profiles
+                    ToolMenu::EspFlash => esp::ESPFLASH_BUTTON_COUNT + self.espflash.len(),
+                };
+                items + POPUP_MENU_SELECTOR_COUNT
+            }
+            Some(Popup::DisconnectPrompt) => <DisconnectPrompt as VariantArray>::VARIANTS.len(),
+            Some(Popup::AttemptReconnectPrompt) => {
+                <AttemptReconnectPrompt as VariantArray>::VARIANTS.len()
+            }
+            Some(Popup::IgnoreByName(_)) => {
+                <IgnorePortByNamePrompt as VariantArray>::VARIANTS.len()
+            }
+            Some(Popup::IgnoreByUsb(_, _)) => {
+                <IgnoreUsbDevicePrompt as VariantArray>::VARIANTS.len()
+            }
             _ => unreachable!("popup {:?} has no item count", self.popup),
         }
     }
+
     /// Gets corrected index of selected element.
     ///
     /// Returns None if the popup category or subcategory selectors are active.
@@ -2596,53 +2640,53 @@ impl App {
             (_, 0) => None,
             (_, 1) => None,
             #[cfg(feature = "macros")]
-            // Macro Categories selector
-            (Popup::ToolMenu(ToolMenu::Macros), ALWAYS_PRESENT_SELECTOR_COUNT) => None,
+            // Macro Categories selector active
+            (Popup::ToolMenu(ToolMenu::Macros), POPUP_MENU_SELECTOR_COUNT) => None,
 
             // Normal settings menus
             // Just correct for the category selector
             (Popup::SettingsMenu(SettingsMenu::SerialPort), _)
             | (Popup::SettingsMenu(SettingsMenu::Rendering), _)
             | (Popup::SettingsMenu(SettingsMenu::Behavior), _) => {
-                Some(self.popup_menu_scroll - ALWAYS_PRESENT_SELECTOR_COUNT)
+                Some(self.popup_menu_scroll - POPUP_MENU_SELECTOR_COUNT)
             }
 
             #[cfg(feature = "macros")]
-            // Macros selection
+            // Macros being selected
             (Popup::ToolMenu(ToolMenu::Macros), _) => {
-                Some(raw_scroll - (1 + ALWAYS_PRESENT_SELECTOR_COUNT))
+                Some(raw_scroll - (1 + POPUP_MENU_SELECTOR_COUNT))
             }
 
             #[cfg(feature = "logging")]
             // Logging settings and sync button
             (Popup::SettingsMenu(SettingsMenu::Logging), _) => {
-                Some(raw_scroll - ALWAYS_PRESENT_SELECTOR_COUNT)
+                Some(raw_scroll - POPUP_MENU_SELECTOR_COUNT)
             }
 
             #[cfg(feature = "espflash")]
             // espflash user profiles
             (Popup::ToolMenu(ToolMenu::EspFlash), _)
-                if raw_scroll >= esp::ESPFLASH_BUTTON_COUNT + ALWAYS_PRESENT_SELECTOR_COUNT =>
+                if raw_scroll >= esp::ESPFLASH_BUTTON_COUNT + POPUP_MENU_SELECTOR_COUNT =>
             {
-                Some(raw_scroll - (esp::ESPFLASH_BUTTON_COUNT + ALWAYS_PRESENT_SELECTOR_COUNT))
+                Some(raw_scroll - (esp::ESPFLASH_BUTTON_COUNT + POPUP_MENU_SELECTOR_COUNT))
             }
             #[cfg(feature = "espflash")]
             // espflash pre-set action buttons
             (Popup::ToolMenu(ToolMenu::EspFlash), _) => {
-                Some(raw_scroll - ALWAYS_PRESENT_SELECTOR_COUNT)
+                Some(raw_scroll - POPUP_MENU_SELECTOR_COUNT)
             }
 
             #[cfg(feature = "defmt")]
             // defmt settings
             (Popup::SettingsMenu(SettingsMenu::Defmt), _)
-                if raw_scroll >= 2 + ALWAYS_PRESENT_SELECTOR_COUNT =>
+                if raw_scroll >= 2 + POPUP_MENU_SELECTOR_COUNT =>
             {
-                Some(raw_scroll - (2 + ALWAYS_PRESENT_SELECTOR_COUNT))
+                Some(raw_scroll - (2 + POPUP_MENU_SELECTOR_COUNT))
             }
             #[cfg(feature = "defmt")]
             // defmt select new/recent elf buttons
             (Popup::SettingsMenu(SettingsMenu::Defmt), _) => {
-                Some(raw_scroll - ALWAYS_PRESENT_SELECTOR_COUNT)
+                Some(raw_scroll - POPUP_MENU_SELECTOR_COUNT)
             }
             _ => unreachable!("popup {:?} has no item count", self.popup),
         }
@@ -2652,15 +2696,13 @@ impl App {
     ///
     /// Panics if no popup is active.
     fn last_popup_item_selected(&self) -> bool {
-        let Some(popup) = &self.popup else {
+        let Some(_popup) = &self.popup else {
             unreachable!("popup {:?} has no item count", self.popup);
         };
 
-        let raw_scroll = self.popup_menu_scroll;
-        let selector_corrected_scroll = raw_scroll.saturating_sub(ALWAYS_PRESENT_SELECTOR_COUNT);
         let current_popup_item_count = self.current_popup_selectable_item_count();
         // debug!("{raw_scroll}, {selector_corrected_scroll}, {current_popup_item_count}");
-        selector_corrected_scroll >= current_popup_item_count.saturating_sub(1)
+        self.popup_menu_scroll >= current_popup_item_count.saturating_sub(1)
     }
     /// Returns true if the final item in a popup is selected,
     /// used for item select wrapping purposes.
@@ -2671,9 +2713,7 @@ impl App {
             unreachable!("popup {:?} has no item count", self.popup);
         };
 
-        self.popup_menu_scroll = (self.current_popup_selectable_item_count()
-            + ALWAYS_PRESENT_SELECTOR_COUNT)
-            .saturating_sub(1);
+        self.popup_menu_scroll = self.current_popup_selectable_item_count().saturating_sub(1);
     }
     pub fn draw(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
         // let start = Instant::now();
@@ -2693,7 +2733,7 @@ impl App {
 
         // let start = Instant::now();
         match self.menu {
-            Menu::PortSelection(_) => {
+            Menu::PortSelection => {
                 let big_text = BigText::builder()
                     .pixel_size(PixelSize::Quadrant)
                     .style(Style::new().blue())
@@ -2739,9 +2779,12 @@ impl App {
                 if let Some(socket_addr) = &self.settings.misc.log_tcp_socket
                     && self.tcp_log_health.is_ok()
                 {
-                    let line = line!["Logging to TCP Listener at: ", socket_addr.to_string()]
-                        .centered()
-                        .dark_gray();
+                    let line = line![
+                        "Tracing connected to TCP Listener at: ",
+                        socket_addr.to_string()
+                    ]
+                    .centered()
+                    .dark_gray();
                     misc_lines.push(line);
                 }
 
@@ -2749,7 +2792,7 @@ impl App {
                 frame.render_widget(Paragraph::new(misc_lines), vertical_slices[2]);
                 // }
             }
-            Menu::Terminal(prompt) => self.terminal_menu(frame, frame.area(), prompt),
+            Menu::Terminal => self.terminal_menu(frame, frame.area()),
         }
         // debug!("a1: {:?}", start.elapsed());
 
@@ -2776,19 +2819,21 @@ impl App {
         }
     }
     fn render_popups(&mut self, frame: &mut Frame, area: Rect) {
-        match &self.popup {
-            None => (),
-            Some(Popup::SettingsMenu(_)) => self.render_popup_menus(frame, area),
+        let Some(popup) = &self.popup else {
+            return;
+        };
+        match popup {
+            Popup::SettingsMenu(_) => self.render_popup_menus(frame, area),
             #[cfg(any(feature = "espflash", feature = "macros"))]
-            Some(Popup::ToolMenu(_)) => self.render_popup_menus(frame, area),
-            Some(Popup::CurrentKeybinds) => {
+            Popup::ToolMenu(_) => self.render_popup_menus(frame, area),
+            Popup::CurrentKeybinds => {
                 let mut scroll: u16 = self.popup_menu_scroll as u16;
                 show_keybinds(&self.keybinds, &mut scroll, frame, area, self);
                 self.popup_menu_scroll = scroll as usize;
             }
-            Some(Popup::ErrorMessage(_)) => todo!(),
+            Popup::ErrorMessage(_) => todo!(),
             #[cfg(feature = "defmt")]
-            Some(Popup::DefmtNewElf(file_explorer)) => {
+            Popup::DefmtNewElf(file_explorer) => {
                 let area = centered_rect_size(
                     Size {
                         width: 70,
@@ -2800,7 +2845,7 @@ impl App {
                 frame.render_widget(&file_explorer.widget(), area);
             }
             #[cfg(feature = "defmt")]
-            Some(Popup::DefmtRecentElf) => {
+            Popup::DefmtRecentElf => {
                 let area = centered_rect_size(
                     Size {
                         width: 80,
@@ -2819,15 +2864,87 @@ impl App {
 
                 let inner = block.inner(area);
 
-                self.popup_table_state.select(Some(self.popup_menu_scroll));
+                let mut table_state = TableState::new().with_selected(Some(self.popup_menu_scroll));
 
                 frame.render_widget(Clear, area);
                 frame.render_widget(block, area);
                 frame.render_stateful_widget(
                     self.defmt_helpers.recent_elfs.as_table(),
                     inner,
-                    &mut self.popup_table_state,
+                    &mut table_state,
                 );
+            }
+            Popup::AttemptReconnectPrompt => {
+                let user_broke_connection = if self.user_broke_connection {
+                    Some("(Reconnections paused!)")
+                } else {
+                    None
+                };
+                let mut table_state = TableState::new().with_selected(Some(self.popup_menu_scroll));
+                AttemptReconnectPrompt::render_prompt_block_popup(
+                    Some("Reconnect to port?"),
+                    user_broke_connection,
+                    Style::new().red(),
+                    frame,
+                    area,
+                    &mut table_state,
+                )
+            }
+            Popup::DisconnectPrompt => {
+                let port_state = { self.serial.port_status.load().inner };
+                let reconns_paused = if self.settings.serial.reconnections.allowed()
+                    && port_state.is_premature_disconnect()
+                {
+                    Some("(Auto-reconnections paused while open)")
+                } else {
+                    None
+                };
+                let mut table_state = TableState::new().with_selected(Some(self.popup_menu_scroll));
+                DisconnectPrompt::render_prompt_block_popup(
+                    Some("Disconnect from port?"),
+                    reconns_paused,
+                    Style::new().blue(),
+                    frame,
+                    area,
+                    &mut table_state,
+                );
+            }
+            Popup::IgnoreByUsb(name, usb) => {
+                let UsbPortInfo {
+                    vid,
+                    pid,
+                    serial_number,
+                    ..
+                } = usb;
+                let mut table_state = TableState::new().with_selected(Some(self.popup_menu_scroll));
+                let mut info = format!("VID: {vid:04X}, PID: {pid:04X}, Serial #: ");
+                if let Some(serial_num) = serial_number {
+                    info.push_str(serial_num);
+                } else {
+                    info.push_str("N/A");
+                }
+                IgnoreUsbDevicePrompt::render_prompt_block_popup(
+                    Some(&format!("Hide {name} (USB) from Port Selection?")),
+                    Some(&info),
+                    Style::new().yellow(),
+                    frame,
+                    area,
+                    &mut table_state,
+                );
+            }
+            Popup::IgnoreByName(name) => {
+                let mut table_state = TableState::new().with_selected(Some(self.popup_menu_scroll));
+                IgnorePortByNamePrompt::render_prompt_block_popup(
+                    Some(&format!("Hide {name} from Port Selection?")),
+                    Some(name),
+                    Style::new().yellow(),
+                    frame,
+                    area,
+                    &mut table_state,
+                );
+            }
+            Popup::ConnectionFailed(error) => {
+                error!("{error}");
             }
         }
     }
@@ -2946,41 +3063,10 @@ impl App {
             .borders(Borders::TOP | Borders::BOTTOM)
             .style(Style::from(block_color));
 
-        // // Set active states based on item index
-        // #[cfg(not(feature = "macros"))]
-        // {
-        //     match self.popup_menu_scroll {
-        //         0 => menu_selector_state.active = true,
-
-        //         _ => menu_selector_state.active = false,
-        //     }
-
-        //     assert!(
-        //         menu_selector_state.active == (self.popup_menu_scroll == 0),
-        //         "Either a table element needs to be selected, or the menu title widget, but never both or neither."
-        //     );
-        // }
-        // #[cfg(feature = "macros")]
-        // {
-        //     match (self.popup_menu_scroll, popup) {
-        //         (0, _) => {
-        //             menu_selector_state.active = true;
-        //             self.macros.categories_selector.active = false;
-        //         }
-        //         (1, PopupMenu::Macros) => {
-        //             menu_selector_state.active = false;
-        //             self.macros.categories_selector.active = true;
-        //         }
-        //         (_, _) => {
-        //             menu_selector_state.active = false;
-        //             self.macros.categories_selector.active = false;
-        //         }
-        //     }
-        //     // Above match should ensure these pass without issue.
-        //     let selector_range = match popup {
-        //         PopupMenu::Macros => 0..=1,
-        //         _ => 0..=0,
-        //     };
+        let selected = self.get_corrected_popup_index();
+        let mut table_state = TableState::new()
+            .with_selected(selected)
+            .with_selected_column(Some(usize::MAX));
 
         //     assert!(
         //         (menu_selector_state.active || self.macros.categories_selector.active)
@@ -3065,18 +3151,13 @@ impl App {
 
         match popup {
             SettingsMenu::SerialPort => {
-                let selected = self.get_corrected_popup_index();
-                self.popup_table_state.select(selected);
-                self.popup_table_state.select_first_column();
-
                 frame.render_stateful_widget(
                     self.scratch.serial.as_table(),
                     settings_area,
-                    &mut self.popup_table_state,
+                    &mut table_state,
                 );
 
-                let text: &str = self
-                    .popup_table_state
+                let text: &str = table_state
                     .selected()
                     .map(|i| PortSettings::DOCSTRINGS[i])
                     .unwrap_or("");
@@ -3094,17 +3175,12 @@ impl App {
                 );
             }
             SettingsMenu::Behavior => {
-                let selected = self.get_corrected_popup_index();
-                self.popup_table_state.select(selected);
-                self.popup_table_state.select_first_column();
-
                 frame.render_stateful_widget(
                     self.scratch.behavior.as_table(),
                     settings_area,
-                    &mut self.popup_table_state,
+                    &mut table_state,
                 );
-                let text: &str = self
-                    .popup_table_state
+                let text: &str = table_state
                     .selected()
                     .map(|i| Behavior::DOCSTRINGS[i])
                     .unwrap_or("");
@@ -3122,17 +3198,12 @@ impl App {
                 );
             }
             SettingsMenu::Rendering => {
-                let selected = self.get_corrected_popup_index();
-                self.popup_table_state.select(selected);
-                self.popup_table_state.select_first_column();
-
                 frame.render_stateful_widget(
                     self.scratch.rendering.as_table(),
                     settings_area,
-                    &mut self.popup_table_state,
+                    &mut table_state,
                 );
-                let text: &str = self
-                    .popup_table_state
+                let text: &str = table_state
                     .selected()
                     .map(|i| Rendering::DOCSTRINGS[i])
                     .unwrap_or("");
@@ -3192,17 +3263,10 @@ impl App {
                 );
 
                 let sync_button = sync_logs_button();
-                let log_sync_selected = self.popup_menu_scroll
-                    == ALWAYS_PRESENT_SELECTOR_COUNT + Logging::VISIBLE_FIELDS;
+                let log_sync_selected =
+                    self.popup_menu_scroll == POPUP_MENU_SELECTOR_COUNT + Logging::VISIBLE_FIELDS;
                 if log_sync_selected {
-                    self.popup_table_state.select(Some(0));
-                    self.popup_table_state.select_first_column();
-
-                    frame.render_stateful_widget(
-                        sync_button,
-                        button_area,
-                        &mut self.popup_table_state,
-                    );
+                    frame.render_stateful_widget(sync_button, button_area, &mut table_state);
                     frame.render_widget(&line_block, new_separator);
                     frame.render_widget(self.scratch.logging.as_table(), settings_area);
 
@@ -3215,20 +3279,15 @@ impl App {
                         &mut self.popup_hint_scroll,
                     );
                 } else {
-                    let selected = self.get_corrected_popup_index();
-                    self.popup_table_state.select(selected);
-                    self.popup_table_state.select_first_column();
-
                     frame.render_widget(sync_button, button_area);
                     frame.render_widget(&line_block, new_separator);
                     frame.render_stateful_widget(
                         self.scratch.logging.as_table(),
                         settings_area,
-                        &mut self.popup_table_state,
+                        &mut table_state,
                     );
 
-                    let text: &str = self
-                        .popup_table_state
+                    let text: &str = table_state
                         .selected()
                         .map(|i| Logging::DOCSTRINGS[i])
                         .unwrap_or("");
@@ -3279,7 +3338,7 @@ impl App {
                     button_hint_text_area,
                 );
 
-                let settings_selected = self.popup_menu_scroll >= ALWAYS_PRESENT_SELECTOR_COUNT + 2;
+                let settings_selected = self.popup_menu_scroll >= POPUP_MENU_SELECTOR_COUNT + 2;
 
                 // frame.render_widget(esp::espflash_buttons(), settings_area);
                 frame.render_widget(&line_block, new_separator);
@@ -3328,21 +3387,15 @@ impl App {
                     select_recent_elf,
                 );
 
-                // if self.popup_menu_item ==
                 if settings_selected {
-                    let selected = self.get_corrected_popup_index();
-                    self.popup_table_state.select(selected);
-                    self.popup_table_state.select_first_column();
-
                     use crate::settings::Defmt;
 
                     frame.render_stateful_widget(
                         self.scratch.defmt.as_table(),
                         defmt_settings_area,
-                        &mut self.popup_table_state,
+                        &mut table_state,
                     );
-                    let text: &str = self
-                        .popup_table_state
+                    let text: &str = table_state
                         .selected()
                         .map(|i| Defmt::DOCSTRINGS[i])
                         .unwrap_or("");
@@ -3353,17 +3406,8 @@ impl App {
                         &mut self.popup_hint_scroll,
                     );
                 } else {
-                    self.popup_table_state.select(Some(0));
-                    self.popup_table_state.select_first_column();
                     let corrected_index = self.get_corrected_popup_index();
 
-                    // frame.render_stateful_widget(
-                    //     esp::espflash_buttons(),
-                    //     settings_area,
-                    //     &mut TableState::new()
-                    //         .with_selected_column(0)
-                    //         .with_selected(corrected_index),
-                    // );
                     frame.render_widget(self.scratch.defmt.as_table(), defmt_settings_area);
 
                     let hints = [
@@ -3394,7 +3438,7 @@ impl App {
         let content_length = self.current_popup_selectable_item_count();
         let mut scrollbar_state =
             ScrollbarState::new(content_length.saturating_sub(height as usize))
-                .position(self.popup_table_state.offset());
+                .position(table_state.offset());
 
         frame.render_stateful_widget(
             scrollbar,
@@ -3420,41 +3464,10 @@ impl App {
 
         let mut menu_selector_state = SingleLineSelectorState::new();
 
-        // // Set active states based on item index
-        // #[cfg(not(feature = "macros"))]
-        // {
-        //     match self.popup_menu_scroll {
-        //         0 => menu_selector_state.active = true,
-
-        //         _ => menu_selector_state.active = false,
-        //     }
-
-        //     assert!(
-        //         menu_selector_state.active == (self.popup_menu_scroll == 0),
-        //         "Either a table element needs to be selected, or the menu title widget, but never both or neither."
-        //     );
-        // }
-        // #[cfg(feature = "macros")]
-        // {
-        //     match (self.popup_menu_scroll, popup) {
-        //         (0, _) => {
-        //             menu_selector_state.active = true;
-        //             self.macros.categories_selector.active = false;
-        //         }
-        //         (1, ToolMenu::Macros) => {
-        //             menu_selector_state.active = false;
-        //             self.macros.categories_selector.active = true;
-        //         }
-        //         (_, _) => {
-        //             menu_selector_state.active = false;
-        //             self.macros.categories_selector.active = false;
-        //         }
-        //     }
-        //     // Above match should ensure these pass without issue.
-        //     let selector_range = match popup {
-        //         ToolMenu::Macros => 0..=1,
-        //         _ => 0..=0,
-        //     };
+        let selected = self.get_corrected_popup_index();
+        let mut table_state = TableState::new()
+            .with_selected(selected)
+            .with_selected_column(Some(usize::MAX));
 
         //     assert!(
         //         (menu_selector_state.active || self.macros.categories_selector.active)
@@ -3622,10 +3635,7 @@ impl App {
                     .macros
                     .as_table(&self.keybinds, self.settings.behavior.fuzzy_macro_match);
 
-                let selected = self.get_corrected_popup_index();
-                self.popup_table_state.select(selected);
-                self.popup_table_state.select_first_column();
-                frame.render_stateful_widget(table, macros_table_area, &mut self.popup_table_state);
+                frame.render_stateful_widget(table, macros_table_area, &mut table_state);
 
                 frame.render_widget(
                     Line::raw("Ctrl+R: Reload")
@@ -3641,7 +3651,7 @@ impl App {
                     hint_text_area,
                 );
 
-                if let Some(index) = self.popup_table_state.selected() {
+                if let Some(index) = table_state.selected() {
                     // let text: &str = self
                     //     .popup_table_state
                     //     .selected()
@@ -3712,14 +3722,10 @@ impl App {
                 );
 
                 let profiles_selected = self.popup_menu_scroll
-                    >= esp::ESPFLASH_BUTTON_COUNT + ALWAYS_PRESENT_SELECTOR_COUNT;
+                    >= esp::ESPFLASH_BUTTON_COUNT + POPUP_MENU_SELECTOR_COUNT;
 
                 // if self.popup_menu_item ==
                 if profiles_selected {
-                    let corrected_index = self.get_corrected_popup_index().unwrap();
-                    self.popup_table_state.select_first_column();
-                    self.popup_table_state.select(Some(corrected_index));
-
                     frame.render_widget(
                         esp::espflash_buttons(
                             self.espflash.unchecked_bootloader,
@@ -3731,9 +3737,11 @@ impl App {
                     frame.render_stateful_widget(
                         self.espflash.profiles_table(),
                         bins_area,
-                        &mut self.popup_table_state,
+                        &mut table_state,
                     );
-                    if let Some(profile) = self.espflash.profile_from_index(corrected_index) {
+                    if let Some(corrected_index) = table_state.selected()
+                        && let Some(profile) = self.espflash.profile_from_index(corrected_index)
+                    {
                         use crate::tui::esp::{EspBins, EspElf, EspProfile};
 
                         let upper_chip = |chip: &espflash::target::Chip| {
@@ -3772,16 +3780,13 @@ impl App {
                         );
                     }
                 } else {
-                    let corrected_index = self.get_corrected_popup_index();
-                    self.popup_table_state.select_first_column();
-                    self.popup_table_state.select(corrected_index);
                     frame.render_stateful_widget(
                         esp::espflash_buttons(
                             self.espflash.unchecked_bootloader,
                             self.espflash.first_erase_press.is_some(),
                         ),
                         settings_area,
-                        &mut self.popup_table_state,
+                        &mut table_state,
                     );
                     frame.render_widget(&line_block, new_separator);
                     frame.render_widget(self.espflash.profiles_table(), bins_area);
@@ -3792,8 +3797,8 @@ impl App {
                         "Query ESP for Flash Size, MAC Address, etc.",
                         "Erase all flash contents.",
                     ];
-                    if let Some(idx) = corrected_index {
-                        if let Some(&hint_text) = hints.get(idx) {
+                    if let Some(button_index) = table_state.selected() {
+                        if let Some(&hint_text) = hints.get(button_index) {
                             render_scrolling_line(
                                 hint_text,
                                 frame,
@@ -3816,7 +3821,7 @@ impl App {
         let content_length = self.current_popup_selectable_item_count();
         let mut scrollbar_state =
             ScrollbarState::new(content_length.saturating_sub(height as usize))
-                .position(self.popup_table_state.offset());
+                .position(table_state.offset());
 
         frame.render_stateful_widget(
             scrollbar,
@@ -3834,15 +3839,10 @@ impl App {
         &mut self,
         frame: &mut Frame,
         area: Rect,
-        prompt: TerminalPrompt,
         // buffer: impl Iterator<Item = Line<'a>>,
         // state: &mut TableState
     ) {
-        let prompt_shown = match prompt {
-            TerminalPrompt::DisconnectPrompt => true,
-            TerminalPrompt::AttemptReconnectPrompt => true,
-            TerminalPrompt::None => false,
-        };
+        let popup_shown = self.popup.is_some();
         let [terminal_area, line_area, input_area] = vertical![*=1, ==1, ==1].areas(area);
         let [input_symbol_area, input_area] = horizontal![==1, *=1].areas(input_area);
 
@@ -4015,7 +4015,7 @@ impl App {
 
         frame.render_widget(input_symbol, input_symbol_area);
 
-        let should_position_cursor = !prompt_shown && self.popup.is_none();
+        let should_position_cursor = !popup_shown && self.popup.is_none();
 
         if self.user_input.input_box.value().is_empty() {
             // Leading space leaves room for full-width cursors.
@@ -4052,50 +4052,6 @@ impl App {
             }
         }
 
-        match prompt {
-            TerminalPrompt::DisconnectPrompt => {
-                let reconns_paused = if self.settings.serial.reconnections.allowed()
-                    && port_state.is_premature_disconnect()
-                {
-                    Some("(Auto-reconnections paused while open)")
-                } else {
-                    None
-                };
-                DisconnectPrompt::render_prompt_block_popup(
-                    Some("Disconnect from port?"),
-                    reconns_paused,
-                    Style::new().blue(),
-                    frame,
-                    area,
-                    &mut self.table_state,
-                );
-            }
-            TerminalPrompt::AttemptReconnectPrompt => {
-                let user_broke_connection = if self.user_broke_connection {
-                    Some("(Reconnections paused!)")
-                } else {
-                    None
-                };
-                AttemptReconnectPrompt::render_prompt_block_popup(
-                    Some("Reconnect to port?"),
-                    user_broke_connection,
-                    Style::new().red(),
-                    frame,
-                    area,
-                    &mut self.table_state,
-                )
-            }
-            TerminalPrompt::None => (),
-        }
-
-        if prompt_shown {
-            // let area = centered_rect(30, 30, area);
-            // let save_device_prompt =
-            //     DisconnectPrompt::prompt_table_block("Disconnect from port?", Style::new().blue());
-
-            // frame.render_waidget(Clear, area);
-            // frame.render_stateful_widget(save_device_prompt, area, &mut self.table_state);
-        }
         // debug!("2: {:?}", start.elapsed());
     }
 
@@ -4157,10 +4113,11 @@ impl App {
         ] = vertical![*=1, ==1, ==1, ==1, ==1].areas(block.inner(area));
 
         let custom_visible = self.baud_selection_state.on_last(COMMON_BAUD);
-        let custom_selected = matches!(
-            self.menu,
-            Menu::PortSelection(PortSelectionElement::CustomBaud)
-        );
+        let ports_selected = self.port_selection_scroll < self.ports.len();
+        let baud_selected = self.port_selection_scroll == self.port_selection_item_count() - 2;
+        let baud_selected_when_custom =
+            custom_visible && self.port_selection_scroll == self.port_selection_item_count() - 3;
+        let options_selected = self.port_selection_scroll == self.port_selection_item_count() - 1;
         if custom_visible {
             // ------ "Baud Rate:" [115200]
             std::mem::swap(&mut filler_or_custom_baud_entry, &mut baud_text_area);
@@ -4177,18 +4134,17 @@ impl App {
 
         frame.render_widget(block, area);
 
-        if self.popup.is_none() {
-            frame.render_stateful_widget(table, table_area, &mut self.table_state);
+        if self.popup.is_none() && ports_selected {
+            let mut table_state = TableState::new()
+                .with_selected(Some(self.port_selection_scroll))
+                .with_selected_column(Some(usize::MAX));
+
+            frame.render_stateful_widget(table, table_area, &mut table_state);
         } else {
             frame.render_widget(table, table_area);
         }
 
         frame.render_widget(baud_text.centered(), baud_text_area);
-
-        self.baud_selection_state.active = matches!(
-            self.menu,
-            Menu::PortSelection(PortSelectionElement::BaudSelection)
-        );
 
         let selector = SingleLineSelector::new(COMMON_BAUD.iter().map(|&b| {
             if b == 0 {
@@ -4198,13 +4154,16 @@ impl App {
             }
         }));
 
+        self.baud_selection_state.active =
+            (!custom_visible && baud_selected) || (custom_visible && baud_selected_when_custom);
+
         frame.render_stateful_widget(&selector, baud_selector, &mut self.baud_selection_state);
 
         if custom_visible {
             let [left, input_area, right] =
                 horizontal![*=1, ==10, *=1].areas(filler_or_custom_baud_entry);
 
-            let style = if custom_selected {
+            let style = if baud_selected {
                 Style::new().reversed()
             } else {
                 Style::new()
@@ -4223,7 +4182,7 @@ impl App {
                 .style(style);
             frame.render_widget(input_text, input_area);
 
-            if custom_selected {
+            if baud_selected {
                 frame.set_cursor_position((
                     // Put cursor past the end of the input text
                     input_area.x
@@ -4241,10 +4200,7 @@ impl App {
 
         // frame.render_widget(static_baud.centered(), baud_selector);
 
-        if matches!(
-            self.menu,
-            Menu::PortSelection(PortSelectionElement::MoreOptions)
-        ) {
+        if options_selected {
             frame.render_widget(
                 Line::from(more_options_button.reversed()).centered(),
                 more_options,
@@ -4261,17 +4217,38 @@ impl App {
         }
     }
     fn show_popup(&mut self, popup: Popup) {
+        match &popup {
+            Popup::AttemptReconnectPrompt
+            | Popup::DisconnectPrompt
+            | Popup::IgnoreByName(_)
+            | Popup::IgnoreByUsb(_, _) => self.popup_menu_scroll = 0,
+
+            #[cfg(feature = "defmt")]
+            Popup::DefmtRecentElf => {
+                if self.defmt_helpers.recent_elfs.is_empty() {
+                    self.dismiss_popup();
+                    self.notifs.notify_str(
+                        "No recent ELFs to select from! Try loading some!",
+                        Color::Red,
+                    );
+                    return;
+                } else {
+                    self.popup_menu_scroll = 0
+                }
+            }
+            _ => self.popup_menu_scroll = 1,
+        }
+
         self.popup = Some(popup);
         self.refresh_scratch();
         self.popup_hint_scroll = -2;
-        self.popup_menu_scroll = 1;
 
         self.event_tx
             .send(Tick::Scroll.into())
             .map_err(|e| e.to_string())
             .expect("failed to send into own event queue?");
     }
-    fn show_popup_menu(&mut self, popup: ShowPopupAction) {
+    fn show_popup_from_action(&mut self, popup: ShowPopupAction) {
         let popup_menu = match popup {
             ShowPopupAction::ShowPortSettings => Popup::SettingsMenu(SettingsMenu::SerialPort),
             ShowPopupAction::ShowBehavior => Popup::SettingsMenu(SettingsMenu::Behavior),
@@ -4349,7 +4326,7 @@ impl App {
             }
         };
 
-        self.menu = Menu::Terminal(TerminalPrompt::None);
+        self.menu = Menu::Terminal;
 
         Ok(())
     }
@@ -4498,29 +4475,6 @@ pub fn repeating_pattern_widget(
         InnerPortStatus::Idle => pattern_widget.red(),
     };
     frame.render_widget(pattern_widget, area);
-}
-
-fn wrapping_prompt_scroll(len: usize, table_state: &mut TableState, up: bool) {
-    match (table_state.selected(), up) {
-        (Some(index), true) => {
-            // if would overflow scrolling up
-            if index.overflowing_sub(1).1 {
-                table_state.select_last();
-            } else {
-                table_state.scroll_up_by(1);
-            }
-        }
-        (Some(index), false) => {
-            // if would overflow scrolling down
-            if (index + 1) >= len {
-                table_state.select_first();
-            } else {
-                table_state.scroll_down_by(1);
-            }
-        }
-        (None, true) => table_state.select_first(),
-        (None, false) => table_state.select_last(),
-    }
 }
 
 /// If the given text is longer than the supplied area, it will be scrolled out of and then back in to the area.

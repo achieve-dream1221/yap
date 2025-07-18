@@ -272,9 +272,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                     text::Text,
                     widgets::{Row, Table},
                 };
-                // table_state.select_first_column();
-                let selected_row_style = Style::new().reversed();
-                let first_column_style = Style::new().reset();
+                let cell_highlight_style = Style::new().reversed().italic();
 
                 let rows: Vec<Row> = vec![
                     #(
@@ -289,8 +287,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                     rows,
                     [Constraint::Percentage(50), Constraint::Percentage(50)],
                 )
-                .column_highlight_style(first_column_style)
-                .row_highlight_style(selected_row_style);
+                .cell_highlight_style(cell_highlight_style);
 
                 option_table
             }

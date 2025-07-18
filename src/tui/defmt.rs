@@ -190,8 +190,11 @@ impl DefmtRecentElfs {
     pub fn last(&self) -> Option<&Utf8Path> {
         self.last.as_ref().map(Utf8PathBuf::as_path)
     }
-    pub fn recents_len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.recent.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.recent.is_empty()
     }
 }
 

@@ -70,6 +70,38 @@ pub enum AttemptReconnectPrompt {
 
 impl PromptKeybind for AttemptReconnectPrompt {}
 
+#[derive(
+    Debug, Clone, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
+)]
+#[repr(u8)]
+#[strum(serialize_all = "title_case")]
+pub enum IgnoreUsbDevicePrompt {
+    #[strum(props(keybind = "y"))]
+    #[strum(serialize = "Ignore by VID + PID")]
+    IgnoreByVidPid,
+    #[strum(serialize = "Ignore by VID + PID + Serial Number")]
+    IgnoreByVidPidSerial,
+    IgnoreByName,
+    #[strum(props(keybind = "c"))]
+    Cancel,
+}
+
+impl PromptKeybind for IgnoreUsbDevicePrompt {}
+
+#[derive(
+    Debug, Clone, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
+)]
+#[repr(u8)]
+#[strum(serialize_all = "title_case")]
+pub enum IgnorePortByNamePrompt {
+    #[strum(props(keybind = "y"))]
+    IgnoreByName,
+    #[strum(props(keybind = "c"))]
+    Cancel,
+}
+
+impl PromptKeybind for IgnorePortByNamePrompt {}
+
 // #[derive(
 //     Debug, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
 // )]

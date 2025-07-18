@@ -378,6 +378,7 @@ impl SerialWorker {
                     error!("Failed reconnect attempt: {e}");
                 }
             }
+            SerialWorkerCommand::NewIgnored(ignored) => self.ignored_devices = ignored,
             SerialWorkerCommand::Shutdown(_) => unreachable!(),
             SerialWorkerCommand::PortCommand(_) => unreachable!(),
         }
@@ -530,7 +531,9 @@ impl SerialWorker {
             return Ok(());
         }
 
+        // scan_for_serial_ports pre-filters out any user-ignored devices!
         let current_ports = self.scan_for_serial_ports()?;
+
         let port_guard = self.shared_status.load();
         let desired_port = port_guard
             .current_port
@@ -629,17 +632,14 @@ impl SerialWorker {
         //     .count();
 
         ports.retain(|p| match &p.port_type {
-            // Hardcoded filter for Index/Beyond's Bluetooth COM Port
-            // TODO remove when releasing?
-            SerialPortType::UsbPort(usb) if usb.vid == 0x28DE && usb.pid == 0x2102 => false,
+            _ if self.ignored_devices.name.contains(&p.port_name) => false,
+            _ if !self.ignored_devices.show_ttys_ports && p.port_name.starts_with("/dev/ttyS") => {
+                false
+            }
 
             SerialPortType::UsbPort(usb) => !self.ignored_devices.usb.iter().any(|ig| ig == usb),
             _ => true,
         });
-
-        // TODO: Add filters for this in UI
-        #[cfg(unix)]
-        ports.retain(|port| !(port.port_type == SerialPortType::Unknown));
 
         ports.push(SerialPortInfo {
             port_name: MOCK_PORT_NAME.to_owned(),
@@ -647,7 +647,6 @@ impl SerialWorker {
         });
 
         // info!("Serial port scanning found {} ports", ports.len());
-        // self.scanned_ports = ports;
         Ok(ports)
     }
     fn connect_to_port(

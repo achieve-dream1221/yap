@@ -4,8 +4,7 @@ use ratatui::{
 };
 
 pub fn sync_logs_button() -> Table<'static> {
-    let selected_row_style = Style::new().reversed();
-    let first_column_style = Style::new().reset();
+    let cell_highlight_style = Style::new().reversed().italic();
 
     let rows: Vec<Row> = vec![Row::new([
         Text::raw("Sync Buffer to File(s) ").right_aligned(),
@@ -16,6 +15,5 @@ pub fn sync_logs_button() -> Table<'static> {
         rows,
         [Constraint::Percentage(60), Constraint::Percentage(40)],
     )
-    .column_highlight_style(first_column_style)
-    .row_highlight_style(selected_row_style)
+    .cell_highlight_style(cell_highlight_style)
 }

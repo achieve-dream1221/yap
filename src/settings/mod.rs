@@ -72,7 +72,7 @@ pub struct Settings {
     pub logging: Logging,
 
     #[serde(default)]
-    pub ignored: Ignored,
+    pub ignored_devices: Ignored,
 
     #[serde(skip)]
     pub path: PathBuf,
@@ -306,6 +306,7 @@ pub struct Behavior {
     /// Send symbols like \n or \xFF as their respective bytes.
     pub fake_shell_unescape: bool,
 
+    // TODO reconsider
     #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]
     /// Persist changes to Port Settings made while connected across sessions.
@@ -590,11 +591,41 @@ pub struct PortSettings {
 }
 
 #[serde_inline_default]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
+/// Hide certain devices from the Port Selection screen.
+///
+/// Does not effect CLI USB entry.
+#[derivative(Default)]
 pub struct Ignored {
+    #[cfg(unix)]
     #[serde(default)]
+    /// Show /dev/ttyS* ports.
+    pub show_ttys_ports: bool,
+
+    #[serde(default = "default_hidden_usb")]
+    #[derivative(Default(value = "default_hidden_usb()"))]
     /// Devices in VID:PID[:SERIAL] format to not show in port selection.
+    ///
+    /// Entries without a Serial # act as a wildcard,
+    /// entries containing a Serial # require an exact match.
     pub usb: Vec<DeserializedUsb>,
+
+    #[serde(default)]
+    /// Hide any serial ports matching these paths/names.
+    pub name: Vec<String>,
+}
+
+fn default_hidden_usb() -> Vec<DeserializedUsb> {
+    let mut hidden = Vec::new();
+
+    // Valve Index/Bigscreen Beyond's Bluetooth COM Port
+    hidden.push(DeserializedUsb {
+        vid: 0x28DE,
+        pid: 0x2102,
+        serial_number: None,
+    });
+
+    hidden
 }
 
 impl Default for PortSettings {
