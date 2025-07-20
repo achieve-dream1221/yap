@@ -38,3 +38,13 @@ jobs:
         run: cargo test --all-targets --all-features
       - name: Run Integration Tests
         run: cargo test --all-targets --all-features -- --ignored --show-output --test-threads=1
+  cargo-hack:
+    name: cargo-hack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+      - name: Install Linux Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - run: cargo hack check --feature-powerset --no-dev-deps
