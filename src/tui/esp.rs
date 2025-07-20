@@ -35,8 +35,8 @@ pub enum EspProfile {
     Elf(EspElf),
 }
 
-#[cfg(feature = "defmt")]
 impl EspProfile {
+    #[cfg(feature = "defmt")]
     pub fn defmt_elf_path(&self) -> Option<Utf8PathBuf> {
         match self {
             EspProfile::Bins(EspBins {

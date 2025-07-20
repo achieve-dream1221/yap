@@ -229,6 +229,7 @@ fn run_inner(
 
     let mut app = App::build(tx, rx, ctrl_c_tx, app_settings, tcp_log_health)?;
 
+    #[cfg(feature = "defmt")]
     if let Some(defmt_path) = cli_args.defmt_elf {
         match app::_try_load_defmt_elf(
             &defmt_path,

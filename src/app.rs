@@ -1,8 +1,7 @@
-#[cfg(feature = "defmt")]
-use std::sync::Arc;
 use std::{
     borrow::Cow,
     collections::VecDeque,
+    sync::Arc,
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -64,8 +63,7 @@ use crate::{
     settings::{Behavior, PortSettings, Rendering, Settings},
     traits::{FirstChars, LastIndex, LineHelpers, RequiresPort, ToggleBool},
     tui::{
-        centered_rect_size,
-        defmt::DefmtRecentError,
+        POPUP_MENU_SELECTOR_COUNT, centered_rect_size,
         prompts::{
             AttemptReconnectPrompt, DisconnectPrompt, IgnorePortByNamePrompt,
             IgnoreUsbDevicePrompt, PromptKeybind, PromptTable,
@@ -79,8 +77,9 @@ use crate::{
 #[cfg(feature = "defmt")]
 use crate::{
     buffer::defmt::{DefmtDecoder, DefmtLoadError, LocationsError},
-    tui::defmt::DefmtRecentElfs,
+    tui::defmt::{DefmtRecentElfs, DefmtRecentError},
 };
+
 #[cfg(feature = "defmt")]
 use crate::{keybinds::DefmtSelectAction, settings::Defmt, tui::defmt::DefmtHelpers};
 
@@ -91,7 +90,6 @@ use crate::buffer::defmt::elf_watcher::ElfWatchEvent;
 use crate::{
     config_adjacent_path,
     macros::{MacroNameTag, MacroNotFound, Macros},
-    tui::POPUP_MENU_SELECTOR_COUNT,
 };
 
 #[cfg(feature = "macros")]
@@ -830,6 +828,12 @@ impl App {
             Event::Tick(Tick::Tx) => {
                 self.repeating_line_flip.flip();
             }
+            #[cfg(feature = "defmt")]
+            Event::DefmtFromFilePicker(elf_path) => self.try_load_defmt_elf(
+                &elf_path,
+                #[cfg(feature = "defmt_watch")]
+                false,
+            ),
             #[cfg(feature = "defmt_watch")]
             Event::DefmtElfWatch(ElfWatchEvent::ElfUpdated(elf_path)) => {
                 if self.settings.defmt.watch_elf_for_changes {
@@ -848,11 +852,6 @@ impl App {
             Event::DefmtElfWatch(ElfWatchEvent::Error(err)) => {
                 self.notifs.notify_str(err, Color::Red);
             }
-            Event::DefmtFromFilePicker(elf_path) => self.try_load_defmt_elf(
-                &elf_path,
-                #[cfg(feature = "defmt_watch")]
-                false,
-            ),
         }
         Ok(())
     }
@@ -1708,16 +1707,12 @@ impl App {
     }
     // fn tab_pressed(&mut self) {}
     fn esc_pressed(&mut self) {
-        #[cfg(feature = "defmt")]
         match self.popup {
             None => (),
             Some(_) => {
                 self.dismiss_popup();
                 return;
             }
-        }
-        if self.popup.is_some() {
-            return;
         }
 
         match self.menu {
@@ -1842,11 +1837,8 @@ impl App {
             | Some(Popup::ConnectionFailed(_))
             | Some(Popup::CurrentKeybinds)
             | Some(Popup::ErrorMessage(_)) => (),
-
             #[cfg(not(any(feature = "espflash", feature = "macros")))]
-            Some(Popup::PopupMenu(popup)) if self.popup_menu_scroll == 0 => {
-                self.cycle_settings_menu(false);
-            }
+            Some(Popup::SettingsMenu(_)) if self.popup_menu_scroll == 0 => {}
             #[cfg(any(feature = "espflash", feature = "macros"))]
             Some(Popup::SettingsMenu(_)) | Some(Popup::ToolMenu(_))
                 if self.popup_menu_scroll == 0 =>
@@ -1854,9 +1846,10 @@ impl App {
                 self.cycle_menu_type();
             }
             #[cfg(any(feature = "espflash", feature = "macros"))]
-            Some(Popup::SettingsMenu(_)) | Some(Popup::ToolMenu(_))
-                if self.popup_menu_scroll == 1 =>
-            {
+            Some(Popup::ToolMenu(_)) if self.popup_menu_scroll == 1 => {
+                self.cycle_sub_menu(false);
+            }
+            Some(Popup::SettingsMenu(_)) if self.popup_menu_scroll == 1 => {
                 self.cycle_sub_menu(false);
             }
             Some(Popup::SettingsMenu(SettingsMenu::SerialPort)) => {
@@ -1963,9 +1956,7 @@ impl App {
             | Some(Popup::CurrentKeybinds)
             | Some(Popup::ErrorMessage(_)) => (),
             #[cfg(not(any(feature = "espflash", feature = "macros")))]
-            Some(Popup::PopupMenu(popup)) if self.popup_menu_scroll == 0 => {
-                self.cycle_settings_menu(true);
-            }
+            Some(Popup::SettingsMenu(_)) if self.popup_menu_scroll == 0 => {}
             #[cfg(any(feature = "espflash", feature = "macros"))]
             Some(Popup::SettingsMenu(_)) | Some(Popup::ToolMenu(_))
                 if self.popup_menu_scroll == 0 =>
@@ -1973,9 +1964,10 @@ impl App {
                 self.cycle_menu_type();
             }
             #[cfg(any(feature = "espflash", feature = "macros"))]
-            Some(Popup::SettingsMenu(_)) | Some(Popup::ToolMenu(_))
-                if self.popup_menu_scroll == 1 =>
-            {
+            Some(Popup::ToolMenu(_)) if self.popup_menu_scroll == 1 => {
+                self.cycle_sub_menu(true);
+            }
+            Some(Popup::SettingsMenu(_)) if self.popup_menu_scroll == 1 => {
                 self.cycle_sub_menu(true);
             }
             Some(Popup::SettingsMenu(SettingsMenu::SerialPort)) => {
@@ -3511,7 +3503,7 @@ impl App {
             &mut scrollbar_state,
         );
     }
-
+    #[cfg(any(feature = "espflash", feature = "macros"))]
     fn render_tool_popup(
         &mut self,
         frame: &mut Frame,
