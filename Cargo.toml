@@ -1,5 +1,6 @@
 [package]
 name = "yap"
+repository = "https://github.com/nullstalgia/yap"
 version = "0.1.0"
 edition = "2024"
 
@@ -62,7 +63,7 @@ itertools = "0.14.0"
 libc = "0.2.169"
 md5 = { version = "0.8.0", optional = true }
 memchr = "2.7.4"
-# using instead of rfd since it only adds ~20 deps, not ~100.
+# using instead of rfd (rusty file dialog) since it only adds ~20 deps, not ~100.
 native-dialog = { version = "0.9.0", optional = true }
 nom = "7.1"
 notify = { version = "8.0.0", features = [

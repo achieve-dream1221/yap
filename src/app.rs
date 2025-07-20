@@ -604,7 +604,9 @@ impl App {
                 self.buffer.scroll_by(amount);
             }
 
-            Event::Crossterm(CrosstermEvent::RightClick) => {
+            Event::Crossterm(CrosstermEvent::RightClick)
+                if self.menu == Menu::Terminal && self.popup.is_none() =>
+            {
                 if let Some(clipboard) = &mut self.user_input.clipboard {
                     match clipboard.get_text() {
                         Ok(clipboard_text) => {
@@ -616,6 +618,7 @@ impl App {
                     }
                 }
             }
+            Event::Crossterm(CrosstermEvent::RightClick) => {}
 
             Event::Serial(SerialEvent::Connected(reconnect)) => {
                 if let Some(reconnect_type) = &reconnect {
@@ -692,12 +695,17 @@ impl App {
                 }
             }
             Event::Serial(SerialEvent::Ports(ports)) => {
+                let last_ports_len = self.ports.len() as isize;
+                let new_ports_len = ports.len() as isize;
+
+                let diff = new_ports_len - last_ports_len;
+
+                self.port_selection_scroll = self
+                    .port_selection_scroll
+                    .checked_add_signed(diff)
+                    .unwrap_or_default();
+
                 self.ports = ports;
-                // if let Menu::PortSelection(PortSelectionElement::Ports) = &self.menu {
-                //     if self.table_state.selected().is_none() {
-                //         self.table_state.select(Some(0));
-                //     }
-                // }
             }
             Event::Serial(SerialEvent::UnsentTx(unsent)) => todo!("{unsent:?}"),
             #[cfg(feature = "espflash")]
@@ -2725,68 +2733,11 @@ impl App {
     fn render_app(&mut self, frame: &mut Frame) {
         // self.buffer.update_terminal_size(frame.area().as_size());
         // TODO, make more reactive based on frame size :)
-        let vertical_slices = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Fill(4),
-            Constraint::Fill(1),
-        ])
-        .split(frame.area());
 
         // let start = Instant::now();
         match self.menu {
-            Menu::PortSelection => {
-                let big_text = BigText::builder()
-                    .pixel_size(PixelSize::Quadrant)
-                    .style(Style::new().blue())
-                    .centered()
-                    .lines(vec!["yap".blue().into()])
-                    .build();
-                frame.render_widget(big_text, vertical_slices[0]);
-
-                self.port_selection(frame, vertical_slices[1]);
-
-                let mut misc_lines = Vec::new();
-
-                let bindings_with_unrecognized_actions = {
-                    self.keybinds
-                        .keybindings
-                        .iter()
-                        .filter(|(_, v)| v.iter().any(|a| self.get_action_from_string(a).is_none()))
-                        .count()
-                };
-
-                let show_keybinds_hint = self.keybinds.show_keybinds_hint();
-                if bindings_with_unrecognized_actions > 0 {
-                    let line = Line::raw(format!(
-                        "{bindings_with_unrecognized_actions} keybindings with unknown actions, {show_keybinds_hint} to see all bindings."
-                    ))
-                    .centered()
-                    .yellow();
-                    misc_lines.push(line);
-                } else {
-                    let line = Line::raw(format!("{show_keybinds_hint} to see all keybindings."))
-                        .centered()
-                        .dark_gray();
-                    misc_lines.push(line);
-                }
-
-                if let Some(socket_addr) = &self.settings.misc.log_tcp_socket
-                    && self.tcp_log_health.is_ok()
-                {
-                    let line = line![
-                        "Tracing connected to TCP Listener at: ",
-                        socket_addr.to_string()
-                    ]
-                    .centered()
-                    .dark_gray();
-                    misc_lines.push(line);
-                }
-
-                // if !misc_lines.is_empty() {
-                frame.render_widget(Paragraph::new(misc_lines), vertical_slices[2]);
-                // }
-            }
-            Menu::Terminal => self.terminal_menu(frame, frame.area()),
+            Menu::PortSelection => self.port_selection(frame),
+            Menu::Terminal => self.terminal_menu(frame),
         }
         // debug!("a1: {:?}", start.elapsed());
 
@@ -3883,10 +3834,10 @@ impl App {
     pub fn terminal_menu(
         &mut self,
         frame: &mut Frame,
-        area: Rect,
         // buffer: impl Iterator<Item = Line<'a>>,
         // state: &mut TableState
     ) {
+        let area = frame.area();
         let popup_shown = self.popup.is_some();
         let [terminal_area, line_area, input_area] = vertical![*=1, ==1, ==1].areas(area);
         let [input_symbol_area, input_area] = horizontal![==1, *=1].areas(input_area);
@@ -4096,11 +4047,27 @@ impl App {
         // debug!("2: {:?}", start.elapsed());
     }
 
-    fn port_selection(&mut self, frame: &mut Frame, given_area: Rect) {
-        let area = if frame.area().width < 45 {
-            given_area
+    fn port_selection(&mut self, frame: &mut Frame) {
+        let frame_area = frame.area();
+        let vertical_slices = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Fill(4),
+            Constraint::Fill(1),
+        ])
+        .split(frame_area);
+
+        let big_text = BigText::builder()
+            .pixel_size(PixelSize::Quadrant)
+            .style(Style::new().blue())
+            .centered()
+            .lines(vec!["yap".blue().into()])
+            .build();
+        frame.render_widget(big_text, vertical_slices[0]);
+
+        let area = if vertical_slices[1].width < 45 {
+            vertical_slices[1]
         } else {
-            let [_, middle_area, _] = horizontal![==25%, ==50%, ==25%].areas(given_area);
+            let [_, middle_area, _] = horizontal![==25%, ==50%, ==25%].areas(vertical_slices[1]);
             middle_area
         };
 
@@ -4112,7 +4079,6 @@ impl App {
 
         let block = Block::bordered()
             .title("Port Selection")
-            .title_bottom(controls)
             .border_style(Style::new().blue())
             .title_style(Style::reset())
             .title_alignment(ratatui::layout::Alignment::Center);
@@ -4182,6 +4148,14 @@ impl App {
         let more_options_button = span![format!("[More options]")];
 
         frame.render_widget(block, area);
+        frame.render_widget(
+            controls,
+            Rect {
+                y: vertical_slices[1].bottom().saturating_sub(1),
+                height: 1,
+                ..vertical_slices[1]
+            },
+        );
 
         let table_state = if self.popup.is_none() && ports_selected {
             let mut table_state = TableState::new()
@@ -4281,6 +4255,47 @@ impl App {
             table_area.offset(Offset { x: 1, y: 0 }),
             &mut scrollbar_state,
         );
+
+        let mut misc_lines = Vec::new();
+
+        let bindings_with_unrecognized_actions = {
+            self.keybinds
+                .keybindings
+                .iter()
+                .filter(|(_, v)| v.iter().any(|a| self.get_action_from_string(a).is_none()))
+                .count()
+        };
+
+        let show_keybinds_hint = self.keybinds.show_keybinds_hint();
+        if bindings_with_unrecognized_actions > 0 {
+            let line = Line::raw(format!(
+                "{bindings_with_unrecognized_actions} keybindings with unknown actions, {show_keybinds_hint} to see all bindings."
+            ))
+            .centered()
+            .yellow();
+            misc_lines.push(line);
+        } else {
+            let line = Line::raw(format!("{show_keybinds_hint} to see all keybindings."))
+                .centered()
+                .dark_gray();
+            misc_lines.push(line);
+        }
+
+        if let Some(socket_addr) = &self.settings.misc.log_tcp_socket
+            && self.tcp_log_health.is_ok()
+        {
+            let line = line![
+                "Tracing connected to TCP Listener at: ",
+                socket_addr.to_string()
+            ]
+            .centered()
+            .dark_gray();
+            misc_lines.push(line);
+        }
+
+        // if !misc_lines.is_empty() {
+        frame.render_widget(Paragraph::new(misc_lines), vertical_slices[2]);
+        // }
     }
     fn refresh_scratch(&mut self) {
         self.scratch = self.settings.clone();
