@@ -524,9 +524,9 @@ pub struct Keybinds {
     #[serde(default)]
     pub keybindings: IndexMap<KeyCombination, Vec<String>>,
     #[serde(skip)]
-    pub port_settings_hint: Option<CompactString>,
+    port_settings_hint: Option<CompactString>,
     #[serde(skip)]
-    pub show_keybinds_hint: Option<CompactString>,
+    show_keybinds_hint: Option<CompactString>,
 }
 
 // fn serialize_macros_map<S>(
@@ -655,6 +655,18 @@ impl Keybinds {
                 )
             })
             .map(|(kc, _)| kc.to_compact_string());
+    }
+    pub fn port_settings_hint(&self) -> &str {
+        self.port_settings_hint
+            .as_ref()
+            .map(CompactString::as_str)
+            .unwrap_or_else(|| "UNBOUND")
+    }
+    pub fn show_keybinds_hint(&self) -> &str {
+        self.show_keybinds_hint
+            .as_ref()
+            .map(CompactString::as_str)
+            .unwrap_or_else(|| "UNBOUND")
     }
     fn overridable_defaults() -> Self {
         let mut deserialized: Self =

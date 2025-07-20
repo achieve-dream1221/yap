@@ -26,7 +26,7 @@ use strum::VariantArray;
 // - #[derivative(Default)] for properly setting up `Default::default()` for when a _struct_ is missing.
 
 use crate::{
-    app::DEFAULT_BAUD,
+    app::{COMMON_BAUD_TRUNC, DEFAULT_BAUD},
     buffer::UserEcho,
     serial::{DeserializedUsb, Reconnections},
 };
@@ -505,8 +505,8 @@ pub struct Defmt {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, StructTable)]
 pub struct PortSettings {
     /// The baud rate in symbols-per-second.
-    // #[table(values = COMMON_BAUD)]
-    #[table(immutable)]
+    #[table(allow_unknown_values)]
+    #[table(values = COMMON_BAUD_TRUNC)]
     #[serde_inline_default(DEFAULT_BAUD)]
     pub baud_rate: u32,
 

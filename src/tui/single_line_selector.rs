@@ -1,5 +1,3 @@
-use std::iter::repeat_n;
-
 use num_integer::Integer;
 use ratatui::{prelude::*, text::Line, widgets::TableState};
 
@@ -106,7 +104,7 @@ impl StatefulWidget for &SingleLineSelector<'_> {
                 .expect("index should've been validated")
         };
 
-        use std::iter::{once, repeat};
+        use std::iter::{once, repeat_n};
 
         let prev_span = if state.current_index == 0 {
             Span::raw(" ")
@@ -183,15 +181,15 @@ impl StatefulWidget for &SingleLineSelector<'_> {
     }
 }
 
-impl SingleLineSelector<'_> {
-    fn selector_symbols(
-        &self,
-        area: Rect,
-        state: &SingleLineSelectorState,
-    ) -> impl Iterator<Item = u8> {
-        std::iter::once(0)
-    }
-}
+// impl SingleLineSelector<'_> {
+//     fn selector_symbols(
+//         &self,
+//         area: Rect,
+//         state: &SingleLineSelectorState,
+//     ) -> impl Iterator<Item = u8> {
+//         std::iter::once(0)
+//     }
+// }
 
 impl SingleLineSelectorState {
     pub fn new() -> Self {

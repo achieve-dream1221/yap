@@ -34,7 +34,6 @@ mod buffer;
 mod cli;
 
 mod event_carousel;
-mod history;
 mod keybinds;
 #[cfg(feature = "macros")]
 mod macros;
@@ -44,6 +43,7 @@ mod serial;
 mod settings;
 mod traits;
 mod tui;
+mod user_input;
 
 static CONFIG_PARENT_PATH_CELL: OnceLock<Utf8PathBuf> = OnceLock::new();
 pub fn config_adjacent_path<P: Into<Utf8PathBuf>>(path: P) -> Utf8PathBuf {

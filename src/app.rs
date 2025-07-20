@@ -52,7 +52,6 @@ use crate::{
     TcpStreamHealth,
     buffer::Buffer,
     event_carousel::CarouselHandle,
-    history::UserInput,
     is_ctrl_c,
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
     notifications::{EMERGE_TIME, EXPAND_TIME, EXPIRE_TIME, Notifications, PAUSE_TIME},
@@ -74,6 +73,7 @@ use crate::{
         show_keybinds,
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
+    user_input::UserInput,
 };
 
 #[cfg(feature = "defmt")]
@@ -251,6 +251,12 @@ pub const DEFAULT_BAUD: u32 = {
     baud
 };
 
+pub const COMMON_BAUD_TRUNC: &[u32] = {
+    let common_len_truncated = COMMON_BAUD.len() - 1;
+    let (truncated, _) = COMMON_BAUD.split_at(common_len_truncated);
+    truncated
+};
+
 const FAILED_SEND_VISUAL_TIME: Duration = Duration::from_millis(750);
 
 #[derive(Debug, thiserror::Error)]
@@ -273,6 +279,7 @@ pub struct App {
     serial_buf_rx: Receiver<Vec<u8>>,
 
     baud_selection_state: SingleLineSelectorState,
+    baud_input: Input,
 
     popup: Option<Popup>,
     popup_menu_scroll: usize,
@@ -329,18 +336,21 @@ impl App {
     ) -> Result<Self> {
         let keybinds = Keybinds::build()?;
 
-        let mut user_input = UserInput::default();
+        let buffer_input = UserInput::default();
 
         let saved_baud_rate = settings.serial.baud_rate;
-        let selected_baud_index = COMMON_BAUD
-            .iter()
-            .position(|b| *b == saved_baud_rate)
-            .unwrap_or_else(|| {
-                user_input.input_box = Input::new(saved_baud_rate.to_string());
-                COMMON_BAUD.last_index()
-            });
+        let (baud_input, baud_index) = {
+            if let Some(idx) = COMMON_BAUD.iter().position(|b| *b == saved_baud_rate) {
+                (Input::default(), idx)
+            } else {
+                (
+                    Input::new(saved_baud_rate.to_string()),
+                    COMMON_BAUD.last_index(),
+                )
+            }
+        };
 
-        debug!("{settings:#?}");
+        // debug!("{settings:#?}");
 
         let (serial_buf_tx, serial_buf_rx) = crossbeam::channel::unbounded();
 
@@ -427,7 +437,8 @@ impl App {
             port_selection_scroll: 0,
             popup: None,
             popup_hint_scroll: -2,
-            baud_selection_state: SingleLineSelectorState::new().with_selected(selected_baud_index),
+            baud_selection_state: SingleLineSelectorState::new().with_selected(baud_index),
+            baud_input,
             popup_menu_scroll: 0,
             // popup_category_selector_state: SingleLineSelectorState::new(),
             // popup_scrollbar_state: ScrollbarState::default(),
@@ -440,7 +451,7 @@ impl App {
             serial: serial_handle,
             serial_thread: Takeable::new(serial_thread),
 
-            user_input,
+            user_input: buffer_input,
 
             buffer,
 
@@ -603,9 +614,7 @@ impl App {
                 if let Some(clipboard) = &mut self.user_input.clipboard {
                     match clipboard.get_text() {
                         Ok(clipboard_text) => {
-                            let mut previous_value = self.user_input.input_box.value().to_owned();
-                            previous_value.push_str(&clipboard_text);
-                            self.user_input.input_box = previous_value.into();
+                            self.user_input.append_to_input(&clipboard_text);
                         }
                         Err(e) => {
                             error!("error getting clipboard text: {e}");
@@ -1044,25 +1053,9 @@ impl App {
                     key!(ctrl - a) => (),
                     key!(del) | key!(backspace) if self.user_input.all_text_selected => (),
 
-                    // TODO move into UserInput impl?
-                    _text_input if self.settings.behavior.fake_shell => match self
-                        .user_input
-                        .input_box
-                        .handle_event(&ratatui::crossterm::event::Event::Key(key))
-                    {
-                        // If we changed something in the value when handling the key event,
-                        // we should clear the user_history selection.
-                        Some(StateChanged { value: true, .. }) => {
-                            self.user_input.clear_history_selection();
-                            self.user_input.search_result = None;
-                            self.user_input.all_text_selected = false;
-                        }
-
-                        Some(StateChanged { cursor: true, .. }) => {
-                            self.user_input.all_text_selected = false;
-                        }
-                        _ => (),
-                    },
+                    _text_input if self.settings.behavior.fake_shell => {
+                        self.user_input.consume_typing_event(key)
+                    }
 
                     // TODO
                     _terminal_input => {
@@ -1102,6 +1095,23 @@ impl App {
                 }
             }
 
+            (_, Some(Popup::SettingsMenu(SettingsMenu::SerialPort)))
+                if self.get_corrected_popup_index() == Some(0) =>
+            {
+                // Intentionally only allowing ASCII digits and backspace,
+                // since arrow keys are busy with menu navigation.
+                if matches!(key.code, KeyCode::Char(c) if c.is_ascii_digit())
+                    || matches!(key.code, KeyCode::Backspace)
+                {
+                    self.baud_input
+                        .handle_event(&ratatui::crossterm::event::Event::Key(key));
+
+                    if let Ok(baud_rate) = self.baud_input.value().parse::<u32>() {
+                        self.scratch.serial.baud_rate = baud_rate;
+                    }
+                }
+            }
+
             (Menu::Terminal, Some(_)) => (),
 
             (Menu::PortSelection, None) => {
@@ -1111,11 +1121,15 @@ impl App {
 
                 if is_custom_visible && is_baud_selected {
                     // filtering out just letters from being put into the custom baud entry
+                    // since filtering input to just ascii digits prevents backspace/cursor ops
                     // extra checks will be needed at parse stage to ensure non-digit chars arent present
                     if !matches!(key.code, KeyCode::Char(c) if c.is_alphabetic()) {
-                        self.user_input
-                            .input_box
+                        self.baud_input
                             .handle_event(&ratatui::crossterm::event::Event::Key(key));
+
+                        if let Ok(baud_rate) = self.baud_input.value().parse::<u32>() {
+                            self.scratch.serial.baud_rate = baud_rate;
+                        }
                     }
                 } else {
                     at_port_selection = true;
@@ -1148,7 +1162,7 @@ impl App {
                 }
                 _ => self.shutdown(),
             },
-            key!(ctrl - a) if at_terminal && !self.user_input.input_box.value().is_empty() => {
+            key!(ctrl - a) if at_terminal && !self.user_input.value().is_empty() => {
                 self.user_input.all_text_selected = true;
             }
             key!(home) if self.popup.is_some() => {
@@ -1850,6 +1864,10 @@ impl App {
                     .serial
                     .handle_input(ArrowKey::Left, self.get_corrected_popup_index().unwrap())
                     .unwrap();
+
+                if let Some(0) = self.get_corrected_popup_index() {
+                    self.baud_input = self.scratch.serial.baud_rate.to_string().into();
+                }
             }
             Some(Popup::SettingsMenu(SettingsMenu::Behavior)) => {
                 self.scratch
@@ -1965,6 +1983,10 @@ impl App {
                     .serial
                     .handle_input(ArrowKey::Right, self.get_corrected_popup_index().unwrap())
                     .unwrap();
+
+                if let Some(0) = self.get_corrected_popup_index() {
+                    self.baud_input = self.scratch.serial.baud_rate.to_string().into();
+                }
             }
             Some(Popup::SettingsMenu(SettingsMenu::Behavior)) => {
                 self.scratch
@@ -2057,6 +2079,16 @@ impl App {
             }
             Some(Popup::ErrorMessage(_)) | Some(Popup::CurrentKeybinds) => self.dismiss_popup(),
             Some(Popup::SettingsMenu(SettingsMenu::SerialPort)) => {
+                let baud_rate = match self.baud_input.value().parse::<u32>() {
+                    Ok(baud) => baud,
+                    Err(e) => {
+                        self.notifs
+                            .notify_str(format!("Invalid Baud Rate: {e}!"), Color::Red);
+                        return Ok(());
+                    }
+                };
+                self.scratch.serial.baud_rate = baud_rate;
+
                 self.settings.serial = self.scratch.serial.clone();
                 self.buffer
                     .update_line_ending(self.scratch.serial.rx_line_ending.as_bytes());
@@ -2116,8 +2148,7 @@ impl App {
                             todo!()
                         }
                         text => {
-                            self.user_input.clear();
-                            self.user_input.input_box = text.as_str().into();
+                            self.user_input.replace_input(text.as_str());
                             self.dismiss_popup();
                         }
                     }
@@ -2320,21 +2351,22 @@ impl App {
                     (scroll, Some(port_info)) if scroll < self.ports.len() => {
                         info!("Port {}", port_info.port_name);
 
-                        let baud_rate =
-                            if COMMON_BAUD.last_index_eq(self.baud_selection_state.current_index) {
-                                match self.user_input.input_box.value().parse() {
-                                    Ok(b) => b,
-                                    Err(e) => {
-                                        todo!("{e}");
-                                        self.popup = Some(Popup::ConnectionFailed("".to_string()));
-                                        return Ok(());
-                                    }
+                        let baud_rate = if COMMON_BAUD
+                            .last_index_eq(self.baud_selection_state.current_index)
+                        {
+                            match self.baud_input.value().parse::<u32>() {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    self.notifs
+                                        .notify_str(format!("Invalid Baud Rate: {e}!"), Color::Red);
+                                    return Ok(());
                                 }
-                            } else {
-                                COMMON_BAUD[self.baud_selection_state.current_index]
-                            };
+                            }
+                        } else {
+                            COMMON_BAUD[self.baud_selection_state.current_index]
+                        };
 
-                        self.scratch.serial.baud_rate = baud_rate;
+                        self.settings.serial.baud_rate = baud_rate;
                         self.settings.save()?;
 
                         let connect_result_rx = self.serial.try_connect_now(
@@ -2372,7 +2404,7 @@ impl App {
             }
             Menu::Terminal => {
                 if serial_healthy {
-                    let user_input = self.user_input.input_box.value();
+                    let user_input = self.user_input.value();
 
                     if self.settings.behavior.fake_shell {
                         let user_le = &self.settings.serial.tx_line_ending;
@@ -2384,9 +2416,7 @@ impl App {
                         )?;
                         self.buffer
                             .append_user_text(user_input, user_le_bytes, false, false);
-                        self.user_input.history.push(user_input);
-
-                        self.user_input.clear();
+                        self.user_input.commit_input_to_history();
                     } else {
                         // self.serial.send_str(user_input, "").unwrap();
                         todo!("not ready yet");
@@ -2756,12 +2786,7 @@ impl App {
                         .count()
                 };
 
-                let show_keybinds_hint = self
-                    .keybinds
-                    .show_keybinds_hint
-                    .as_ref()
-                    .map(CompactString::as_str)
-                    .unwrap_or("UNBOUND");
+                let show_keybinds_hint = self.keybinds.show_keybinds_hint();
                 if bindings_with_unrecognized_actions > 0 {
                     let line = Line::raw(format!(
                         "{bindings_with_unrecognized_actions} keybindings with unknown actions, {show_keybinds_hint} to see all bindings."
@@ -3156,6 +3181,41 @@ impl App {
                     settings_area,
                     &mut table_state,
                 );
+
+                // If Baud Rate is selected, render using the normal Input method
+                if let Some(0) = self.get_corrected_popup_index() {
+                    let [_, mut input_area] = horizontal![==50%, ==50%].areas(settings_area);
+                    input_area.height = 1;
+                    frame.render_widget(Clear, input_area);
+
+                    let baud_text = self.baud_input.value();
+                    let baud_line = Line::raw(baud_text).centered();
+
+                    let width = input_area.width.max(1).saturating_sub(2); // Unsure why this required -1 more than the others.
+
+                    // Calculate padding for centered text
+                    let text_width = baud_line.width() as u16;
+                    let pad_left = if width > text_width {
+                        (width - text_width) / 2
+                    } else {
+                        0
+                    };
+
+                    let scroll = self.baud_input.visual_scroll(width as usize);
+                    let input_text = Paragraph::new(baud_line)
+                        .scroll((0, scroll as u16))
+                        .reversed()
+                        .italic();
+
+                    frame.render_widget(input_text, input_area);
+
+                    // Cursor logic: trailing edge after the last char, with center offset
+                    let cursor_pos = self.baud_input.visual_cursor();
+                    let centered_offset = pad_left as i32 + (cursor_pos as i32 - scroll as i32);
+                    let cursor_x = input_area.x + centered_offset.max(0) as u16;
+
+                    frame.set_cursor_position((cursor_x + 1, input_area.y));
+                }
 
                 let text: &str = table_state
                     .selected()
@@ -3607,7 +3667,7 @@ impl App {
                     // Center the search line in the area
                     let search_line = Line::raw(search_text).centered();
 
-                    let width = categories_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge
+                    let width = categories_area.width.max(1).saturating_sub(1); // So the cursor doesn't bleed off the edge
 
                     // Calculate padding for centered text
                     let text_width = search_line.width() as u16;
@@ -4017,16 +4077,11 @@ impl App {
 
         let should_position_cursor = !popup_shown && self.popup.is_none();
 
-        if self.user_input.input_box.value().is_empty() {
+        if self.user_input.value().is_empty() {
             // Leading space leaves room for full-width cursors.
-            let port_settings_combo = self
-                .keybinds
-                .port_settings_hint
-                .as_ref()
-                .map(CompactString::as_str)
-                .unwrap_or_else(|| "UNBOUND");
+            let port_settings_hint = self.keybinds.port_settings_hint();
             let input_hint = Line::raw(format!(
-                " Input goes here. `{port_settings_combo}` for port settings.",
+                " Input goes here. `{port_settings_hint}` for port settings.",
             ))
             .style(input_style)
             .dark_gray()
@@ -4036,9 +4091,9 @@ impl App {
                 frame.set_cursor_position(input_area.as_position());
             }
         } else {
-            let width = input_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge
-            let scroll = self.user_input.input_box.visual_scroll(width as usize);
-            let input_text = Paragraph::new(self.user_input.input_box.value())
+            let width = input_area.width.max(1).saturating_sub(1); // So the cursor doesn't bleed off the edge
+            let scroll = self.user_input.input_box().visual_scroll(width as usize);
+            let input_text = Paragraph::new(self.user_input.input_box().value())
                 .scroll((0, scroll as u16))
                 .style(input_style);
             frame.render_widget(input_text, input_area);
@@ -4046,7 +4101,8 @@ impl App {
                 frame.set_cursor_position((
                     // Put cursor past the end of the input text
                     input_area.x
-                        + ((self.user_input.input_box.visual_cursor()).max(scroll) - scroll) as u16,
+                        + ((self.user_input.input_box().visual_cursor()).max(scroll) - scroll)
+                            as u16,
                     input_area.y,
                 ));
             }
@@ -4062,8 +4118,16 @@ impl App {
             let [_, middle_area, _] = horizontal![==25%, ==50%, ==25%].areas(given_area);
             middle_area
         };
+
+        let dark_gray = Style::new().dark_gray();
+        let show_keybinds_hint = self.keybinds.show_keybinds_hint();
+        let controls = line![
+            span!(dark_gray;"Ignore port: [I] | Show Keybinds: [{show_keybinds_hint}] | Select: [Enter]")
+        ].centered();
+
         let block = Block::bordered()
             .title("Port Selection")
+            .title_bottom(controls)
             .border_style(Style::new().blue())
             .title_style(Style::reset())
             .title_alignment(ratatui::layout::Alignment::Center);
@@ -4171,12 +4235,12 @@ impl App {
 
             frame.render_widget(Line::from(Span::styled("[", style)).right_aligned(), left);
 
-            let user_text: &str = self.user_input.input_box.value();
+            let user_text: &str = self.baud_input.value();
 
             let user_input = Line::raw(if user_text.is_empty() { " " } else { user_text });
 
-            let width = input_area.width.max(1) - 1; // So the cursor doesn't bleed off the edge
-            let scroll = self.user_input.input_box.visual_scroll(width as usize);
+            let width = input_area.width.max(1).saturating_sub(1); // So the cursor doesn't bleed off the edge
+            let scroll = self.baud_input.visual_scroll(width as usize);
             let input_text = Paragraph::new(user_input)
                 .scroll((0, scroll as u16))
                 .style(style);
@@ -4185,8 +4249,7 @@ impl App {
             if baud_selected {
                 frame.set_cursor_position((
                     // Put cursor past the end of the input text
-                    input_area.x
-                        + ((self.user_input.input_box.visual_cursor()).max(scroll) - scroll) as u16,
+                    input_area.x + ((self.baud_input.visual_cursor()).max(scroll) - scroll) as u16,
                     input_area.y,
                 ));
             }
@@ -4215,6 +4278,8 @@ impl App {
         {
             self.espflash.unchecked_bootloader = false;
         }
+
+        self.baud_input = self.settings.serial.baud_rate.to_string().into();
     }
     fn show_popup(&mut self, popup: Popup) {
         match &popup {

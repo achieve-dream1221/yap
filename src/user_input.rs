@@ -1,7 +1,8 @@
 use arboard::Clipboard;
+use crokey::crossterm::event::{Event, KeyEvent};
 use itertools::Itertools;
 use tracing::warn;
-use tui_input::Input;
+use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 
 use crate::traits::LastIndex as _;
 
@@ -12,7 +13,7 @@ pub struct History {
 }
 
 pub struct UserInput {
-    pub input_box: Input,
+    input_box: Input,
     pub all_text_selected: bool,
     pub preserved_input: Option<String>,
     pub search_result: Option<usize>,
@@ -120,6 +121,40 @@ impl UserInput {
         self.history.clear_selection();
         self.preserved_input = None;
         self.search_result = None;
+        self.all_text_selected = false;
+    }
+    pub fn commit_input_to_history(&mut self) {
+        self.history.push(self.input_box.value());
+        self.clear();
+    }
+    pub fn replace_input(&mut self, text: &str) {
+        self.clear_history_selection();
+        self.input_box = text.into();
+    }
+    pub fn append_to_input(&mut self, text: &str) {
+        self.clear_history_selection();
+        let current = self.input_box.value();
+        self.input_box = format!("{current}{text}").into();
+    }
+    pub fn consume_typing_event(&mut self, key: KeyEvent) {
+        match self.input_box.handle_event(&Event::Key(key)) {
+            // If we changed something in the value when handling the key event,
+            // we should clear the user_history selection.
+            Some(StateChanged { value: true, .. }) => {
+                self.clear_history_selection();
+            }
+
+            Some(StateChanged { cursor: true, .. }) => {
+                self.all_text_selected = false;
+            }
+            _ => (),
+        }
+    }
+    pub fn value(&self) -> &str {
+        self.input_box.value()
+    }
+    pub fn input_box(&self) -> &Input {
+        &self.input_box
     }
 }
 
