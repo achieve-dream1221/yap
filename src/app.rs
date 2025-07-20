@@ -4198,15 +4198,19 @@ impl App {
 
         frame.render_widget(block, area);
 
-        if self.popup.is_none() && ports_selected {
+        let table_state = if self.popup.is_none() && ports_selected {
             let mut table_state = TableState::new()
                 .with_selected(Some(self.port_selection_scroll))
                 .with_selected_column(Some(usize::MAX));
 
             frame.render_stateful_widget(table, table_area, &mut table_state);
+
+            table_state
         } else {
             frame.render_widget(table, table_area);
-        }
+
+            TableState::default()
+        };
 
         frame.render_widget(baud_text.centered(), baud_text_area);
 
@@ -4271,6 +4275,27 @@ impl App {
         } else {
             frame.render_widget(Line::from(more_options_button).centered(), more_options);
         }
+
+        let scrollbar_style = Style::new().reset();
+
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(scrollbar_style)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+
+        let height = table_area.height.saturating_sub(2);
+
+        // Scrollbar for ports
+        let content_length = self.ports.len();
+        let mut scrollbar_state =
+            ScrollbarState::new(content_length.saturating_sub(height as usize))
+                .position(table_state.offset());
+
+        frame.render_stateful_widget(
+            scrollbar,
+            table_area.offset(Offset { x: 1, y: 0 }),
+            &mut scrollbar_state,
+        );
     }
     fn refresh_scratch(&mut self) {
         self.scratch = self.settings.clone();

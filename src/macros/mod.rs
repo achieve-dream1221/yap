@@ -57,6 +57,7 @@ pub struct Macros {
 
     pub categories_selector: SingleLineSelectorState,
 
+    // TODO make private?
     pub search_input: Input,
 }
 
