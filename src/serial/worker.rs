@@ -266,7 +266,7 @@ impl SerialWorker {
     // Errors returned should be treated as fatal Worker errors.
     fn handle_worker_command(&mut self, command: SerialWorkerCommand) -> Result<(), WorkerError> {
         match command {
-            SerialWorkerCommand::BlockingConnect {
+            SerialWorkerCommand::ConnectBlocking {
                 port,
                 baud,
                 mut settings,
@@ -357,6 +357,11 @@ impl SerialWorker {
                 let ports = self.scan_for_serial_ports()?;
                 self.scan_snapshot = ports.clone();
                 self.event_tx.send(SerialEvent::Ports(ports).into())?;
+            }
+            SerialWorkerCommand::RequestPortScanBlocking(sender) => {
+                let ports = self.scan_for_serial_ports()?;
+                self.scan_snapshot = ports.clone();
+                sender.send(ports)?;
             }
             SerialWorkerCommand::RequestReconnect(strictness_opt) => {
                 if let Err(e) = self.attempt_reconnect(strictness_opt) {

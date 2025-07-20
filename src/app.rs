@@ -57,7 +57,7 @@ use crate::{
     serial::{
         DeserializedUsb, PrintablePortInfo, ReconnectType, Reconnections, SerialDisconnectReason,
         SerialEvent,
-        handle::SerialHandle,
+        handle::{BlockingCommandError, SerialHandle},
         worker::{InnerPortStatus, MOCK_PORT_NAME},
     },
     settings::{Behavior, PortSettings, Rendering, Settings},
@@ -349,11 +349,12 @@ impl App {
         let (serial_buf_tx, serial_buf_rx) = crossbeam::channel::unbounded();
 
         let (event_carousel, carousel_thread) = CarouselHandle::new();
-        let (serial_handle, serial_thread) = SerialHandle::build(
+        let (serial_handle, serial_thread, ports) = SerialHandle::build(
             event_tx.clone(),
             serial_buf_tx,
             settings.serial.clone(),
             settings.ignored_devices.clone(),
+            Duration::from_secs(15),
         )
         .expect("Failed to build serial worker!");
 
@@ -437,7 +438,7 @@ impl App {
             // popup_category_selector_state: SingleLineSelectorState::new(),
             // popup_scrollbar_state: ScrollbarState::default(),
             // popup_single_line_state: SingleLineSelectorState::new(),
-            ports: Vec::new(),
+            ports,
 
             carousel: event_carousel,
             carousel_thread: Takeable::new(carousel_thread),
@@ -2352,19 +2353,17 @@ impl App {
                         self.settings.serial.baud_rate = baud_rate;
                         self.settings.save()?;
 
-                        let connect_result_rx = self.serial.connect_blocking(
+                        // TODO make a const value
+                        match self.serial.connect_blocking(
                             port_info.clone(),
                             self.settings.serial.clone(),
                             Some(baud_rate),
-                        )?;
-
-                        // TODO make a const value
-                        match connect_result_rx.recv_timeout(Duration::from_secs(15)) {
-                            // Got a connection result, if it's Ok(()), we'll keep going, otherwise it'll bail early.
-                            Ok(Ok(())) => {
+                            Duration::from_secs(15),
+                        ) {
+                            Ok(()) => {
                                 self.menu = Menu::Terminal;
                             }
-                            Ok(Err(e)) => {
+                            Err(BlockingCommandError::Worker(e)) => {
                                 let report = color_eyre::Report::new(e);
                                 let mut error_string = String::new();
                                 for e in report.chain() {
@@ -2372,13 +2371,8 @@ impl App {
                                 }
                                 self.popup = Some(Popup::ConnectionFailed(error_string));
                             }
-                            Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
-                                // color_eyre::eyre::bail!("Connection to supplied port timed out!")
-                            }
-                            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
-                                // color_eyre::eyre::bail!("Serial worker closed unexpectedly!")
-                            }
-                        };
+                            Err(e) => Err(e)?,
+                        }
                     }
                     (scroll, None) if scroll < self.ports.len() => {
                         unreachable!()
@@ -4401,20 +4395,13 @@ impl App {
         port_info: SerialPortInfo,
         baud: Option<u32>,
     ) -> color_eyre::Result<()> {
-        let connect_result_rx =
-            self.serial
-                .connect_blocking(port_info, self.settings.serial.clone(), baud)?;
-
-        match connect_result_rx.recv_timeout(Duration::from_secs(15)) {
-            // Got a connection result, if it's Ok(()), we'll keep going, otherwise it'll bail early.
-            Ok(connect_result) => connect_result?,
-            Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
-                color_eyre::eyre::bail!("Connection to supplied port timed out!")
-            }
-            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
-                color_eyre::eyre::bail!("Serial worker closed unexpectedly!")
-            }
-        };
+        // TODO make a const value
+        self.serial.connect_blocking(
+            port_info.clone(),
+            self.settings.serial.clone(),
+            baud,
+            Duration::from_secs(15),
+        )?;
 
         self.menu = Menu::Terminal;
 

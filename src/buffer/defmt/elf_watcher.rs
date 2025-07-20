@@ -89,9 +89,11 @@ impl ElfWatchHandle {
 }
 
 type HandleResult<T> = Result<T, ElfWatcherMissing>;
+
 #[derive(Debug, thiserror::Error)]
 #[error("elf watcher rx handle dropped")]
 pub struct ElfWatcherMissing;
+
 impl<T> From<crossbeam::channel::SendError<T>> for ElfWatcherMissing {
     fn from(_: crossbeam::channel::SendError<T>) -> Self {
         Self

@@ -121,9 +121,11 @@ struct LoggingWorker {
 }
 
 type HandleResult<T> = Result<T, LoggingWorkerMissing>;
+
 #[derive(Debug, thiserror::Error)]
 #[error("logging rx handle dropped")]
 pub struct LoggingWorkerMissing;
+
 impl<T> From<crossbeam::channel::SendError<T>> for LoggingWorkerMissing {
     fn from(_: crossbeam::channel::SendError<T>) -> Self {
         Self

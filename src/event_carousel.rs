@@ -16,9 +16,11 @@ pub struct CarouselHandle {
 }
 
 type HandleResult<T> = Result<T, CarouselWorkerMissing>;
+
 #[derive(Debug, thiserror::Error)]
 #[error("carousel rx handle dropped")]
 pub struct CarouselWorkerMissing;
+
 impl<T> From<crossbeam::channel::SendError<T>> for CarouselWorkerMissing {
     fn from(_: crossbeam::channel::SendError<T>) -> Self {
         Self

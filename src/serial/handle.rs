@@ -2,13 +2,13 @@ use std::{sync::Arc, thread::JoinHandle, time::Duration};
 
 use arc_swap::ArcSwap;
 use bstr::ByteVec;
-use crossbeam::channel::{Receiver, Sender, bounded};
+use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, bounded};
 use serialport::SerialPortInfo;
 use tracing::{debug, error};
 
 use crate::{
     app::Event,
-    serial::Reconnections,
+    serial::{Reconnections, worker::WorkerError},
     settings::{Ignored, PortSettings},
 };
 
@@ -20,7 +20,8 @@ use super::worker::{PortStatus, SerialWorker};
 #[derive(Debug)]
 pub enum SerialWorkerCommand {
     RequestPortScan,
-    BlockingConnect {
+    RequestPortScanBlocking(Sender<Vec<SerialPortInfo>>),
+    ConnectBlocking {
         port: SerialPortInfo,
         baud: Option<u32>,
         settings: PortSettings,
@@ -51,16 +52,6 @@ pub enum PortCommand {
     },
 }
 
-type HandleResult<T> = Result<T, SerialWorkerMissing>;
-#[derive(Debug, thiserror::Error)]
-#[error("serial worker rx handle dropped")]
-pub struct SerialWorkerMissing;
-impl<T> From<crossbeam::channel::SendError<T>> for SerialWorkerMissing {
-    fn from(_: crossbeam::channel::SendError<T>) -> Self {
-        Self
-    }
-}
-
 #[derive(Clone)]
 pub struct SerialHandle {
     pub(super) command_tx: Sender<SerialWorkerCommand>,
@@ -74,7 +65,8 @@ impl SerialHandle {
         buffer_tx: Sender<Vec<u8>>,
         port_settings: PortSettings,
         ignored_devices: Ignored,
-    ) -> HandleResult<(Self, JoinHandle<()>)> {
+        timeout: Duration,
+    ) -> Result<(Self, JoinHandle<()>, Vec<SerialPortInfo>), BlockingCommandError> {
         let (command_tx, command_rx) = crossbeam::channel::unbounded();
 
         let port_status = Arc::new(ArcSwap::from_pointee(PortStatus::new_idle(&port_settings)));
@@ -104,37 +96,34 @@ impl SerialHandle {
             port_settings,
         };
         // Trigger first port scan before scheduled event to fill it in sooner
-        handle.request_port_scan()?;
-        Ok((handle, worker))
+        let ports = handle.request_port_scan_blocking(timeout)?;
+        Ok((handle, worker, ports))
     }
-    // pub fn connect_nonblocking(
-    //     &self,
-    //     port: &SerialPortInfo,
-    //     settings: PortSettings,
-    // ) -> HandleResult<()> {
-    //     self.command_tx
-    //         .send(SerialWorkerCommand::NonBlockingConnect {
-    //             port: port.to_owned(),
-    //             settings,
-    //         })?;
-    //     Ok(())
-    // }
     pub fn connect_blocking(
         &self,
         port: SerialPortInfo,
         settings: PortSettings,
         baud: Option<u32>,
-    ) -> HandleResult<Receiver<Result<(), super::worker::WorkerError>>> {
+        timeout: Duration,
+    ) -> Result<(), BlockingCommandError> {
         let (oneshot_tx, oneshot_rx) = bounded(0);
 
-        self.command_tx.send(SerialWorkerCommand::BlockingConnect {
-            port,
-            baud,
-            settings,
-            result_tx: oneshot_tx,
-        })?;
+        self.command_tx
+            .send(SerialWorkerCommand::ConnectBlocking {
+                port,
+                baud,
+                settings,
+                result_tx: oneshot_tx,
+            })
+            .map_err(|_| SerialWorkerMissing)?;
 
-        Ok(oneshot_rx)
+        match oneshot_rx.recv_timeout(timeout) {
+            Ok(v) => v.map_err(BlockingCommandError::Worker),
+            Err(RecvTimeoutError::Timeout) => Err(BlockingCommandError::Timeout(timeout)),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(BlockingCommandError::Disconnect(SerialWorkerMissing))
+            }
+        }
     }
     pub fn request_break_connection(&self) -> HandleResult<()> {
         self.command_tx.send(SerialWorkerCommand::Disconnect {
@@ -202,6 +191,25 @@ impl SerialHandle {
         self.command_tx.send(SerialWorkerCommand::RequestPortScan)?;
         Ok(())
     }
+    /// Blocking request for the serial worker to scan for ports and send a list of available ports
+    pub fn request_port_scan_blocking(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<SerialPortInfo>, BlockingCommandError> {
+        let (oneshot_tx, oneshot_rx) = bounded(0);
+
+        self.command_tx
+            .send(SerialWorkerCommand::RequestPortScanBlocking(oneshot_tx))
+            .map_err(|_| SerialWorkerMissing)?;
+
+        match oneshot_rx.recv_timeout(timeout) {
+            Ok(v) => Ok(v),
+            Err(RecvTimeoutError::Timeout) => Err(BlockingCommandError::Timeout(timeout)),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(BlockingCommandError::Disconnect(SerialWorkerMissing))
+            }
+        }
+    }
     /// Non-blocking request for the serial worker to attempt to reconnect to the "current" device
     pub fn request_reconnect(&self, strictness_opt: Option<Reconnections>) -> HandleResult<()> {
         self.command_tx
@@ -234,4 +242,26 @@ impl SerialHandle {
             Err(())
         }
     }
+}
+
+type HandleResult<T> = Result<T, SerialWorkerMissing>;
+
+#[derive(Debug, thiserror::Error)]
+#[error("serial worker rx handle dropped")]
+pub struct SerialWorkerMissing;
+
+impl<T> From<crossbeam::channel::SendError<T>> for SerialWorkerMissing {
+    fn from(_: crossbeam::channel::SendError<T>) -> Self {
+        Self
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BlockingCommandError {
+    #[error("serial worker did not respond within {0:?}")]
+    Timeout(Duration),
+    #[error(transparent)]
+    Disconnect(#[from] SerialWorkerMissing),
+    #[error("serial worker encountered an error processing request")]
+    Worker(#[from] WorkerError),
 }
