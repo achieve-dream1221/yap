@@ -521,7 +521,7 @@ impl LoggingWorker {
             self.last_rx_completed = write_buffer_to_text_file(
                 timestamp,
                 &self.settings.timestamp,
-                bytes,
+                &buf,
                 self.last_rx_completed,
                 text_file,
                 &self.line_ending,

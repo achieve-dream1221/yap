@@ -50,6 +50,7 @@ use crate::buffer::{LoggingHandle, LoggingWorkerMissing};
 use crate::{
     TcpStreamHealth,
     buffer::Buffer,
+    config_adjacent_path,
     event_carousel::CarouselHandle,
     is_ctrl_c,
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
@@ -87,10 +88,7 @@ use crate::{keybinds::DefmtSelectAction, settings::Defmt, tui::defmt::DefmtHelpe
 use crate::buffer::defmt::elf_watcher::ElfWatchEvent;
 
 #[cfg(feature = "macros")]
-use crate::{
-    config_adjacent_path,
-    macros::{MacroNameTag, MacroNotFound, Macros},
-};
+use crate::macros::{MacroNameTag, MacroNotFound, Macros};
 
 #[cfg(feature = "macros")]
 use crate::keybinds::MacroBuiltinAction;
