@@ -266,25 +266,11 @@ impl SerialWorker {
     // Errors returned should be treated as fatal Worker errors.
     fn handle_worker_command(&mut self, command: SerialWorkerCommand) -> Result<(), WorkerError> {
         match command {
-            SerialWorkerCommand::Connect { port, settings } => {
-                self.update_settings(settings)?;
-                match self.connect_to_port(&port, None) {
-                    Ok(()) => (),
-                    Err(e) => {
-                        error!(
-                            "Error when connecting to {port}! {e}",
-                            port = port.port_name
-                        );
-                        self.event_tx
-                            .send(SerialEvent::ConnectionFailed(e).into())?;
-                    }
-                }
-            }
-            SerialWorkerCommand::CliConnect {
+            SerialWorkerCommand::BlockingConnect {
                 port,
                 baud,
                 mut settings,
-                oneshot_tx,
+                result_tx: oneshot_tx,
             } => {
                 settings.baud_rate = baud.unwrap_or(settings.baud_rate);
 

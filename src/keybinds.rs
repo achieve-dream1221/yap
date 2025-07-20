@@ -12,7 +12,7 @@ use crokey::KeyCombination;
 use fs_err as fs;
 use indexmap::IndexMap;
 use serde::Deserialize;
-use strum::{EnumMessage, VariantArray, VariantNames};
+use strum::{EnumMessage, VariantArray};
 
 #[cfg(feature = "macros")]
 use crate::macros::MacroNameTag;
@@ -694,8 +694,8 @@ impl Keybinds {
     pub fn action_set_from_key_combo(&self, key_combo: KeyCombination) -> Option<&Vec<String>> {
         self.keybindings
             .iter()
-            .find(|(kc, m)| *kc == &key_combo)
-            .map(|(kc, m)| m)
+            .find(|(kc, _)| *kc == &key_combo)
+            .map(|(_, m)| m)
     }
 }
 

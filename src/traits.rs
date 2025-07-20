@@ -583,7 +583,7 @@ impl<'a> LineMutator<'a> for Line<'a> {
                         }
                         Cow::Owned(owned) => {
                             let (pre, _mid, post) =
-                                split_span_content(&owned, offset_start..offset_end);
+                                split_span_content(owned, offset_start..offset_end);
 
                             match (pre.is_empty(), post.is_empty()) {
                                 // empty! easy to handle
@@ -647,29 +647,61 @@ fn split_span_content(content: &str, range: Range<usize>) -> (&str, &str, &str) 
 
 // Not traits, but helpful functions used in a few spots
 
-#[inline]
-pub fn interleave<A, B, I>(left: A, right: B) -> impl Iterator<Item = I>
-where
-    A: Iterator<Item = I>,
-    B: Iterator<Item = I>,
-    I: Ord,
-{
-    let mut left = left.peekable();
-    let mut right = right.peekable();
-    std::iter::from_fn(move || match (left.peek(), right.peek()) {
-        (Some(li), Some(ri)) => {
-            if li <= ri {
-                left.next()
-            } else {
-                right.next()
-            }
-        }
-        (Some(_), None) => left.next(),
-        (None, Some(_)) => right.next(),
-        (None, None) => None,
-    })
-}
+// /// Interleaves two ordered iterators, yielding the smallest element from either iterator at each step.
+// ///
+// /// Elements are compared using their `Ord` implementation. If elements are equal,
+// /// the element from the `left` iterator is yielded first. Once one iterator is exhausted,
+// /// the rest of the elements from the other iterator are yielded.
+// ///
+// /// # Arguments
+// ///
+// /// * `left` - The first iterator to interleave.
+// /// * `right` - The second iterator to interleave.
+// ///
+// /// # Returns
+// ///
+// /// An iterator yielding elements from both iterators in sorted order.
+// #[inline]
+// pub fn interleave<A, B, I>(left: A, right: B) -> impl Iterator<Item = I>
+// where
+//     A: Iterator<Item = I>,
+//     B: Iterator<Item = I>,
+//     I: Ord,
+// {
+//     let mut left = left.peekable();
+//     let mut right = right.peekable();
+//     std::iter::from_fn(move || match (left.peek(), right.peek()) {
+//         (Some(li), Some(ri)) => {
+//             if li <= ri {
+//                 left.next()
+//             } else {
+//                 right.next()
+//             }
+//         }
+//         (Some(_), None) => left.next(),
+//         (None, Some(_)) => right.next(),
+//         (None, None) => None,
+//     })
+// }
 
+/// Interleaves two iterators using a closure to determine which iterator to pull from next.
+///
+/// The `decider` closure receives a reference to the next element of each iterator and should return `true`
+/// to select the `left` iterator's item, or `false` to select the `right` iterator's item.
+///
+/// The item not chosen is not consumed, and will appear in the same binding next iteration.
+///
+/// Once one iterator is exhausted, the rest of the elements from the other iterator are yielded.
+///
+/// # Arguments
+///
+/// * `left` - The first iterator to interleave.
+/// * `right` - The second iterator to interleave.
+/// * `decider` - A function that takes references to items from each iterator and decides which to yield next.
+///
+/// # Returns
+///
+/// An iterator that yields values from both inputs, in the order determined by `decider`.
 #[inline]
 pub fn interleave_by<A, B, I, F>(left: A, right: B, mut decider: F) -> impl Iterator<Item = I>
 where

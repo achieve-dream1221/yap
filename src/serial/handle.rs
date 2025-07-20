@@ -20,15 +20,11 @@ use super::worker::{PortStatus, SerialWorker};
 #[derive(Debug)]
 pub enum SerialWorkerCommand {
     RequestPortScan,
-    Connect {
-        port: SerialPortInfo,
-        settings: PortSettings,
-    },
-    CliConnect {
+    BlockingConnect {
         port: SerialPortInfo,
         baud: Option<u32>,
         settings: PortSettings,
-        oneshot_tx: Sender<Result<(), super::worker::WorkerError>>,
+        result_tx: Sender<Result<(), super::worker::WorkerError>>,
     },
     PortCommand(PortCommand),
     RequestReconnect(Option<Reconnections>),
@@ -111,18 +107,19 @@ impl SerialHandle {
         handle.request_port_scan()?;
         Ok((handle, worker))
     }
-    pub fn request_connect(
-        &self,
-        port: &SerialPortInfo,
-        settings: PortSettings,
-    ) -> HandleResult<()> {
-        self.command_tx.send(SerialWorkerCommand::Connect {
-            port: port.to_owned(),
-            settings,
-        })?;
-        Ok(())
-    }
-    pub fn try_connect_now(
+    // pub fn connect_nonblocking(
+    //     &self,
+    //     port: &SerialPortInfo,
+    //     settings: PortSettings,
+    // ) -> HandleResult<()> {
+    //     self.command_tx
+    //         .send(SerialWorkerCommand::NonBlockingConnect {
+    //             port: port.to_owned(),
+    //             settings,
+    //         })?;
+    //     Ok(())
+    // }
+    pub fn connect_blocking(
         &self,
         port: SerialPortInfo,
         settings: PortSettings,
@@ -130,11 +127,11 @@ impl SerialHandle {
     ) -> HandleResult<Receiver<Result<(), super::worker::WorkerError>>> {
         let (oneshot_tx, oneshot_rx) = bounded(0);
 
-        self.command_tx.send(SerialWorkerCommand::CliConnect {
+        self.command_tx.send(SerialWorkerCommand::BlockingConnect {
             port,
             baud,
             settings,
-            oneshot_tx,
+            result_tx: oneshot_tx,
         })?;
 
         Ok(oneshot_rx)

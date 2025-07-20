@@ -616,16 +616,14 @@ pub struct Ignored {
 }
 
 fn default_hidden_usb() -> Vec<DeserializedUsb> {
-    let mut hidden = Vec::new();
-
-    // Valve Index/Bigscreen Beyond's Bluetooth COM Port
-    hidden.push(DeserializedUsb {
-        vid: 0x28DE,
-        pid: 0x2102,
-        serial_number: None,
-    });
-
-    hidden
+    vec![
+        // Valve Index/Bigscreen Beyond's Bluetooth COM Port
+        DeserializedUsb {
+            vid: 0x28DE,
+            pid: 0x2102,
+            serial_number: None,
+        },
+    ]
 }
 
 impl Default for PortSettings {

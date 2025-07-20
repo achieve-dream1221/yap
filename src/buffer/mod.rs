@@ -358,7 +358,7 @@ impl RawBuffer {
         if newest.is_empty() {
             None
         } else {
-            Some((start_index, DelimitedSlice::Raw(newest)))
+            Some((start_index, DelimitedSlice::Unknown(newest)))
         }
     }
     #[cfg(feature = "defmt")]
@@ -425,20 +425,20 @@ pub enum DelimitedSlice<'a> {
     /// Use if ELF has raw encoding enabled (no rzCOBS compression).
     DefmtRaw(&'a [u8]),
     /// Non-defmt input, either junk data or plain ASCII/UTF-8 logs.
-    Raw(&'a [u8]),
+    Unknown(&'a [u8]),
 }
 
-impl DelimitedSlice<'_> {
-    pub fn raw_len(&self) -> usize {
-        match self {
-            #[cfg(feature = "defmt")]
-            DelimitedSlice::DefmtRzcobs { raw, .. } => raw.len(),
-            #[cfg(feature = "defmt")]
-            DelimitedSlice::DefmtRaw(raw) => raw.len(),
-            DelimitedSlice::Raw(raw) => raw.len(),
-        }
-    }
-}
+// impl DelimitedSlice<'_> {
+//     pub fn raw_len(&self) -> usize {
+//         match self {
+//             #[cfg(feature = "defmt")]
+//             DelimitedSlice::DefmtRzcobs { raw, .. } => raw.len(),
+//             #[cfg(feature = "defmt")]
+//             DelimitedSlice::DefmtRaw(raw) => raw.len(),
+//             DelimitedSlice::Unknown(raw) => raw.len(),
+//         }
+//     }
+// }
 
 struct StyledLines {
     rx: Vec<BufLine>,
@@ -455,12 +455,12 @@ impl StyledLines {
         kit: BufLineKit,
         line_ending: &LineEnding,
     ) {
-        let DelimitedSlice::DefmtRzcobs { raw, inner } = delimited_slice else {
+        let DelimitedSlice::DefmtRzcobs { raw, .. } = delimited_slice else {
             unreachable!()
         };
 
         let mut text = format!("Couldn't decode defmt rzcobs packet ({reason}): ");
-        text.extend(inner.iter().map(|b| format!("{b:02X}")));
+        text.extend(raw.iter().map(|b| format!("{b:02X}")));
 
         self.rx
             .push(BufLine::port_text_line(Line::raw(text), kit, line_ending));
@@ -476,25 +476,16 @@ impl StyledLines {
     ) {
         let mut can_append_to_line = !self.last_rx_was_complete;
 
-        let DelimitedSlice::Raw(slice) = delimited_slice else {
+        let DelimitedSlice::Unknown(slice) = delimited_slice else {
             unreachable!()
         };
 
-        for (trunc, orig, indices) in line_ending_iter(slice, line_ending) {
-            // index = self.raw.inner.len();
-
-            // if let Some(index) = self.index_of_incomplete_line.take() {
+        for (_trunc, orig, _range) in line_ending_iter(slice, line_ending) {
             if can_append_to_line {
                 can_append_to_line = false;
                 let last_line = self.rx.last_mut().expect("can't append to nothing");
                 let last_index = last_line.range().start;
-                // assert_eq!(last_index, index);
 
-                // let start = range_slice.range.start;
-                let trunc = last_index..index_in_buffer + trunc.len();
-                let trunc = raw_buffer
-                    .range(trunc)
-                    .expect("failed to get truncated line-to-continue buffer");
                 let orig = last_index..index_in_buffer + orig.len();
                 let orig = raw_buffer
                     .range(orig)
@@ -514,7 +505,6 @@ impl StyledLines {
                 } else {
                     _ = self.rx.pop();
                     self.last_rx_was_complete = true;
-                    // last_line.clear_line();
                 }
                 self.last_rx_was_complete = orig.has_line_ending(line_ending);
                 continue;
@@ -540,8 +530,7 @@ impl StyledLines {
                 };
 
                 let RangeSlice {
-                    range,
-                    slice: original,
+                    slice: original, ..
                 } = &kit.full_range_slice;
 
                 let truncated = if original.has_line_ending(line_ending) {
@@ -861,7 +850,7 @@ impl Buffer {
         let user_span = span!(Color::DarkGray;"USER> ");
         // let Text { lines, .. } = text;
         // TODO HANDLE MULTI-LINE USER INPUT AAAA
-        for (trunc, orig, _indices) in line_ending_iter(text.as_bytes(), &line_ending) {
+        for (trunc, orig, _range) in line_ending_iter(text.as_bytes(), &line_ending) {
             // not sure if i want to ansi-style user text?
             // let mut line = match trunc.into_line_lossy(Style::new()) {
             //     Ok(line) => line,
@@ -955,7 +944,7 @@ impl Buffer {
     fn consume_latest_bytes(&mut self, timestamp: DateTime<Local>) {
         #[cfg(not(feature = "defmt"))]
         while let Some((index_in_buffer, delimited_slice)) = self.raw.next_slice_raw() {
-            let DelimitedSlice::Raw(slice) = delimited_slice else {
+            let DelimitedSlice::Unknown(slice) = delimited_slice else {
                 unreachable!();
             };
             let kit = BufLineKit {
@@ -989,7 +978,7 @@ impl Buffer {
             && !self.defmt_raw_malformed
         {
             match delimited_slice {
-                DelimitedSlice::Raw(slice) => {
+                DelimitedSlice::Unknown(slice) => {
                     let kit = BufLineKit {
                         timestamp,
                         area_width: self.last_terminal_size.width,
@@ -1206,12 +1195,7 @@ impl Buffer {
                 },
             );
 
-        // let buffer_slices: Vec<_> = buffer_slices.collect();
-        // debug!("{buffer_slices:#?}");
-
-        // info!("Slicing raw buffer!");
-        for (slice, timestamp, was_user_line, (slice_start, slice_end)) in buffer_slices {
-            // debug!("{slice:#?}");
+        for (slice, timestamp, was_user_line, _range) in buffer_slices {
             // If this was where a user line we allow to render is,
             // then we'll finish this line early if it's not already finished.
             if was_user_line {
@@ -1285,7 +1269,7 @@ impl Buffer {
             .styled_lines
             .tx
             .iter()
-            .filter(|s| self.log_settings.log_user_input)
+            .filter(|_| self.log_settings.log_user_input)
             .map(|b| {
                 let LineType::User { .. } = &b.line_type else {
                     unreachable!();
@@ -1358,12 +1342,12 @@ impl Buffer {
         let mut rx_batch = Vec::new();
         let mut tx_batch = Vec::new();
 
-        for (slice, timestamp, line_type, (slice_start, slice_end)) in buffer_slices {
+        for (slice, timestamp, line_type, (_slice_start, _slice_end)) in buffer_slices {
             // If this was where a user line we allow to render is,
             // then we'll finish this line early if it's not already finished.
             if let LineType::User {
-                is_bytes,
-                is_macro,
+                is_bytes: _,
+                is_macro: _,
                 escaped_line_ending,
                 reloggable_raw,
             } = line_type
@@ -1515,9 +1499,9 @@ impl Buffer {
 pub fn line_ending_iter<'a>(
     bytes: &'a [u8],
     line_ending: &'a LineEnding,
-) -> impl Iterator<Item = (&'a [u8], &'a [u8], (usize, usize))> {
+) -> impl Iterator<Item = (&'a [u8], &'a [u8], Range<usize>)> {
     match line_ending {
-        LineEnding::None => Either::Left(std::iter::once((bytes, bytes, (0, bytes.len())))),
+        LineEnding::None => Either::Left(std::iter::once((bytes, bytes, 0..bytes.len()))),
         line_ending => Either::Right(_line_ending_iter(bytes, line_ending)),
     }
 }
@@ -1527,7 +1511,7 @@ pub fn line_ending_iter<'a>(
 fn _line_ending_iter<'a>(
     bytes: &'a [u8],
     line_ending: &'a LineEnding,
-) -> impl Iterator<Item = (&'a [u8], &'a [u8], (usize, usize))> {
+) -> impl Iterator<Item = (&'a [u8], &'a [u8], Range<usize>)> {
     assert!(
         !matches!(line_ending, LineEnding::None),
         "line_ending can't be empty"
@@ -1567,7 +1551,7 @@ fn _line_ending_iter<'a>(
             (
                 &bytes[last_index..],
                 &bytes[last_index..],
-                (last_index, bytes.len()),
+                last_index..bytes.len(),
             )
         } else {
             // Copy of `last_index` since we're about to modify it,
@@ -1579,7 +1563,7 @@ fn _line_ending_iter<'a>(
             (
                 &bytes[index_copy..line_ending_index],
                 &bytes[index_copy..line_ending_index + le_len],
-                (index_copy, line_ending_index + le_len),
+                index_copy..line_ending_index + le_len,
             )
         };
         Some(result)

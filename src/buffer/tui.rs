@@ -98,7 +98,7 @@ impl Buffer {
             let desired_visible_lines = area_height;
             if self.rendering.wrap_text {
                 let vert_scroll = self.state.vert_scroll;
-                let (spillover_index, spillover_lines_visible, spilt_line_total_height) = {
+                let (spillover_index, _spillover_lines_visible, spilt_line_total_height) = {
                     let mut current_line_index: usize = 0;
                     let mut current_line_height: usize = 0;
 
@@ -340,7 +340,7 @@ impl Buffer {
                     let [l, r] = w else { unreachable!() };
                     l.range().start <= closest_index && closest_index <= r.range().start
                 });
-                if let Some((index, line)) = closest_line {
+                if let Some((index, _)) = closest_line {
                     let lines_up_to: usize = self
                         .styled_lines
                         .rx
@@ -405,7 +405,7 @@ impl Buffer {
             }
 
             let mut bytes_per_line = 0;
-            for free_cell in 0..remaining_width {
+            for _free_cell in 0..remaining_width {
                 bytes_per_line += 1;
                 hex_area_width += 2; // byte as str
                 remaining_width = remaining_width
@@ -472,7 +472,7 @@ impl Buffer {
             line_2_area,
             ascii_area,
             mut scrollbar_area
-        ] = horizontal![==buffer_hex_digits,==line_width, ==optional_spacing,==hex_area_width, ==optional_spacing,==line_width, ==bytes_per_line as u16, ==1]
+        ] = horizontal![==buffer_hex_digits, ==line_width, ==optional_spacing,==hex_area_width, ==optional_spacing, ==line_width, ==bytes_per_line as u16, ==1]
             .areas(hex_area);
 
         let [offset_text,
@@ -484,7 +484,7 @@ impl Buffer {
             ascii_text,
             _,
         ] =
-            horizontal![==buffer_hex_digits,==line_width, ==optional_spacing, ==hex_area_width, ==optional_spacing,==line_width, ==bytes_per_line as u16, ==1]
+            horizontal![==buffer_hex_digits, ==line_width, ==optional_spacing, ==hex_area_width, ==optional_spacing, ==line_width, ==bytes_per_line as u16, ==1]
                 .areas(labels);
 
         if self.rendering.hex_view_header {

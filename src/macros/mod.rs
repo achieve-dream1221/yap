@@ -108,7 +108,7 @@ impl Macros {
             ),
         }
     }
-    fn category_filtered_macros(
+    fn filtered_by_category(
         &self,
     ) -> impl DoubleEndedIterator<Item = (&MacroNameTag, &MacroContent)> {
         let category = self.selected_category();
@@ -123,12 +123,12 @@ impl Macros {
                 MacroCategorySelection::Category(cat) => tag.category.as_deref() == Some(cat),
             })
     }
-    fn search_filtered_macros(
+    fn filtered_by_search(
         &self,
     ) -> impl DoubleEndedIterator<Item = (&MacroNameTag, &MacroContent)> {
         let query = self.search_input.value();
         let query_len = query.len();
-        self.all.iter().filter(move |(tag, content)| {
+        self.all.iter().filter(move |(tag, _)| {
             if tag.name.is_char_boundary(query_len) {
                 tag.name[..query_len].eq_ignore_ascii_case(query)
             } else {
@@ -140,25 +140,23 @@ impl Macros {
         &self,
     ) -> impl DoubleEndedIterator<Item = (&MacroNameTag, &MacroContent)> {
         if self.search_input.value().is_empty() {
-            Either::Right(self.category_filtered_macros())
+            Either::Right(self.filtered_by_category())
         } else {
-            Either::Left(self.search_filtered_macros())
+            Either::Left(self.filtered_by_search())
         }
     }
     pub fn as_table(&self, keybinds: &Keybinds, fuzzy_macro_name_match: bool) -> Table<'_> {
         let filtered = self
             .filtered_macro_iter()
-            .map(|m| (m.0.name.as_str(), m))
-            .map(|(title, (tag, string))| {
+            .map(|(tag, _)| {
                 let mut single_action_keys = keybinds
                     .keybindings
                     .iter()
-                    .filter(|(kc, km)| km.len() == 1)
+                    .filter(|(_, km)| km.len() == 1)
                     .map(|(kc, km)| (kc, &km[0]));
 
-                let macro_string = single_action_keys
-                    .clone()
-                    .find(|(kc, km)| {
+                let keybind_for_macro = single_action_keys
+                    .find(|(_, km)| {
                         let Ok(keybind_as_tag) = km.parse::<MacroNameTag>() else {
                             return false;
                         };
@@ -166,7 +164,7 @@ impl Macros {
                     })
                     .or_else(|| {
                         if fuzzy_macro_name_match {
-                            single_action_keys.find(|(kc, km)| {
+                            single_action_keys.find(|(_, km)| {
                                 let Ok(keybind_as_tag) = km.parse::<MacroNameTag>() else {
                                     return false;
                                 };
@@ -177,9 +175,9 @@ impl Macros {
                             None
                         }
                     });
-                let macro_string = macro_string.map(|(kc, km)| kc.to_string());
+                let macro_string = keybind_for_macro.map(|(kc, _)| kc.to_string());
 
-                (title, macro_string.unwrap_or_default())
+                (tag.name.as_str(), macro_string.unwrap_or_default())
             })
             .map(|(m, k)| Row::new([Text::raw(m), Text::raw(k).italic()]));
 
@@ -187,7 +185,7 @@ impl Macros {
         Table::new(filtered, widths).row_highlight_style(Style::new().reversed())
     }
     pub fn has_no_category_macros(&self) -> bool {
-        self.all.iter().any(|(tag, string)| tag.category.is_none())
+        self.all.iter().any(|(tag, _)| tag.category.is_none())
     }
     pub fn categories(&self) -> impl DoubleEndedIterator<Item = &str> {
         let no_category = std::iter::once("No Category").filter(|_| self.has_no_category_macros());
@@ -195,7 +193,7 @@ impl Macros {
         let categories: BTreeSet<&str> = self
             .all
             .iter()
-            .filter_map(|(tag, string)| tag.category.as_deref())
+            .filter_map(|(tag, _)| tag.category.as_deref())
             .collect();
 
         no_category.chain(categories)
@@ -206,15 +204,15 @@ impl Macros {
         let find_result = self
             .all
             .iter()
-            .find(|(tag, content)| query_nametag.eq(tag))
-            .map(|(t, c)| t.clone());
+            .find(|(tag, _)| query_nametag.eq(tag))
+            .map(|(t, _)| t.clone());
 
         match find_result {
             None if fuzzy_macro_name_match => self
                 .all
                 .iter()
-                .find(|(tag, content)| query_nametag.eq_fuzzy(tag))
-                .map(|(t, c)| t.clone()),
+                .find(|(tag, _)| query_nametag.eq_fuzzy(tag))
+                .map(|(t, _)| t.clone()),
             None => None,
             Some(tag) => Some(tag),
         }

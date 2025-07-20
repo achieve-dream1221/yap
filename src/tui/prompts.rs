@@ -195,15 +195,3 @@ pub trait PromptTable: VariantNames + VariantArray + EnumProperty + Into<u8> + T
 }
 
 impl<T: VariantNames + VariantArray + EnumProperty + Into<u8> + TryFrom<u8>> PromptTable for T {}
-
-/// Returns a `Rect` with the provided percentage of the parent `Rect` and centered.
-pub fn centered_rect(percent_x: u16, percent_y: u16, parent: Rect) -> Rect {
-    let new_width = parent.width * percent_x / 100;
-    let new_height = parent.height * percent_y / 100;
-    Rect {
-        width: new_width,
-        height: new_height,
-        x: (parent.width - new_width) / 2,
-        y: (parent.height - new_height) / 2,
-    }
-}

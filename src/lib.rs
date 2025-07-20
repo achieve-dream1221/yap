@@ -136,7 +136,7 @@ fn run_inner(
     let crossterm_tx = tx.clone();
     let (ctrl_c_tx, ctrl_c_rx) = crossbeam::channel::bounded::<()>(1);
     let crossterm_thread = std::thread::spawn(move || {
-        use crokey::crossterm::event::{Event, KeyEvent, KeyEventKind};
+        use crokey::crossterm::event::{Event, KeyEventKind};
 
         #[derive(Debug)]
         struct SendError;
@@ -417,9 +417,8 @@ pub fn initialize_logging<P: AsRef<Path>>(
 // If there is a config file present adjacent to the executable, the executable's parent path is returned.
 // Otherwise, it will return the `directories` `config_dir` output.
 //
-// Debug builds are always portable. Release builds can optionally have the "portable" feature enabled.
+// Debug builds are always portable by default. Release builds can optionally have the "portable" feature enabled.
 fn determine_working_directory() -> Option<std::path::PathBuf> {
-    let portable = is_portable();
     let exe_path = std::env::current_exe().expect("Failed to get executable path");
     let exe_parent = exe_path
         .parent()
@@ -427,7 +426,7 @@ fn determine_working_directory() -> Option<std::path::PathBuf> {
         .to_path_buf();
     let config_path = exe_path.with_extension("toml");
 
-    if portable || config_path.exists() {
+    if default_to_portable() || config_path.exists() {
         Some(exe_parent)
     } else {
         get_user_dir()
@@ -435,12 +434,12 @@ fn determine_working_directory() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(any(debug_assertions, feature = "portable"))]
-fn is_portable() -> bool {
+fn default_to_portable() -> bool {
     true
 }
 
 #[cfg(not(any(debug_assertions, feature = "portable")))]
-fn is_portable() -> bool {
+fn default_to_portable() -> bool {
     false
 }
 

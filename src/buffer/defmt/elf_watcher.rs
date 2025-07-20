@@ -62,14 +62,9 @@ impl ElfWatchHandle {
         Ok((Self { command_tx }, worker))
     }
 
-    pub fn begin_watch(&self, elf_path: &Utf8Path) -> HandleResult<()> {
+    pub fn watch_path(&self, elf_path: &Utf8Path) -> HandleResult<()> {
         let path = elf_path.to_owned();
         self.command_tx.send(ElfWatchCommand::BeginWatch(path))?;
-        Ok(())
-    }
-
-    pub fn end_watch(&self) -> HandleResult<()> {
-        self.command_tx.send(ElfWatchCommand::EndWatch)?;
         Ok(())
     }
 

@@ -140,7 +140,7 @@ pub struct BufLineKit<'a> {
 
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
-    fn new(mut line: Line<'static>, kit: BufLineKit, line_type: LineType) -> Self {
+    fn new(line: Line<'static>, kit: BufLineKit, line_type: LineType) -> Self {
         // TODO read from config
         // line.remove_unsavory_chars(false);
 
@@ -287,18 +287,6 @@ impl BufLine {
             })
             .flatten();
 
-        // #[cfg(feature = "defmt")]
-        // let defmt_location = std::iter::once(&self.line_type).filter_map(|lt| match lt {
-        //     LineType::PortDefmt {
-        //         location: Some(FrameLocation { line, module, file }),
-        //         ..
-        //     } => Some(Span::styled(
-        //         format!(" {module} @ {file}:{line}"),
-        //         Style::new().dark_gray(),
-        //     )),
-        //     _ => None,
-        // });
-
         fn shorten_module_path(full_module_path: &str) -> &str {
             full_module_path
                 .split("::")
@@ -326,7 +314,7 @@ impl BufLine {
             } => {
                 use crate::settings::DefmtLocation;
 
-                let RenderSettings { rendering, defmt } = rendering;
+                let RenderSettings { defmt, .. } = rendering;
 
                 let module = &defmt.show_module;
                 let file = &defmt.show_file;
@@ -372,7 +360,6 @@ impl BufLine {
                     ),
                     Style::new().dark_gray(),
                 ))
-                // todo!()
             }
             _ => None,
         });

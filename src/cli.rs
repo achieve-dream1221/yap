@@ -1,5 +1,3 @@
-use std::num::ParseIntError;
-
 use camino::Utf8PathBuf;
 
 #[derive(Debug, clap::Parser)]

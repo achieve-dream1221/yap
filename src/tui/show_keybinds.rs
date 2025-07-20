@@ -108,7 +108,7 @@ pub fn show_keybinds(
                 .collect();
             (kc, actions)
         })
-        .partition(|(kc, v)| v.len() == 1);
+        .partition(|(_, v)| v.len() == 1);
 
     let mut rows: Vec<Line<'static>> = Vec::new();
 
@@ -141,7 +141,7 @@ pub fn show_keybinds(
         .map(|(kc, mut v)| (kc, v.pop().unwrap()))
         .sorted_by(|a, b| a.1.cmp(&b.1))
         // .sorted_by(|a, b| a.1.cmp(b.1))
-        .partition(|(kc, action_opt)| action_opt.is_recognized());
+        .partition(|(_, action_opt)| action_opt.is_recognized());
 
     // let mut last_discriminant = None;
     let single_action_binds: Vec<_> = single_action_binds.into_iter()
@@ -153,13 +153,11 @@ pub fn show_keybinds(
         //     }
         // })
         .flat_map(|(kc, action_opt)| {
+            assert!(matches!(&action_opt, ActionOption::Recognized(_)));
+
             let key_combo = kc.to_string();
 
             let mut lines = Vec::new();
-
-            let ActionOption::Recognized(action) = &action_opt else {
-                unreachable!()
-            };
 
             let line = line![
                 span!(key_combo_style(&action_opt); "{key_combo:width$} - ", width = max_keycombo_length),

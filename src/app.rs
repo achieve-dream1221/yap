@@ -11,11 +11,10 @@ use bstr::ByteVec;
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use color_eyre::eyre::Result;
-use compact_str::{CompactString, ToCompactString};
+use compact_str::ToCompactString;
 use crokey::{KeyCombination, key};
 use crossbeam::channel::{Receiver, Select, Sender, TrySendError};
 use enum_rotate::EnumRotate;
-use fs_err as fs;
 
 use ratatui::{
     Frame, Terminal,
@@ -1066,10 +1065,7 @@ impl App {
             }
             (Menu::Terminal, Some(Popup::DisconnectPrompt)) if !is_ctrl_c(&key) => {
                 if let Some(pressed) = DisconnectPrompt::from_key_code(key.code) {
-                    let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
-                    let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
-
-                    self.disconnect_prompt_choice(pressed, shift_pressed, ctrl_pressed)?;
+                    self.disconnect_prompt_choice(pressed)?;
                 }
             }
             (Menu::Terminal, Some(Popup::AttemptReconnectPrompt)) if !is_ctrl_c(&key) => {
@@ -1348,9 +1344,9 @@ impl App {
     // To be used only when chewing through queued actions.
     // Refrain from placing single-action keybind logic here.
     fn consume_one_queued_action(&mut self) -> Result<()> {
-        let Some((key_combo_opt, action)) = self.action_queue.front() else {
+        if self.action_queue.is_empty() {
             return Ok(());
-        };
+        }
 
         // if action.requires_port_connection() {
         let port_status_guard = self.serial.port_status.load().inner;
@@ -1589,7 +1585,7 @@ impl App {
             #[cfg(feature = "logging")]
             A::Logging(LoggingAction::Sync) => {
                 let port_status_guard = self.serial.port_status.load();
-                let Some(port_info) = &port_status_guard.current_port else {
+                let Some(_) = &port_status_guard.current_port else {
                     self.notifs.notify_str(
                         "Not (previously) connected to port? Unable to sync log.",
                         Color::Yellow,
@@ -1692,15 +1688,10 @@ impl App {
         let port_status_guard = self.serial.port_status.load();
         let port_settings_guard = self.serial.port_settings.load();
 
-        if self.user_broke_connection
+        self.user_broke_connection
             || (!port_status_guard.inner.is_connected()
                 && !port_status_guard.inner.is_lent_out()
                 && !port_settings_guard.reconnections.allowed())
-        {
-            true
-        } else {
-            false
-        }
     }
     // fn tab_pressed(&mut self) {}
     fn esc_pressed(&mut self) {
@@ -1897,8 +1888,7 @@ impl App {
                     return;
                 }
 
-                let result = self
-                    .scratch
+                self.scratch
                     .logging
                     .handle_input(ArrowKey::Left, self.get_corrected_popup_index().unwrap())
                     .unwrap();
@@ -1911,8 +1901,7 @@ impl App {
                     return;
                 }
 
-                let result = self
-                    .scratch
+                self.scratch
                     .defmt
                     .handle_input(ArrowKey::Left, self.get_corrected_popup_index().unwrap())
                     .unwrap();
@@ -2015,8 +2004,7 @@ impl App {
                     return;
                 }
 
-                let result = self
-                    .scratch
+                self.scratch
                     .logging
                     .handle_input(ArrowKey::Right, self.get_corrected_popup_index().unwrap())
                     .unwrap();
@@ -2029,8 +2017,7 @@ impl App {
                     return;
                 }
 
-                let result = self
-                    .scratch
+                self.scratch
                     .defmt
                     .handle_input(ArrowKey::Right, self.get_corrected_popup_index().unwrap())
                     .unwrap();
@@ -2312,8 +2299,6 @@ impl App {
             Some(Popup::DisconnectPrompt) => {
                 self.disconnect_prompt_choice(
                     DisconnectPrompt::try_from(self.popup_menu_scroll as u8).unwrap(),
-                    shift_pressed,
-                    ctrl_pressed,
                 )?;
             }
             Some(Popup::IgnoreByUsb(_, _)) => {
@@ -2359,7 +2344,7 @@ impl App {
                         self.settings.serial.baud_rate = baud_rate;
                         self.settings.save()?;
 
-                        let connect_result_rx = self.serial.try_connect_now(
+                        let connect_result_rx = self.serial.connect_blocking(
                             port_info.clone(),
                             self.settings.serial.clone(),
                             Some(baud_rate),
@@ -2455,12 +2440,7 @@ impl App {
 
         Ok(())
     }
-    fn disconnect_prompt_choice(
-        &mut self,
-        choice: DisconnectPrompt,
-        shift_pressed: bool,
-        ctrl_pressed: bool,
-    ) -> Result<()> {
+    fn disconnect_prompt_choice(&mut self, choice: DisconnectPrompt) -> Result<()> {
         match choice {
             DisconnectPrompt::ExitApp => self.shutdown(),
             DisconnectPrompt::Cancel => self.dismiss_popup(),
@@ -2595,11 +2575,13 @@ impl App {
     ///
     /// Panics if no popup is active.
     fn current_popup_selectable_item_count(&self) -> usize {
-        match &self.popup {
-            None => unreachable!("no popup means no item count!"),
+        let Some(popup) = &self.popup else {
+            panic!("no popup means no item count!")
+        };
+        match popup {
             #[cfg(feature = "defmt")]
-            Some(Popup::DefmtRecentElf) => self.defmt_helpers.recent_elfs.len(),
-            Some(Popup::SettingsMenu(settings)) => {
+            Popup::DefmtRecentElf => self.defmt_helpers.recent_elfs.len(),
+            Popup::SettingsMenu(settings) => {
                 let items = match settings {
                     SettingsMenu::SerialPort => PortSettings::VISIBLE_FIELDS,
                     SettingsMenu::Behavior => Behavior::VISIBLE_FIELDS,
@@ -2618,7 +2600,7 @@ impl App {
                 items + POPUP_MENU_SELECTOR_COUNT
             }
             #[cfg(any(feature = "espflash", feature = "macros"))]
-            Some(Popup::ToolMenu(tool)) => {
+            Popup::ToolMenu(tool) => {
                 let items = match tool {
                     #[cfg(feature = "macros")]
                     ToolMenu::Macros => {
@@ -2632,17 +2614,13 @@ impl App {
                 };
                 items + POPUP_MENU_SELECTOR_COUNT
             }
-            Some(Popup::DisconnectPrompt) => <DisconnectPrompt as VariantArray>::VARIANTS.len(),
-            Some(Popup::AttemptReconnectPrompt) => {
+            Popup::DisconnectPrompt => <DisconnectPrompt as VariantArray>::VARIANTS.len(),
+            Popup::AttemptReconnectPrompt => {
                 <AttemptReconnectPrompt as VariantArray>::VARIANTS.len()
             }
-            Some(Popup::IgnoreByName(_)) => {
-                <IgnorePortByNamePrompt as VariantArray>::VARIANTS.len()
-            }
-            Some(Popup::IgnoreByUsb(_, _)) => {
-                <IgnoreUsbDevicePrompt as VariantArray>::VARIANTS.len()
-            }
-            _ => unreachable!("popup {:?} has no item count", self.popup),
+            Popup::IgnoreByName(_) => <IgnorePortByNamePrompt as VariantArray>::VARIANTS.len(),
+            Popup::IgnoreByUsb(_, _) => <IgnoreUsbDevicePrompt as VariantArray>::VARIANTS.len(),
+            _ => unreachable!("popup {popup:?}has no item count"),
         }
     }
 
@@ -2734,9 +2712,7 @@ impl App {
     ///
     /// Panics if no popup is active.
     fn select_last_popup_item(&mut self) {
-        let Some(popup) = &self.popup else {
-            unreachable!("popup {:?} has no item count", self.popup);
-        };
+        assert!(self.popup.is_some());
 
         self.popup_menu_scroll = self.current_popup_selectable_item_count().saturating_sub(1);
     }
@@ -2775,9 +2751,7 @@ impl App {
                     self.keybinds
                         .keybindings
                         .iter()
-                        .filter(|(kc, v)| {
-                            v.iter().any(|a| self.get_action_from_string(a).is_none())
-                        })
+                        .filter(|(_, v)| v.iter().any(|a| self.get_action_from_string(a).is_none()))
                         .count()
                 };
 
@@ -3729,13 +3703,7 @@ impl App {
                 );
 
                 if let Some(index) = table_state.selected() {
-                    // let text: &str = self
-                    //     .popup_table_state
-                    //     .selected()
-                    //     .map(|i| )
-                    //     .unwrap_or(&"");
-
-                    let (tag, content) = self.macros.filtered_macro_iter().nth(index).unwrap();
+                    let (_, content) = self.macros.filtered_macro_iter().nth(index).unwrap();
                     // for now i guess
                     // TOOD replace with fancy line preview
                     let macro_preview = content.as_str();
@@ -3923,14 +3891,14 @@ impl App {
         let [terminal_area, line_area, input_area] = vertical![*=1, ==1, ==1].areas(area);
         let [input_symbol_area, input_area] = horizontal![==1, *=1].areas(input_area);
 
-        let start = Instant::now();
+        // let start = Instant::now();
         if self.settings.rendering.hex_view {
             self.buffer.render_hex(terminal_area, frame.buffer_mut());
         } else {
             frame.render_widget(&mut self.buffer, terminal_area);
         }
         // debug!("1: {:?}", start.elapsed());
-        let start = Instant::now();
+        // let start = Instant::now();
 
         // let total_lines = para.line_count(terminal_area.width.saturating_sub(1));
 
@@ -4420,7 +4388,7 @@ impl App {
     ) -> color_eyre::Result<()> {
         let connect_result_rx =
             self.serial
-                .try_connect_now(port_info, self.settings.serial.clone(), baud)?;
+                .connect_blocking(port_info, self.settings.serial.clone(), baud)?;
 
         match connect_result_rx.recv_timeout(Duration::from_secs(15)) {
             // Got a connection result, if it's Ok(()), we'll keep going, otherwise it'll bail early.
@@ -4547,7 +4515,7 @@ pub fn _try_load_defmt_elf(
             #[cfg(feature = "logging")]
             logging.update_defmt_decoder(Some(decoder_arc.clone()))?;
             #[cfg(feature = "defmt_watch")]
-            watcher_handle.begin_watch(path)?;
+            watcher_handle.watch_path(path)?;
 
             Ok(locations_err_opt)
         }
@@ -4597,7 +4565,7 @@ pub fn render_scrolling_line<'a, T: Into<Line<'a>>>(
     let line: Line = text.into();
     let total_width: usize = line.width();
 
-    let enough_room = total_width as u16 <= area.width;
+    // let enough_room = total_width as u16 <= area.width;
     let overflow_amount = (total_width as u16).saturating_sub(area.width);
 
     let (scroll_x, offset_x): (u16, u16) = {

@@ -10,7 +10,7 @@ fn test_single_line() {
     assert_eq!(res.len(), 1);
     assert_eq!(res[0].0, b"hello");
     assert_eq!(res[0].1, b"hello");
-    assert_eq!(res[0].2, (0, 5));
+    assert_eq!(res[0].2, 0..5);
 }
 
 #[test]
@@ -22,13 +22,13 @@ fn test_simple_lines() {
     assert_eq!(res.len(), 3);
     assert_eq!(res[0].0, b"foo");
     assert_eq!(res[0].1, b"foo\n");
-    assert_eq!(res[0].2, (0, 4));
+    assert_eq!(res[0].2, 0..4);
     assert_eq!(res[1].0, b"bar");
     assert_eq!(res[1].1, b"bar\n");
-    assert_eq!(res[1].2, (4, 8));
+    assert_eq!(res[1].2, 4..8);
     assert_eq!(res[2].0, b"baz");
     assert_eq!(res[2].1, b"baz");
-    assert_eq!(res[2].2, (8, 11));
+    assert_eq!(res[2].2, 8..11);
 }
 
 #[test]

@@ -11,7 +11,7 @@ use ratatui::{
 };
 use regex::bytes::Regex;
 use serde_with::serde_as;
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::{
     buffer::RangeSlice,

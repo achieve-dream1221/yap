@@ -1,8 +1,5 @@
 use std::str::FromStr;
 
-use bstr::ByteSlice;
-use bstr::ByteVec;
-use compact_str::ToCompactString;
 use serde::Deserialize;
 use serde::Serializer;
 
@@ -23,27 +20,6 @@ where
 {
     let val = u8::deserialize(deserializer)?;
     T::try_from(val).map_err(|e| serde::de::Error::custom(format!("Invalid value: {val} ({e:?})")))
-}
-
-pub fn serialize_line_ending<S>(input: &str, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let buffer = input.as_bytes().escape_bytes().to_compact_string();
-    serializer.serialize_str(&buffer)
-}
-
-pub fn deserialize_line_ending<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    match Vec::unescape_bytes(&s).into_string() {
-        Ok(result) => Ok(result),
-        Err(e) => Err(serde::de::Error::custom(format!(
-            "Failed to unescape line ending string: {e}"
-        ))),
-    }
 }
 
 pub fn serialize_as_string<S, T>(input: T, serializer: S) -> Result<S::Ok, S::Error>
