@@ -210,7 +210,6 @@ enum Popup {
     #[cfg(any(feature = "espflash", feature = "macros"))]
     ToolMenu(ToolMenu),
     CurrentKeybinds,
-    ErrorMessage(String),
     #[cfg(feature = "defmt")]
     DefmtNewElf(FileExplorer),
     #[cfg(feature = "defmt")]
@@ -1726,7 +1725,7 @@ impl App {
         self.popup_hint_scroll = -2;
         match &self.popup {
             None => (),
-            Some(Popup::ErrorMessage(_)) => (),
+            // Some(Popup::ErrorMessage(_)) => (),
             Some(Popup::CurrentKeybinds) => {
                 self.popup_menu_scroll = self.popup_menu_scroll.saturating_sub(1);
             }
@@ -1776,7 +1775,7 @@ impl App {
         self.popup_hint_scroll = -2;
         match &self.popup {
             None => (),
-            Some(Popup::ErrorMessage(_)) => (),
+            // Some(Popup::ErrorMessage(_)) => (),
             Some(Popup::CurrentKeybinds) => {
                 self.popup_menu_scroll += 1;
             }
@@ -1828,13 +1827,13 @@ impl App {
     fn left_pressed(&mut self) {
         match &mut self.popup {
             None => (),
+            // Some(Popup::ErrorMessage(_)) => (),
             Some(Popup::AttemptReconnectPrompt)
             | Some(Popup::DisconnectPrompt)
             | Some(Popup::IgnoreByName(_))
             | Some(Popup::IgnoreByUsb(_, _))
             | Some(Popup::ConnectionFailed(_))
-            | Some(Popup::CurrentKeybinds)
-            | Some(Popup::ErrorMessage(_)) => (),
+            | Some(Popup::CurrentKeybinds) => (),
             #[cfg(not(any(feature = "espflash", feature = "macros")))]
             Some(Popup::SettingsMenu(_)) if self.popup_menu_scroll == 0 => {}
             #[cfg(any(feature = "espflash", feature = "macros"))]
@@ -1946,13 +1945,13 @@ impl App {
         // }
         match &mut self.popup {
             None => (),
+            // Some(Popup::ErrorMessage(_)) => (),
             Some(Popup::AttemptReconnectPrompt)
             | Some(Popup::DisconnectPrompt)
             | Some(Popup::IgnoreByName(_))
             | Some(Popup::IgnoreByUsb(_, _))
             | Some(Popup::ConnectionFailed(_))
-            | Some(Popup::CurrentKeybinds)
-            | Some(Popup::ErrorMessage(_)) => (),
+            | Some(Popup::CurrentKeybinds) => (),
             #[cfg(not(any(feature = "espflash", feature = "macros")))]
             Some(Popup::SettingsMenu(_)) if self.popup_menu_scroll == 0 => {}
             #[cfg(any(feature = "espflash", feature = "macros"))]
@@ -2067,7 +2066,8 @@ impl App {
             Some(Popup::ToolMenu(_)) if self.popup_menu_scroll < POPUP_MENU_SELECTOR_COUNT => {
                 return Ok(());
             }
-            Some(Popup::ErrorMessage(_)) | Some(Popup::CurrentKeybinds) => self.dismiss_popup(),
+            // Some(Popup::ErrorMessage(_)) => self.dismiss_popup(),
+            Some(Popup::CurrentKeybinds) => self.dismiss_popup(),
             Some(Popup::SettingsMenu(SettingsMenu::SerialPort)) => {
                 let baud_rate = match self.baud_input.value().parse::<u32>() {
                     Ok(baud) => baud,
@@ -2372,7 +2372,12 @@ impl App {
                                 self.menu = Menu::Terminal;
                             }
                             Ok(Err(e)) => {
-                                todo!("{e}")
+                                let report = color_eyre::Report::new(e);
+                                let mut error_string = String::new();
+                                for e in report.chain() {
+                                    error_string.push_str(&format!("\n{e}"));
+                                }
+                                self.popup = Some(Popup::ConnectionFailed(error_string));
                             }
                             Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
                                 // color_eyre::eyre::bail!("Connection to supplied port timed out!")
@@ -2846,7 +2851,7 @@ impl App {
                 show_keybinds(&self.keybinds, &mut scroll, frame, area, self);
                 self.popup_menu_scroll = scroll as usize;
             }
-            Popup::ErrorMessage(_) => todo!(),
+            // Popup::ErrorMessage(_) => todo!(),
             #[cfg(feature = "defmt")]
             Popup::DefmtNewElf(file_explorer) => {
                 let area = centered_rect_size(
@@ -2959,7 +2964,29 @@ impl App {
                 );
             }
             Popup::ConnectionFailed(error) => {
-                error!("{error}");
+                let title = "Error connecting to port!";
+                let title_line = Line::styled(title, Style::new().reset());
+                let block = Block::bordered()
+                    .border_style(Style::new().red())
+                    .title_top(title_line)
+                    .title_alignment(ratatui::layout::Alignment::Center);
+                let error_lines = error.lines().map(Line::raw).collect::<Vec<_>>();
+                let error_lines_len = error_lines.len();
+                let max_line_len = error.lines().map(str::len).max().unwrap();
+
+                let area = centered_rect_size(
+                    Size {
+                        width: max_line_len.max(title.len()) as u16 + 6,
+                        height: error_lines_len as u16 + 3,
+                    },
+                    area,
+                );
+
+                let para = Paragraph::new(error_lines).red().centered();
+
+                frame.render_widget(Clear, area);
+                frame.render_widget(&block, area);
+                frame.render_widget(para, block.inner(area));
             }
         }
     }
