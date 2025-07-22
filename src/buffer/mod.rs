@@ -341,14 +341,6 @@ impl RawBuffer {
     fn consumed(&mut self, amount: usize) {
         self.consumed_up_to += amount;
     }
-    fn range(&self, range: Range<usize>) -> Option<&[u8]> {
-        let len = self.inner.len();
-        if range.end <= len {
-            Some(&self.inner[range])
-        } else {
-            None
-        }
-    }
     fn next_slice_raw(&self) -> Option<(usize, DelimitedSlice)> {
         let start_index = self.consumed_up_to;
         let newest = &self.inner[start_index..];
@@ -462,101 +454,89 @@ impl StyledLines {
         self.rx
             .push(BufLine::port_text_line(Line::raw(text), kit, line_ending));
     }
+    // Returns None if the slice would be fully hidden by the color rules.
+    fn slice_as_port_text(
+        kit: BufLineKit,
+        color_rules: &ColorRules,
+        line_ending: &LineEnding,
+    ) -> Option<BufLine> {
+        let lossy_flavor = if kit.render.rendering.escape_unprintable_bytes {
+            LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
+        } else {
+            LossyFlavor::replacement_char()
+        };
+
+        let RangeSlice {
+            slice: original, ..
+        } = &kit.full_range_slice;
+
+        let truncated = if original.has_line_ending(line_ending) {
+            &original[..original.len() - line_ending.as_bytes().len()]
+        } else {
+            original
+        };
+
+        let line = match truncated.to_line_lossy(Style::new(), lossy_flavor) {
+            Ok(line) => line,
+            Err(_) => {
+                error!("ansi-to-tui failed to parse input! Using unstyled text.");
+                Line::from(String::from_utf8_lossy(truncated).to_string())
+            }
+        };
+
+        color_rules.apply_onto(truncated, line).map(|mut l| {
+            l.remove_unsavory_chars(kit.render.rendering.escape_unprintable_bytes);
+            let line: Line<'static> = l.new_owned();
+            BufLine::port_text_line(line, kit, line_ending)
+        })
+    }
     fn consume_as_text(
         &mut self,
         raw_buffer: &RawBuffer,
         color_rules: &ColorRules,
-        index_in_buffer: usize,
-        delimited_slice: DelimitedSlice,
         kit: BufLineKit,
         line_ending: &LineEnding,
     ) {
-        let mut can_append_to_line = !self.last_rx_was_complete;
+        let mut replace_last_rx = !self.last_rx_was_complete;
 
-        // Since the other variants are conditionally compiled.
-        #[allow(irrefutable_let_patterns)]
-        let DelimitedSlice::Unknown(slice) = delimited_slice else {
-            unreachable!()
+        let slice = if replace_last_rx {
+            let last_line = self.rx.last_mut().expect("can't replace nothing");
+            let last_line_start = last_line.range().start;
+            let slice_finish = kit.full_range_slice.range.end;
+
+            &raw_buffer.inner[last_line_start..slice_finish]
+        } else {
+            kit.full_range_slice.slice
         };
 
-        for (_trunc, orig, _range) in line_ending_iter(slice, line_ending) {
-            if can_append_to_line {
-                can_append_to_line = false;
-                let last_line = self.rx.last_mut().expect("can't append to nothing");
-                let last_index = last_line.range().start;
-
-                let orig = last_index..index_in_buffer + orig.len();
-                let orig = raw_buffer
-                    .range(orig)
-                    .expect("failed to get line-to-continue buffer");
-
-                let kit_for_append = BufLineKit {
-                    full_range_slice: unsafe {
-                        RangeSlice::from_parent_and_child(&raw_buffer.inner, orig)
-                    },
-                    ..kit
-                };
-
-                let buf_line_opt = slice_as_port_text(kit_for_append, color_rules, line_ending);
-
-                if let Some(line) = buf_line_opt {
-                    last_line.update_line(line);
-                } else {
-                    _ = self.rx.pop();
-                    self.last_rx_was_complete = true;
-                }
-                self.last_rx_was_complete = orig.has_line_ending(line_ending);
-                continue;
-            }
-            // Otherwise, new line being created.
-            let kit_for_new = BufLineKit {
+        let lines = line_ending_iter(slice, line_ending).map(|(_trunc, orig, _range)| {
+            let kit = BufLineKit {
                 full_range_slice: unsafe {
                     RangeSlice::from_parent_and_child(&raw_buffer.inner, orig)
                 },
                 ..kit
             };
 
-            // Returns None if the slice would be fully hidden by the color rules.
-            fn slice_as_port_text(
-                kit: BufLineKit,
-                color_rules: &ColorRules,
-                line_ending: &LineEnding,
-            ) -> Option<BufLine> {
-                let lossy_flavor = if kit.render.rendering.escape_unprintable_bytes {
-                    LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
+            Self::slice_as_port_text(kit, color_rules, line_ending)
+        });
+
+        self.last_rx_was_complete = slice.has_line_ending(line_ending);
+
+        for line_opt in lines {
+            if replace_last_rx {
+                replace_last_rx = false;
+                if let Some(line) = line_opt {
+                    let last_line = self.rx.last_mut().expect("can't replace nothing");
+                    last_line.update_line(line);
                 } else {
-                    LossyFlavor::replacement_char()
-                };
-
-                let RangeSlice {
-                    slice: original, ..
-                } = &kit.full_range_slice;
-
-                let truncated = if original.has_line_ending(line_ending) {
-                    &original[..original.len() - line_ending.as_bytes().len()]
-                } else {
-                    original
-                };
-
-                let line = match truncated.to_line_lossy(Style::new(), lossy_flavor) {
-                    Ok(line) => line,
-                    Err(_) => {
-                        error!("ansi-to-tui failed to parse input! Using unstyled text.");
-                        Line::from(String::from_utf8_lossy(truncated).to_string())
-                    }
-                };
-
-                color_rules.apply_onto(truncated, line).map(|mut l| {
-                    l.remove_unsavory_chars(kit.render.rendering.escape_unprintable_bytes);
-                    let line: Line<'static> = l.new_owned();
-                    BufLine::port_text_line(line, kit, line_ending)
-                })
+                    _ = self.rx.pop();
+                    self.last_rx_was_complete = true;
+                }
+            } else {
+                if let Some(line) = line_opt {
+                    self.rx.push(line);
+                }
             }
-
-            if let Some(new_bufline) = slice_as_port_text(kit_for_new, color_rules, line_ending) {
-                self.rx.push(new_bufline);
-            }
-            self.last_rx_was_complete = orig.has_line_ending(line_ending);
         }
     }
     #[cfg(feature = "defmt")]
@@ -942,12 +922,12 @@ impl Buffer {
 
     fn consume_latest_bytes(&mut self, timestamp: DateTime<Local>) {
         #[cfg(not(feature = "defmt"))]
-        while let Some((index_in_buffer, delimited_slice)) = self.raw.next_slice_raw() {
-            // Since the other variants are conditionally compiled.
-            #[allow(irrefutable_let_patterns)]
+        while let Some((_index_in_buffer, delimited_slice)) = self.raw.next_slice_raw() {
+            #[allow(irrefutable_let_patterns)] // Other variants are conditionally compiled.
             let DelimitedSlice::Unknown(slice) = delimited_slice else {
                 unreachable!();
             };
+
             let kit = BufLineKit {
                 timestamp,
                 area_width: self.last_terminal_size.width,
@@ -961,19 +941,13 @@ impl Buffer {
                 },
             };
 
-            self.styled_lines.consume_as_text(
-                &self.raw,
-                &self.color_rules,
-                index_in_buffer,
-                delimited_slice,
-                kit,
-                &self.line_ending,
-            );
+            self.styled_lines
+                .consume_as_text(&self.raw, &self.color_rules, kit, &self.line_ending);
             self.raw.consumed(slice.len());
         }
 
         #[cfg(feature = "defmt")]
-        while let Some((index_in_buffer, delimited_slice)) = self
+        while let Some((_index_in_buffer, delimited_slice)) = self
             .raw
             .next_slice(self.defmt_settings.defmt_parsing.clone())
             && !self.defmt_raw_malformed
@@ -995,8 +969,6 @@ impl Buffer {
                     self.styled_lines.consume_as_text(
                         &self.raw,
                         &self.color_rules,
-                        index_in_buffer,
-                        delimited_slice,
                         kit,
                         &self.line_ending,
                     );
