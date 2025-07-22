@@ -617,7 +617,7 @@ impl EspFlashHelper {
 
         match popup {
             EspPopup::Flashing(Flashing {
-                chip,
+                chip: _chip,
                 current_file_addr,
                 current_file_len,
                 current_progress,

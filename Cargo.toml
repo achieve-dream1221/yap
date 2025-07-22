@@ -35,13 +35,14 @@ clap = { version = "4.5.40", features = ["derive"] }
 color-eyre = "0.6.3"
 # color-eyre = { path = "/home/tony/git/eyre/color-eyre/" }
 compact_str = { version = "0.9.0", features = ["serde"] }
+# crokey = { path = "../crokey", features = ["serde"] }
 crokey = { version = "=1.1.2", features = ["serde"] }
 crossbeam = "0.8.4"
 crossterm = "=0.28.1"
 # defmt-decoder = { version = "1.0.0", optional = true }
+# these are slightly more updated than the versions on crates.io
 defmt-decoder = { git = "https://github.com/knurling-rs/defmt", package = "defmt-decoder", optional = true, rev = "d52b9908c175497d46fc527f4f8dfd6278744f09" }
 defmt-parser = { git = "https://github.com/knurling-rs/defmt", package = "defmt-parser", optional = true, rev = "d52b9908c175497d46fc527f4f8dfd6278744f09" }
-# crokey = { path = "../crokey", features = ["serde"] }
 derivative = "2.2.0"
 directories = "6.0.0"
 enum-rotate = "0.1.1"
@@ -79,7 +80,10 @@ regex = "1.11.1"
 # regex-lite = "0.1.6"
 rolling-file = "0.2.0"
 serde = { version = "1.0", features = ["derive"] }
-serde-inline-default = "0.2.3"
+# serde-inline-default = "0.2.3"
+# technically older but i don't suffer from the bug it's fixing
+# plus this PR has #[serde_inline_default_parent] which is just so nice to use
+serde-inline-default = { git = "https://github.com/kaphula/serde-inline-default", rev = "fa7656d5335b9c31febaddbf071995e93944f33f" }
 serde_with = "3.14.0"
 serialport = { version = "4.7.2", features = ["serde"] }
 strip-ansi-escapes = "0.2.1"

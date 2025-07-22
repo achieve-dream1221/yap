@@ -3,15 +3,17 @@ use defmt_decoder::{DecodeError, Locations, Table};
 use fs_err as fs;
 use tracing::warn;
 
-// #[ouroboros::self_referencing]
+// Huge inspiration from defmt-print
+// https://github.com/knurling-rs/defmt/blob/d52b9908c175497d46fc527f4f8dfd6278744f09/print/src/main.rs#L183
+// and espflash
+// https://github.com/esp-rs/espflash/blob/b993a42fe48f4e679d687d927ba15d73ef495b1f/espflash/src/cli/monitor/parser/esp_defmt.rs
+
 pub struct DefmtDecoder {
-    elf_data: Vec<u8>,
+    // might need it at some point, who knows.
+    // elf_data: Vec<u8>,
     pub elf_md5: String,
     pub elf_path: Utf8PathBuf,
     pub table: Table,
-    // #[borrows(table)]
-    // #[covariant]
-    // pub decoder: Box<dyn StreamDecoder + 'this>,
     pub locations: Option<Locations>,
 }
 
@@ -58,13 +60,6 @@ pub enum LocationsError {
     IncompleteLocations,
 }
 
-// Much taken from defmt-print
-// https://github.com/knurling-rs/defmt/blob/d52b9908c175497d46fc527f4f8dfd6278744f09/print/src/main.rs#L183
-
-// include_bytes!(
-//     "/home/tony/git/yap/defmt-meow-no-wire-debug"
-// )
-
 impl DefmtDecoder {
     fn from_elf_bytes(
         bytes: &[u8],
@@ -77,7 +72,6 @@ impl DefmtDecoder {
             .get_locations(bytes)
             .map_err(|_| DefmtTableError::Locations)?;
 
-        // TODO notify in UI
         let locations = if !table.is_empty() && locs.is_empty() {
             warn!(
                 "Insufficient DWARF info; compile your program with `debug = 2` to enable location info."
@@ -112,109 +106,23 @@ impl DefmtDecoder {
         let decoder = DefmtDecoder {
             elf_md5: format!("{:X}", md5::compute(&elf_data)),
             elf_path,
-            elf_data,
             locations,
             table,
+            // elf_data,
         };
 
         Ok((decoder, locations_err))
     }
 }
 
-// Shamelessly stolen from
-// https://github.com/esp-rs/espflash/blob/2c56b23fdf046be5019f22e4621d215ae01cfdc1/espflash/src/cli/monitor/parser/esp_defmt.rs
-//
-// I don't intend on keeping this exactly like they have it forever, it's just a good starting-off point.
-
-// #[derive(Debug)]
-// pub struct FrameDelimiter {
-//     buffer: Vec<u8>,
-//     in_frame: bool,
-// }
-
-// Framing info added by esp-println
-
-// impl FrameDelimiter {
-//     pub fn new() -> Self {
-//         Self {
-//             buffer: Vec::new(),
-//             in_frame: false,
-//         }
-//     }
-
-//     pub fn search(haystack: &[u8], look_for_end: bool) -> Option<(&[u8], usize)> {
-//         let needle = if look_for_end { FRAME_END } else { FRAME_START };
-//         let start = if look_for_end {
-//             // skip leading zeros
-//             haystack.iter().position(|&b| b != 0)?
-//         } else {
-//             0
-//         };
-
-//         let end = haystack[start..]
-//             .windows(needle.len())
-//             .position(|window| window == needle)?;
-
-//         let end_extra = if look_for_end { needle.len() } else { 0 };
-
-//         Some((
-//             &haystack[start..][..end + end_extra],
-//             start + end + needle.len(),
-//         ))
-//     }
-
-//     /// Feeds data into the parser, extracting and processing framed or raw
-//     /// data.
-//     pub fn feed(&mut self, buffer: &[u8], mut process: impl FnMut(DefmtDelimitedSlice<'_>)) {
-//         self.buffer.extend_from_slice(buffer);
-//         debug!("feeding {} bytes", buffer.len());
-//         debug!("{buffer:?}");
-//         while let Some((frame, consumed)) = Self::search(&self.buffer, self.in_frame) {
-//             debug!(
-//                 "in_frame: {} | frame len: {} | consumed: {}",
-//                 self.in_frame,
-//                 frame.len(),
-//                 consumed
-//             );
-//             if self.in_frame {
-//                 process(DefmtDelimitedSlice::DefmtRzcobs {
-//                     raw: &self.buffer[..consumed],
-//                     inner: frame,
-//                 });
-//             } else if !frame.is_empty() {
-//                 process(DefmtDelimitedSlice::Raw(frame));
-//             }
-//             self.in_frame = !self.in_frame;
-
-//             self.buffer.drain(..consumed);
-//         }
-
-//         if !self.in_frame {
-//             // If we have a 0xFF byte at the end, we should assume it's the start of a new
-//             // frame.
-//             let consume = if self.buffer.ends_with(&[0xFF]) {
-//                 &self.buffer[..self.buffer.len() - 1]
-//             } else {
-//                 self.buffer.as_slice()
-//             };
-
-//             if !consume.is_empty() {
-//                 process(DefmtDelimitedSlice::Raw(consume));
-//                 self.buffer.drain(..consume.len());
-//             }
-//         }
-//     }
-// }
-
-// pub struct ProcessedFrame<'a> {
-//     level: Option<Level>,
-//     location: Option<&'a Location>,
-// }
-
+// Variant of
+// https://github.com/Dirbaio/rzcobs/blob/d74339bf1a9e93ea5a9417deaececccd145139c0/src/lib.rs#L202
 /// Decode a full message.
 ///
 /// `data` must be a full rzCOBS encoded message. Decoding partial
-/// messages is not possible. `data` must NOT include any `0x00` separator byte.
+/// messages is not possible.
+///
+/// `data` must NOT include any `0x00` separator byte.
 pub fn rzcobs_decode(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
     let mut res = vec![];
     let mut data = data.iter().rev().cloned();

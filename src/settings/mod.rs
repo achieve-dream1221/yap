@@ -83,10 +83,11 @@ pub struct Settings {
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
 #[derivative(Default)]
 pub struct Misc {
-    #[serde_inline_default(DEFAULT_LOG_LEVEL)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "DEFAULT_LOG_LEVEL"))]
     pub log_level: Level,
-    #[serde_inline_default(Some(DEFAULT_LOG_SOCKET))]
+
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "Some(DEFAULT_LOG_SOCKET)"))]
     #[serde_as(as = "NoneAsEmptyString")]
     pub log_tcp_socket: Option<SocketAddr>,
@@ -113,7 +114,7 @@ macro_rules! inclusive_increment {
 #[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
 #[derivative(Default)]
 pub struct Rendering {
-    #[serde_inline_default(UserEcho::All)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "UserEcho::All"))]
     #[table(values = UserEcho::VARIANTS)]
     /// Show user input in buffer after sending.
@@ -147,7 +148,7 @@ pub struct Rendering {
     /// Show recieved bytes in a Hex+ASCII view.
     pub hex_view: bool,
 
-    #[serde_inline_default(true)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Show Address+Offset Markers+ASCII label above hex view.
     pub hex_view_header: bool,
@@ -158,7 +159,7 @@ pub struct Rendering {
     /// Set an optional maximum bytes per line.
     pub bytes_per_line: MaxBytesPerLine,
 
-    #[serde_inline_default(HexHighlightStyle::HighlightAsciiSymbols)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "HexHighlightStyle::HighlightAsciiSymbols"))]
     #[table(values = HexHighlightStyle::VARIANTS)]
     /// Show user input in buffer after sending.
@@ -263,23 +264,23 @@ pub struct Logging {
     /// Whether to log the incoming input in a raw binary file.
     pub log_raw_input_to_file: bool,
 
-    #[serde_inline_default(String::from(crate::buffer::DEFAULT_TIMESTAMP_FORMAT))]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "String::from(crate::buffer::DEFAULT_TIMESTAMP_FORMAT)"))]
     #[table(skip)]
     /// Format for output timestamps.
     pub timestamp: String,
 
     // Just always doing instead right now, no need for the option.
-    // #[serde_inline_default(true)]
+    // #[serde_inline_default_parent]
     // #[derivative(Default(value = "true"))]
     // /// Escape invalid UTF-8 byte sequences in \xFF notation in text outputs.
     // pub escape_unprintable_bytes: bool,
-    #[serde_inline_default(true)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Record user input in text outputs.
     pub log_user_input: bool,
 
-    #[serde_inline_default(true)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Log any disconnect and reconnect events in text outputs.
     pub log_connection_events: bool,
@@ -296,18 +297,18 @@ pub struct Behavior {
     /// Text scroll speed modifier, positive increases, negative decreases.
     pub text_scroll_speed: i8,
 
-    #[serde_inline_default(true)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Use text box to type in before sending, with history. If disabled, sends keyboard inputs directly (TODO).
     pub fake_shell: bool,
 
-    #[serde_inline_default(true)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Send symbols like \n or \xFF as their respective bytes.
     pub fake_shell_unescape: bool,
 
     // TODO reconsider
-    #[serde_inline_default(true)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Persist changes to Port Settings made while connected across sessions.
     pub retain_port_setting_changes: bool,
@@ -316,7 +317,7 @@ pub struct Behavior {
     // /// Persist Fake Shell's command history across sessions (TODO).
     // pub retain_history: bool,
     //
-    #[serde_inline_default(Duration::from_millis(500))]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "Duration::from_millis(500)"))]
     #[table(allow_unknown_values)]
     #[table(display = Debug)]
@@ -447,7 +448,6 @@ impl From<defmt_parser::Level> for Level {
 }
 
 #[cfg(feature = "espflash")]
-#[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
 #[derivative(Default)]
 pub struct Espflash {
@@ -473,14 +473,14 @@ pub struct Defmt {
     /// Reload defmt data from ELF when file is updated.
     pub watch_elf_for_changes: bool,
 
-    #[serde_inline_default(Level::Trace)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "Level::Trace"))]
     #[table(display = Debug)]
     #[table(values = Level::VARIANTS)]
     /// Maximum log level to display. Items without a level are always shown.
     pub max_log_level: Level,
 
-    #[serde_inline_default(true)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Show device-derived timestamps, if available.
     pub device_timestamp: bool,
@@ -495,7 +495,7 @@ pub struct Defmt {
     /// Show file where log originated from, if available.
     pub show_file: DefmtLocation,
 
-    #[serde_inline_default(true)]
+    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Show line number in file where log originated from, if available.
     pub show_line_number: bool,

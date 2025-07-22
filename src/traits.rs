@@ -3,7 +3,6 @@
 use std::{borrow::Cow, collections::BTreeMap, ops::Range};
 
 use crate::buffer::{HEX_UPPER, LineEnding};
-use bstr::ByteVec;
 use itertools::Itertools;
 use ratatui::{
     style::{Style, Stylize},
@@ -112,11 +111,11 @@ impl FirstChars for str {
     }
 }
 
+#[allow(dead_code)]
+// Not using the bottom two methods, but I don't wish to comment them out/remove them yet.
 pub trait LineHelpers<'a> {
     /// Removes all tabs, carriage returns, newlines, and control characters from all spans in the line.
     fn remove_unsavory_chars(&mut self, replace: bool);
-    /// Returns `true` if either the `Line` or any of it's `Spans` are styled.
-    fn is_styled(&self) -> bool;
     /// Returns `true` if no `Spans` exist, or if all `Spans` are also empty.
     fn is_empty(&self) -> bool;
     /// Iterates through all Spans and sets the given style to all.
@@ -125,10 +124,13 @@ pub trait LineHelpers<'a> {
     fn all_spans_styled(self, new_style: Style) -> Line<'a>;
     /// Returns a new `Line` object that owns all of it's spans, copied from the original.
     fn new_owned(&'a self) -> Line<'static>;
-    /// Returns a new `Line` that borrows from all of the current line's spans.
-    fn new_borrowing(&'a self) -> Line<'a>;
     /// Generates an iterator that creates owned `Span` objects whose content borrows from the original line's spans.
     fn borrowed_spans_iter(&'a self) -> impl DoubleEndedIterator<Item = Span<'a>>;
+
+    /// Returns `true` if either the `Line` or any of it's `Spans` are styled.
+    fn is_styled(&self) -> bool;
+    /// Returns a new `Line` that borrows from all of the current line's spans.
+    fn new_borrowing(&'a self) -> Line<'a>;
 }
 
 impl<'a> LineHelpers<'a> for Line<'a> {
@@ -217,9 +219,6 @@ impl<'a> LineHelpers<'a> for Line<'a> {
         //     now2.elapsed()
         // );
     }
-    fn is_styled(&self) -> bool {
-        self.style != Style::default() || self.spans.iter().any(|s| s.style != Style::default())
-    }
     fn is_empty(&self) -> bool {
         self.spans.is_empty() || self.spans.iter().all(|s| s.content.is_empty())
     }
@@ -233,6 +232,14 @@ impl<'a> LineHelpers<'a> for Line<'a> {
             .iter()
             .map(|s| Span::styled(Cow::Borrowed(s.content.as_ref()), s.style))
     }
+    fn all_spans_styled(mut self, new_style: Style) -> Line<'a> {
+        self.style_all_spans(new_style);
+        self
+    }
+
+    fn is_styled(&self) -> bool {
+        self.style != Style::default() || self.spans.iter().any(|s| s.style != Style::default())
+    }
     fn new_borrowing(&self) -> Line<'_> {
         let mut line = Line::from_iter(self.borrowed_spans_iter());
         if self.alignment.is_some() {
@@ -240,10 +247,6 @@ impl<'a> LineHelpers<'a> for Line<'a> {
         }
         line.style = self.style;
         line
-    }
-    fn all_spans_styled(mut self, new_style: Style) -> Line<'a> {
-        self.style_all_spans(new_style);
-        self
     }
 }
 
@@ -259,16 +262,20 @@ impl ToggleBool for bool {
     }
 }
 
+#[cfg(feature = "macros")]
 pub trait HasEscapedBytes {
     fn has_escaped_bytes(&self) -> bool;
 }
 
+#[cfg(feature = "macros")]
 impl HasEscapedBytes for str {
     /// Returns `true` only if the given &str contains escaped bytes.
     ///
     /// Note: unescapes whole to check, so isn't the cheapest check yet.
     fn has_escaped_bytes(&self) -> bool {
         // Fast path: if not even a single backslash exists, then bail.
+
+        use bstr::ByteVec;
         if memchr::memchr(b'\\', self.as_bytes()).is_none() {
             return false;
         }

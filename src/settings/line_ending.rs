@@ -12,12 +12,12 @@ pub enum RxLineEnding {
 }
 
 impl RxLineEnding {
-    pub fn preview(&self) -> &str {
-        match self {
-            RxLineEnding::Preset(preset, _) => preset,
-            RxLineEnding::Custom(custom, _) => custom,
-        }
-    }
+    // pub fn preview(&self) -> &str {
+    //     match self {
+    //         RxLineEnding::Preset(preset, _) => preset,
+    //         RxLineEnding::Custom(custom, _) => custom,
+    //     }
+    // }
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             RxLineEnding::Preset(_, preset) => preset,
@@ -81,13 +81,13 @@ pub enum TxLineEnding {
 }
 
 impl TxLineEnding {
-    pub fn preview<'a>(&'a self, rx: &'a RxLineEnding) -> &'a str {
-        match self {
-            TxLineEnding::InheritRx => rx.preview(),
-            TxLineEnding::Preset(preset, _) => preset,
-            TxLineEnding::Custom(custom, _) => custom,
-        }
-    }
+    // pub fn preview<'a>(&'a self, rx: &'a RxLineEnding) -> &'a str {
+    //     match self {
+    //         TxLineEnding::InheritRx => rx.preview(),
+    //         TxLineEnding::Preset(preset, _) => preset,
+    //         TxLineEnding::Custom(custom, _) => custom,
+    //     }
+    // }
     pub fn as_bytes<'a>(&'a self, rx: &'a RxLineEnding) -> &'a [u8] {
         match self {
             TxLineEnding::InheritRx => rx.as_bytes(),
@@ -147,6 +147,16 @@ impl FromStr for TxLineEnding {
     }
 }
 
+// Since `serde_inline_derive` can't handle conditionally compiled fields,
+// we just make a dummy that won't be included later anyway.
+#[cfg(not(feature = "macros"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MacroTxLineEnding {
+    #[allow(dead_code)]
+    InheritTx,
+}
+
+#[cfg(feature = "macros")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MacroTxLineEnding {
     InheritRx,
@@ -154,16 +164,16 @@ pub enum MacroTxLineEnding {
     Preset(&'static str, &'static [u8]),
     Custom(CompactString, Vec<u8>),
 }
-
+#[cfg(feature = "macros")]
 impl MacroTxLineEnding {
-    pub fn preview<'a>(&'a self, rx: &'a RxLineEnding, tx: &'a TxLineEnding) -> &'a str {
-        match self {
-            MacroTxLineEnding::InheritRx => rx.preview(),
-            MacroTxLineEnding::InheritTx => tx.preview(rx),
-            MacroTxLineEnding::Preset(preset, _) => preset,
-            MacroTxLineEnding::Custom(custom, _) => custom,
-        }
-    }
+    // pub fn preview<'a>(&'a self, rx: &'a RxLineEnding, tx: &'a TxLineEnding) -> &'a str {
+    //     match self {
+    //         MacroTxLineEnding::InheritRx => rx.preview(),
+    //         MacroTxLineEnding::InheritTx => tx.preview(rx),
+    //         MacroTxLineEnding::Preset(preset, _) => preset,
+    //         MacroTxLineEnding::Custom(custom, _) => custom,
+    //     }
+    // }
     pub fn as_bytes<'a>(&'a self, rx: &'a RxLineEnding, tx: &'a TxLineEnding) -> &'a [u8] {
         match self {
             MacroTxLineEnding::InheritRx => rx.as_bytes(),
@@ -173,7 +183,7 @@ impl MacroTxLineEnding {
         }
     }
 }
-
+#[cfg(feature = "macros")]
 impl std::fmt::Display for MacroTxLineEnding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -184,7 +194,7 @@ impl std::fmt::Display for MacroTxLineEnding {
         }
     }
 }
-
+#[cfg(feature = "macros")]
 impl FromStr for MacroTxLineEnding {
     type Err = Infallible;
 
@@ -236,6 +246,7 @@ impl<S: AsRef<str>> From<S> for TxLineEnding {
         Self::from_str(value.as_ref()).expect("should be infallible conversion")
     }
 }
+#[cfg(feature = "macros")]
 impl<S: AsRef<str>> From<S> for MacroTxLineEnding {
     fn from(value: S) -> Self {
         Self::from_str(value.as_ref()).expect("should be infallible conversion")

@@ -7,7 +7,7 @@ use bstr::{ByteSlice, ByteVec};
 use buf_line::{BufLine, LineType};
 use chrono::{DateTime, Local};
 use compact_str::{CompactString, ToCompactString};
-use crossbeam::channel::Sender;
+
 use itertools::{Either, Itertools};
 use memchr::memmem::Finder;
 use ratatui::{
@@ -17,7 +17,6 @@ use ratatui::{
     widgets::ScrollbarState,
 };
 use ratatui_macros::span;
-use takeable::Takeable;
 use tracing::{debug, error, warn};
 
 #[cfg(feature = "defmt")]
@@ -26,7 +25,6 @@ use crate::buffer::defmt::DefmtDecoder;
 #[cfg(feature = "defmt")]
 use crate::settings::Defmt;
 use crate::{
-    app::Event,
     buffer::{
         buf_line::{BufLineKit, RenderSettings},
         tui::COLOR_RULES_PATH,
@@ -45,12 +43,6 @@ use crate::buffer::{
 #[cfg(feature = "defmt")]
 use crate::settings::DefmtSupport;
 
-#[cfg(feature = "logging")]
-pub use crate::buffer::logging::LoggingWorkerMissing;
-
-#[cfg(feature = "logging")]
-use crate::settings::Logging;
-
 mod buf_line;
 mod hex_spans;
 pub use hex_spans::*;
@@ -59,9 +51,14 @@ mod tui;
 #[cfg(feature = "logging")]
 mod logging;
 #[cfg(feature = "logging")]
-pub use logging::LoggingHandle;
+use crate::{app::Event, settings::Logging};
 #[cfg(feature = "logging")]
-pub use logging::{DEFAULT_TIMESTAMP_FORMAT, LoggingEvent};
+use crossbeam::channel::Sender;
+#[cfg(feature = "logging")]
+pub use logging::{DEFAULT_TIMESTAMP_FORMAT, LoggingEvent, LoggingHandle, LoggingWorkerMissing};
+#[cfg(feature = "logging")]
+use takeable::Takeable;
+
 #[cfg(feature = "defmt")]
 pub mod defmt;
 // #[cfg(feature = "defmt")]
@@ -476,6 +473,8 @@ impl StyledLines {
     ) {
         let mut can_append_to_line = !self.last_rx_was_complete;
 
+        // Since the other variants are conditionally compiled.
+        #[allow(irrefutable_let_patterns)]
         let DelimitedSlice::Unknown(slice) = delimited_slice else {
             unreachable!()
         };
@@ -944,6 +943,8 @@ impl Buffer {
     fn consume_latest_bytes(&mut self, timestamp: DateTime<Local>) {
         #[cfg(not(feature = "defmt"))]
         while let Some((index_in_buffer, delimited_slice)) = self.raw.next_slice_raw() {
+            // Since the other variants are conditionally compiled.
+            #[allow(irrefutable_let_patterns)]
             let DelimitedSlice::Unknown(slice) = delimited_slice else {
                 unreachable!();
             };

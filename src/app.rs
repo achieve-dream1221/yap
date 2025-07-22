@@ -6,12 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bstr::ByteVec;
 #[cfg(feature = "defmt")]
 use camino::Utf8Path;
-use camino::Utf8PathBuf;
 use color_eyre::eyre::Result;
-use compact_str::ToCompactString;
 use crokey::{KeyCombination, key};
 use crossbeam::channel::{Receiver, Select, Sender, TrySendError};
 use enum_rotate::EnumRotate;
@@ -22,7 +19,7 @@ use ratatui::{
     layout::{Constraint, Layout, Margin, Offset, Rect, Size},
     prelude::Backend,
     style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span, ToLine},
+    text::{Line, Span},
     widgets::{
         Block, Borders, Clear, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Table, TableState,
@@ -38,7 +35,7 @@ use takeable::Takeable;
 
 use tracing::{debug, error, info, trace, warn};
 use tui_big_text::{BigText, PixelSize};
-use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
+use tui_input::{Input, backend::crossterm::EventHandler};
 
 #[cfg(feature = "defmt")]
 #[cfg(feature = "defmt_watch")]
@@ -49,7 +46,6 @@ use crate::buffer::{LoggingHandle, LoggingWorkerMissing};
 use crate::{
     TcpStreamHealth,
     buffer::Buffer,
-    config_adjacent_path,
     event_carousel::CarouselHandle,
     is_ctrl_c,
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
@@ -135,7 +131,7 @@ pub enum Event {
     #[cfg(feature = "defmt_watch")]
     DefmtElfWatch(ElfWatchEvent),
     #[cfg(feature = "defmt")]
-    DefmtFromFilePicker(Utf8PathBuf),
+    DefmtFromFilePicker(camino::Utf8PathBuf),
     Quit,
 }
 
@@ -377,7 +373,7 @@ impl App {
             event_tx.clone(),
         )?;
 
-        let mut buffer = Buffer::build(
+        let buffer = Buffer::build(
             line_ending,
             settings.rendering.clone(),
             #[cfg(feature = "logging")]
@@ -387,6 +383,10 @@ impl App {
             #[cfg(feature = "defmt")]
             settings.defmt.clone(),
         )?;
+
+        // Silly but simple, since this doesn't always need to be mutable.
+        #[cfg(feature = "defmt")]
+        let mut buffer = buffer;
 
         #[cfg(feature = "defmt")]
         if let Some(last_elf) = defmt_helpers.recent_elfs.last().map(ToOwned::to_owned)
@@ -418,8 +418,9 @@ impl App {
 
         #[cfg(feature = "macros")]
         let macros = {
-            let (macros, errors) =
-                Macros::load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))?;
+            let (macros, errors) = Macros::load_from_folder(crate::config_adjacent_path(
+                crate::macros::MACROS_DIR_PATH,
+            ))?;
             if let Some(e) = errors.into_iter().next() {
                 return Err(e)?;
             }
@@ -681,15 +682,16 @@ impl App {
                         self.notifs.notify_str(text, Color::Red);
                     }
                     SerialDisconnectReason::Error(error) => {
+                        error!("Serial worker reported error on disconnect! {error}");
                         let reconnect_text = match &self.settings.serial.reconnections {
-                            Reconnections::Disabled => "Not attempting to reconnect.",
-                            Reconnections::LooseChecks => "Attempting to reconnect (loose checks).",
+                            Reconnections::Disabled => "Not attempting to reconnect",
+                            Reconnections::LooseChecks => "Attempting to reconnect (loose checks)",
                             Reconnections::StrictChecks => {
-                                "Attempting to reconnect (strict checks)."
+                                "Attempting to reconnect (strict checks)"
                             }
                         };
                         self.notifs.notify_str(
-                            format!("Disconnected from port! {reconnect_text}"),
+                            format!("Port error: {error} - {reconnect_text}"),
                             Color::Red,
                         );
                     }
@@ -899,6 +901,8 @@ impl App {
         );
 
         let macro_line_ending = if let Some(line_ending) = &macro_content.escaped_line_ending {
+            use bstr::ByteVec;
+
             Cow::Owned(Vec::unescape_bytes(line_ending))
         } else {
             Cow::Borrowed(default_macro_line_ending)
@@ -988,16 +992,9 @@ impl App {
         match self.popup {
             #[cfg(feature = "macros")]
             Some(Popup::ToolMenu(ToolMenu::Macros)) => {
-                match self
-                    .macros
+                self.macros
                     .search_input
-                    .handle_event(&ratatui::crossterm::event::Event::Key(key))
-                {
-                    Some(StateChanged { value: true, .. }) => {}
-
-                    Some(StateChanged { cursor: true, .. }) => {}
-                    _ => (),
-                }
+                    .handle_event(&ratatui::crossterm::event::Event::Key(key));
             }
             _ => (),
         }
@@ -1294,7 +1291,10 @@ impl App {
                 return Ok(());
             }
 
-            self.queued_action_dispatch(actions.pop().unwrap(), key_combo_opt)?;
+            self.queued_action_dispatch(
+                actions.pop().expect("checked for exactly one item?"),
+                key_combo_opt,
+            )?;
             return Ok(());
         }
 
@@ -1361,6 +1361,7 @@ impl App {
         let port_status_guard = self.serial.port_status.load().inner;
         match port_status_guard {
             InnerPortStatus::Connected => (),
+            #[cfg(feature = "espflash")]
             InnerPortStatus::LentOut => {
                 let tx = self.event_tx.clone();
                 self.carousel.add_oneshot(
@@ -1406,13 +1407,19 @@ impl App {
 
         Ok(())
     }
-    // Any Err's from here should be considered fatal.
+    // Any Err's from here should be considered fatal, things like
+    // workers/macros/espflash profiles not existing.
+    //
+    // Port errors won't appear here.
+    //
+    // This shouldn't be called directly, rather it should be called as a result of
+    // queue consumption ticks, or queue_action_set consuming a single action.
     fn queued_action_dispatch(
         &mut self,
         action: Action,
         key_combo_opt: Option<KeyCombination>,
     ) -> Result<Option<Duration>> {
-        debug!("Consuming action: {action:?}");
+        debug!("Consuming action: {action:?} - Key: {key_combo_opt:?}");
         match action {
             Action::AppAction(method) => self.run_app_action(method)?,
             Action::Pause(duration) => return Ok(Some(duration)),
@@ -1430,12 +1437,19 @@ impl App {
             #[cfg(feature = "espflash")]
             Action::EspFlashProfile(profile) => {
                 let Some(profile) = self.espflash.profile_from_name(&profile) else {
-                    todo!()
+                    todo!("espflash profile existed but disappeared?")
                 };
-                self.notifs.notify_str(
-                    format!("espflash profile: {}", profile.name()),
-                    Color::LightBlue,
-                );
+                if let Some(key_combo) = key_combo_opt {
+                    self.notifs.notify_str(
+                        format!("espflash profile: {} [{}]", profile.name(), key_combo),
+                        Color::LightBlue,
+                    );
+                } else {
+                    self.notifs.notify_str(
+                        format!("espflash profile: {}", profile.name()),
+                        Color::LightBlue,
+                    );
+                }
                 self.esp_flash_profile(profile)?;
             }
         }
@@ -1540,8 +1554,9 @@ impl App {
 
             #[cfg(feature = "macros")]
             A::MacroBuiltin(MacroBuiltinAction::ReloadMacros) => {
-                match Macros::load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))
-                {
+                match Macros::load_from_folder(crate::config_adjacent_path(
+                    crate::macros::MACROS_DIR_PATH,
+                )) {
                     Ok((macros, errors)) => {
                         let err_len = errors.len();
                         self.macros = macros;
@@ -1673,7 +1688,7 @@ impl App {
                         .open_single_file()
                         .show();
                     if let Ok(Some(file)) = file_opt_res {
-                        if let Ok(file_utf8) = Utf8PathBuf::from_path_buf(file) {
+                        if let Ok(file_utf8) = camino::Utf8PathBuf::from_path_buf(file) {
                             _ = tx.send(Event::DefmtFromFilePicker(file_utf8));
                         } else {
                             // TODO show in UI?
@@ -2429,8 +2444,9 @@ impl App {
     fn return_to_port_selection(&mut self) -> Result<()> {
         self.serial.request_disconnect()?;
         // Refresh port listings
-        self.ports.clear();
-        self.serial.request_port_scan()?;
+        self.ports = self
+            .serial
+            .request_port_scan_blocking(Duration::from_secs(15))?;
 
         self.buffer.intentional_disconnect_clear();
         // Clear the input box, but keep the user history!
@@ -3239,7 +3255,7 @@ impl App {
                     .borders(Borders::TOP)
                     .border_style(Style::from(block_color));
 
-                let logs_dir = config_adjacent_path("logs/");
+                let logs_dir = crate::config_adjacent_path("logs/");
                 let log_path_text = format!("Saving to: {logs_dir}");
                 let log_path_line = Line::raw(log_path_text)
                     .all_spans_styled(Color::DarkGray.into())
@@ -3653,6 +3669,8 @@ impl App {
                     // TOOD replace with fancy line preview
                     let macro_preview = content.as_str();
                     let line = if !content.sensitive {
+                        use ratatui::text::ToLine;
+
                         macro_preview.to_line().italic()
                     } else {
                         Line::from(span!("[SENSITIVE]")).italic()
@@ -3735,6 +3753,8 @@ impl App {
                         use crate::tui::esp::{EspBins, EspElf, EspProfile};
 
                         let upper_chip = |chip: &espflash::target::Chip| {
+                            use compact_str::ToCompactString;
+
                             chip.to_compact_string().to_ascii_uppercase()
                         };
                         let chip = match &profile {
@@ -4547,6 +4567,7 @@ pub fn repeating_pattern_widget(
     let pattern_widget = ratatui::widgets::Paragraph::new(pattern);
     let pattern_widget = match port_state {
         InnerPortStatus::Connected => pattern_widget.green(),
+        #[cfg(feature = "espflash")]
         InnerPortStatus::LentOut => pattern_widget.yellow(),
         InnerPortStatus::PrematureDisconnect => pattern_widget.red(),
         InnerPortStatus::Idle => pattern_widget.red(),

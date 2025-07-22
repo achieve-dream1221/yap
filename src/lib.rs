@@ -135,7 +135,7 @@ fn run_inner(
     let (tx, rx) = crossbeam::channel::unbounded::<app::Event>();
     let crossterm_tx = tx.clone();
     let (ctrl_c_tx, ctrl_c_rx) = crossbeam::channel::bounded::<()>(1);
-    let crossterm_thread = std::thread::spawn(move || {
+    let _crossterm_thread = std::thread::spawn(move || {
         use crokey::crossterm::event::{Event, KeyEventKind};
 
         #[derive(Debug)]

@@ -17,17 +17,17 @@ pub use show_keybinds::show_keybinds;
 
 pub const POPUP_MENU_SELECTOR_COUNT: usize = 2;
 
-/// Returns a `Rect` with the provided percentage of the parent `Rect` and centered.
-pub fn centered_rect_ratio(percent_x: u16, percent_y: u16, parent: Rect) -> Rect {
-    let width = parent.width * percent_x / 100;
-    let height = parent.height * percent_y / 100;
-    Rect {
-        width,
-        height,
-        x: (parent.width.saturating_sub(width)) / 2,
-        y: (parent.height.saturating_sub(height)) / 2,
-    }
-}
+// /// Returns a `Rect` with the provided percentage of the parent `Rect` and centered.
+// pub fn centered_rect_ratio(percent_x: u16, percent_y: u16, parent: Rect) -> Rect {
+//     let width = parent.width * percent_x / 100;
+//     let height = parent.height * percent_y / 100;
+//     Rect {
+//         width,
+//         height,
+//         x: (parent.width.saturating_sub(width)) / 2,
+//         y: (parent.height.saturating_sub(height)) / 2,
+//     }
+// }
 
 /// Returns a centered `Rect` with the provided size inside of the parent `Rect`.
 pub fn centered_rect_size(size: Size, parent: Rect) -> Rect {

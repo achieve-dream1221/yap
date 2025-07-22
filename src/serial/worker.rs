@@ -34,6 +34,7 @@ pub type NativePort = serialport::COMPort;
 enum TakeablePort {
     #[default]
     None,
+    #[cfg(feature = "espflash")]
     Borrowed,
     Native(NativePort),
     Loopback(VirtualPort),
@@ -65,6 +66,7 @@ impl TakeablePort {
         }
         *self = TakeablePort::None;
     }
+    #[cfg(feature = "espflash")]
     fn take_native(&mut self) -> Option<NativePort> {
         if let TakeablePort::Native(_) = self {
             if let TakeablePort::Native(port) = std::mem::replace(self, TakeablePort::Borrowed) {
@@ -89,13 +91,13 @@ impl TakeablePort {
             _ => None,
         }
     }
-    fn as_mut_native_port(&mut self) -> Option<&mut NativePort> {
-        if let TakeablePort::Native(port) = self {
-            Some(port)
-        } else {
-            None
-        }
-    }
+    // fn as_mut_native_port(&mut self) -> Option<&mut NativePort> {
+    //     if let TakeablePort::Native(port) = self {
+    //         Some(port)
+    //     } else {
+    //         None
+    //     }
+    // }
 }
 
 pub struct SerialWorker {
@@ -206,7 +208,7 @@ impl SerialWorker {
 
                     Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => (),
                     Err(e) => {
-                        error!("{:?}", e);
+                        error!("Error when reading from port: {e}");
                         self.unhealthy_disconnection();
                         self.event_tx
                             .send(SerialDisconnectReason::Error(e.to_string()).into())?;
@@ -216,7 +218,7 @@ impl SerialWorker {
                 if self.last_signal_check.elapsed() >= Duration::from_millis(100) {
                     self.last_signal_check = Instant::now();
                     if let Err(e) = self.read_and_share_serial_signals(false) {
-                        error!("{:?}", e);
+                        error!("Error when checking serial signals: {e}");
                         self.unhealthy_disconnection();
                         self.event_tx
                             .send(SerialDisconnectReason::Error(e.to_string()).into())?;
@@ -344,6 +346,7 @@ impl SerialWorker {
             SerialWorkerCommand::Disconnect {
                 user_wants_break: true,
             } if self.port.is_some() => {
+                debug!("Worker got serial connection break request!");
                 self.unhealthy_disconnection();
 
                 self.event_tx
@@ -451,6 +454,7 @@ impl SerialWorker {
                     };
                     match port.write(&buf[..write_size]) {
                         Ok(0) => {
+                            debug!("Unexpected EOF on serial write!");
                             self.unhealthy_disconnection();
                             self.event_tx.send(
                                 SerialDisconnectReason::Error("Unexpected EOF on write".into())
@@ -509,7 +513,10 @@ impl SerialWorker {
     ) -> Result<(), WorkerError> {
         // assert!(self.connected_port_info.read().unwrap().is_some());
         // assert!(self.port.is_none());
-        if self.port.is_available() || self.port.is_borrowed() {
+        let port_available = self.port.is_available();
+        #[cfg(feature = "espflash")]
+        let port_available = port_available || self.port.is_borrowed();
+        if port_available {
             error!("Got request to reconnect when already connected to port! Not acting...");
             return Ok(());
         }
@@ -898,7 +905,7 @@ impl SerialWorker {
                     if let Err(e) = flasher.write_bins_to_flash(&rom_segs, &mut propagator) {
                         self.event_tx
                             .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
-                        error!("Error during flashing: {e}");
+                        error!("Error during binary flashing: {e}");
                     }
 
                     self.event_tx.send(EspEvent::PortReturned.into())?;
@@ -986,7 +993,7 @@ impl SerialWorker {
                         {
                             self.event_tx
                                 .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
-                            error!("Error during flashing: {e}");
+                            error!("Error during ELF flashing: {e}");
                         }
                     }
 
@@ -1126,8 +1133,16 @@ pub enum InnerPortStatus {
     #[default]
     Idle,
     PrematureDisconnect,
+    #[cfg(feature = "espflash")]
     LentOut,
     Connected,
+}
+
+#[cfg(not(feature = "espflash"))]
+impl InnerPortStatus {
+    pub fn is_lent_out(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, Default)]

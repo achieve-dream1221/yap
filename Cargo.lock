@@ -2682,8 +2682,7 @@ dependencies = [
 [[package]]
 name = "serde-inline-default"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59fb1bedd774187d304179493b0d3c41fbe97b04b14305363f68d2bdf5e47cb9"
+source = "git+https://github.com/kaphula/serde-inline-default?rev=fa7656d5335b9c31febaddbf071995e93944f33f#fa7656d5335b9c31febaddbf071995e93944f33f"
 dependencies = [
  "proc-macro2",
  "quote",

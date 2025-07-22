@@ -788,7 +788,6 @@ fn byte_markers(bytes_per_line: u8, area: Rect, buf: &mut ratatui::prelude::Buff
         area.width
     );
 
-    // Render into the given area (y = area.y)
     marker_line.render(area, buf);
 }
 

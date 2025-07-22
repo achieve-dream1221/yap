@@ -1,7 +1,7 @@
 use std::{borrow::Cow, ops::Range};
 
 use chrono::{DateTime, Local};
-use compact_str::{CompactString, ToCompactString, format_compact};
+use compact_str::{CompactString, format_compact};
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
@@ -107,6 +107,8 @@ pub struct FrameLocation {
 #[cfg(feature = "defmt")]
 impl From<&defmt_decoder::Location> for FrameLocation {
     fn from(value: &defmt_decoder::Location) -> Self {
+        use compact_str::ToCompactString;
+
         Self {
             line: value.line.try_into().expect("line larger than u32::MAX??"),
             module: value.module.to_compact_string(),
@@ -287,6 +289,7 @@ impl BufLine {
             })
             .flatten();
 
+        #[cfg(feature = "defmt")]
         fn shorten_module_path(full_module_path: &str) -> &str {
             full_module_path
                 .split("::")
@@ -294,6 +297,7 @@ impl BufLine {
                 .unwrap_or(full_module_path)
         }
 
+        #[cfg(feature = "defmt")]
         fn shorten_file_path(full_file_path: &str) -> &str {
             full_file_path
                 .split(&['/', '\\'])

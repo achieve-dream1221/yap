@@ -127,6 +127,7 @@ impl UserInput {
         self.history.push(self.input_box.value());
         self.clear();
     }
+    #[cfg(feature = "macros")]
     pub fn replace_input(&mut self, text: &str) {
         self.clear_history_selection();
         self.input_box = text.into();

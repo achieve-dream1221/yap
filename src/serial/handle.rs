@@ -2,7 +2,7 @@ use std::{sync::Arc, thread::JoinHandle, time::Duration};
 
 use arc_swap::ArcSwap;
 use bstr::ByteVec;
-use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, bounded};
+use crossbeam::channel::{RecvTimeoutError, Sender, bounded};
 use serialport::SerialPortInfo;
 use tracing::{debug, error};
 
