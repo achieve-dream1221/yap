@@ -250,6 +250,10 @@ pub const COMMON_BAUD_TRUNC: &[u32] = {
 
 const FAILED_SEND_VISUAL_TIME: Duration = Duration::from_millis(750);
 
+const CONNECT_ATTEMPT_BLOCK_MAX: Duration = Duration::from_secs(15);
+
+const SCAN_BLOCK_MAX: Duration = Duration::from_secs(5);
+
 #[derive(Debug, thiserror::Error)]
 enum NoSenders {
     #[error("Serial Buffer sender has hung up unexpectedly!")]
@@ -344,7 +348,7 @@ impl App {
             serial_buf_tx,
             settings.serial.clone(),
             settings.ignored_devices.clone(),
-            Duration::from_secs(15),
+            SCAN_BLOCK_MAX,
         )
         .expect("Failed to build serial worker!");
 
@@ -2357,12 +2361,11 @@ impl App {
                         self.settings.serial.baud_rate = baud_rate;
                         self.settings.save()?;
 
-                        // TODO make a const value
                         match self.serial.connect_blocking(
                             port_info.clone(),
                             self.settings.serial.clone(),
                             Some(baud_rate),
-                            Duration::from_secs(15),
+                            CONNECT_ATTEMPT_BLOCK_MAX,
                         ) {
                             Ok(()) => {
                                 self.menu = Menu::Terminal;
@@ -2433,9 +2436,7 @@ impl App {
     fn return_to_port_selection(&mut self) -> Result<()> {
         self.serial.request_disconnect()?;
         // Refresh port listings
-        self.ports = self
-            .serial
-            .request_port_scan_blocking(Duration::from_secs(15))?;
+        self.ports = self.serial.request_port_scan_blocking(SCAN_BLOCK_MAX)?;
 
         self.buffer.intentional_disconnect_clear();
         // Clear the input box, but keep the user history!
@@ -2580,6 +2581,8 @@ impl App {
     }
     /// Get max number of selectable elements for current popup.
     ///
+    /// Includes popup category selectors if present.
+    ///
     /// Panics if no popup is active.
     fn current_popup_selectable_item_count(&self) -> usize {
         let Some(popup) = &self.popup else {
@@ -2627,7 +2630,7 @@ impl App {
             }
             Popup::IgnoreByName(_) => <IgnorePortByNamePrompt as VariantArray>::VARIANTS.len(),
             Popup::IgnoreByUsb(_, _) => <IgnoreUsbDevicePrompt as VariantArray>::VARIANTS.len(),
-            _ => unreachable!("popup {popup:?}has no item count"),
+            _ => unreachable!("popup {popup:?} has no item count"),
         }
     }
 
@@ -3436,9 +3439,12 @@ impl App {
         // TODO
         // shrink scrollbar and change content length based on if its for a submenu or not
         let content_length = self.current_popup_selectable_item_count();
-        let mut scrollbar_state =
-            ScrollbarState::new(content_length.saturating_sub(height as usize))
-                .position(table_state.offset());
+        let mut scrollbar_state = ScrollbarState::new(
+            content_length
+                .saturating_sub(height as usize)
+                .saturating_sub(POPUP_MENU_SELECTOR_COUNT),
+        )
+        .position(table_state.offset());
 
         frame.render_stateful_widget(
             scrollbar,
@@ -3817,9 +3823,12 @@ impl App {
         // TODO
         // shrink scrollbar and change content length based on if its for a submenu or not
         let content_length = self.current_popup_selectable_item_count();
-        let mut scrollbar_state =
-            ScrollbarState::new(content_length.saturating_sub(height as usize))
-                .position(table_state.offset());
+        let mut scrollbar_state = ScrollbarState::new(
+            content_length
+                .saturating_sub(height as usize)
+                .saturating_sub(POPUP_MENU_SELECTOR_COUNT),
+        )
+        .position(table_state.offset());
 
         frame.render_stateful_widget(
             scrollbar,
@@ -4108,7 +4117,10 @@ impl App {
                         SerialPortType::Unknown if p.port_name == MOCK_PORT_NAME => {
                             Cow::Borrowed("[Mock Testing Port]")
                         }
-                        // TODO make more reactive for Unix stuff
+                        #[cfg(unix)]
+                        SerialPortType::Unknown if p.port_name.starts_with("/dev/ttyS") => {
+                            Cow::Borrowed("[Virtual Console (TTY)]")
+                        }
                         SerialPortType::Unknown => Cow::Borrowed("[Unspecified]"),
                     },
                 ])
@@ -4411,12 +4423,11 @@ impl App {
         port_info: SerialPortInfo,
         baud: Option<u32>,
     ) -> color_eyre::Result<()> {
-        // TODO make a const value
         self.serial.connect_blocking(
             port_info.clone(),
             self.settings.serial.clone(),
             baud,
-            Duration::from_secs(15),
+            CONNECT_ATTEMPT_BLOCK_MAX,
         )?;
 
         self.menu = Menu::Terminal;

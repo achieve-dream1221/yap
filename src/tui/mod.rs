@@ -15,6 +15,7 @@ mod show_keybinds;
 pub mod single_line_selector;
 pub use show_keybinds::show_keybinds;
 
+/// Popup category selectors count.
 pub const POPUP_MENU_SELECTOR_COUNT: usize = 2;
 
 // /// Returns a `Rect` with the provided percentage of the parent `Rect` and centered.

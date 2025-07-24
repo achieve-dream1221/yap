@@ -66,7 +66,7 @@ impl SerialHandle {
         buffer_tx: Sender<(DateTime<Local>, Vec<u8>)>,
         port_settings: PortSettings,
         ignored_devices: Ignored,
-        timeout: Duration,
+        scan_timeout: Duration,
     ) -> Result<(Self, JoinHandle<()>, Vec<SerialPortInfo>), BlockingCommandError> {
         let (command_tx, command_rx) = crossbeam::channel::unbounded();
 
@@ -97,7 +97,7 @@ impl SerialHandle {
             port_settings,
         };
         // Trigger first port scan before scheduled event to fill it in sooner
-        let ports = handle.request_port_scan_blocking(timeout)?;
+        let ports = handle.request_port_scan_blocking(scan_timeout)?;
         Ok((handle, worker, ports))
     }
     pub fn connect_blocking(

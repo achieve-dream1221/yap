@@ -152,11 +152,6 @@ pub struct BufLineKit<'a> {
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
     fn new(line: Line<'static>, kit: BufLineKit, line_type: LineType) -> Self {
-        // TODO read from config
-        // line.remove_unsavory_chars(false);
-
-        // let index_info = make_index_info(&kit.full_range_slice, kit.render.rendering.hex_indices);
-
         let timestamp = kit.timestamp;
 
         let mut bufline = Self {
@@ -235,12 +230,15 @@ impl BufLine {
         *self = new;
     }
 
-    pub fn update_line_height(&mut self, area_width: u16, rendering: RenderSettings) -> usize {
+    pub fn update_line_height(&mut self, terminal_width: u16, rendering: RenderSettings) -> usize {
+        // Acting as if the scrollbar is always visible, since otherwise it appearing would require
+        // redoing the line height check again.
+        let width_minus_scrollbar = terminal_width.saturating_sub(1);
+
         let para = Paragraph::new(self.as_line(rendering)).wrap(Wrap { trim: false });
-        // TODO make the sub 1 for margin/scrollbar more sane/clear
         // Paragraph::line_count comes from an unstable ratatui feature (unstable-rendered-line-info)
         // which may be changed/removed in the future. If so, I'll need to roll my own wrapping/find someone's to steal.
-        let height = para.line_count(area_width.saturating_sub(1));
+        let height = para.line_count(width_minus_scrollbar);
         self.rendered_line_height = height as u16;
         height
     }
@@ -382,13 +380,15 @@ impl BufLine {
 
         let line_ending = std::iter::once(&self.line_type).filter_map(|lt| match lt {
             _ if !rendering.rendering.show_line_ending => None,
+
             LineType::Port {
                 escaped_line_ending: Some(line_ending),
             } => Some(Span::styled(Cow::Borrowed(line_ending.as_str()), dark_gray)),
+
             LineType::Port {
                 escaped_line_ending: None,
             } => None,
-            // TODO figure this out
+
             LineType::User {
                 escaped_line_ending: Some(line_ending),
                 ..
