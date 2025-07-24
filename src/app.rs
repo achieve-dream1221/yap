@@ -1550,6 +1550,9 @@ impl App {
                     .notify_str(format!("Toggled Hex View Header {state}"), Color::Gray);
             }
 
+            A::Base(BaseAction::ShowKeybinds) if self.popup == Some(Popup::CurrentKeybinds) => {
+                self.dismiss_popup()
+            }
             A::Base(BaseAction::ShowKeybinds) => self.show_popup(Popup::CurrentKeybinds),
 
             #[cfg(feature = "macros")]

@@ -74,6 +74,15 @@ pub struct RenderSettings<'a> {
 //     pub(super) is_macro: bool,
 // }
 
+// #[derive(Debug, Clone, PartialEq, Eq, strum::EnumIs)]
+// pub enum LineFinished {
+//     Unfinished {
+//         clear_occurred: Option<(usize, Style)>,
+//     },
+//     LineEnding(CompactString),
+//     CutShort,
+// }
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LineType {
     Port {
@@ -167,10 +176,7 @@ impl BufLine {
             escaped_line_ending: line_ending.escaped_from(kit.full_range_slice.slice),
         };
 
-        Self::new(
-            line, kit, // line_ending,
-            line_type,
-        )
+        Self::new(line, kit, line_type)
     }
     #[cfg(feature = "defmt")]
     pub fn port_defmt_line(
@@ -186,15 +192,12 @@ impl BufLine {
             location,
         };
 
-        Self::new(
-            line, kit, // line_ending,
-            line_type,
-        )
+        Self::new(line, kit, line_type)
     }
     pub fn user_line(
         line: Line<'static>,
         kit: BufLineKit,
-        line_ending: &LineEnding,
+        tx_line_ending: &LineEnding,
         is_bytes: bool,
         is_macro: bool,
         reloggable_raw: &[u8],
@@ -203,7 +206,7 @@ impl BufLine {
             is_bytes,
             is_macro,
             reloggable_raw: reloggable_raw.to_vec(),
-            escaped_line_ending: line_ending.escaped_from(reloggable_raw),
+            escaped_line_ending: tx_line_ending.escaped_from(reloggable_raw),
         };
 
         Self::new(line, kit, line_type)
@@ -381,10 +384,12 @@ impl BufLine {
                 escaped_line_ending: Some(line_ending),
                 ..
             } => Some(Span::styled(Cow::Borrowed(line_ending.as_str()), dark_gray)),
+
             LineType::User {
                 escaped_line_ending: None,
                 ..
             } => None,
+
             #[cfg(feature = "defmt")]
             LineType::PortDefmt { .. } => None,
         });

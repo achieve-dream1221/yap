@@ -106,6 +106,8 @@ pub enum BaseAction {
     ToggleTimestamps,
     /// Toggle displaying line index and length in buffer.
     ToggleIndices,
+    // /// Toggle displaying line index and length in buffer.
+    // ToggleIndicesHex, // TODO
     /// Toggle displaying recieved bytes in a Hex+ASCII view.
     ToggleHex,
     /// Toggle displaying Address+Offset Markers+ASCII label above hex view.

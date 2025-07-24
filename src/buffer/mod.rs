@@ -1253,13 +1253,6 @@ impl Buffer {
             .collect();
         let orig_buf_len = self.raw.inner.len();
 
-        // Set to default values.
-        self.styled_lines.last_rx_was_complete = true;
-        #[cfg(feature = "defmt")]
-        {
-            self.defmt_raw_malformed = false;
-        }
-
         let blank_port_line_type = LineType::Port {
             escaped_line_ending: None,
         };
