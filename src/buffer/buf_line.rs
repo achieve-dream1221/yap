@@ -178,6 +178,15 @@ impl BufLine {
 
         Self::new(line, kit, line_type)
     }
+    /// Create a port line with no internal content but has a valid line ending.
+    pub fn hollow_port_line(kit: BufLineKit, line_ending: &LineEnding) -> Self {
+        let escaped_line_ending = line_ending.as_escaped();
+        let line_type = LineType::Port {
+            escaped_line_ending,
+        };
+
+        Self::new(Line::default(), kit, line_type)
+    }
     #[cfg(feature = "defmt")]
     pub fn port_defmt_line(
         line: Line<'static>,

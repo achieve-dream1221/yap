@@ -200,9 +200,15 @@ impl LineEnding {
         }
     }
 
+    fn as_escaped(&self) -> Option<CompactString> {
+        match self {
+            LineEnding::None => None,
+            _ => Some(self.as_bytes().escape_bytes().to_compact_string()),
+        }
+    }
     fn escaped_from(&self, buffer: &[u8]) -> Option<CompactString> {
         if buffer.has_line_ending(self) {
-            Some(self.as_bytes().escape_bytes().to_compact_string())
+            self.as_escaped()
         } else {
             None
         }
@@ -460,6 +466,8 @@ impl StyledLines {
         color_rules: &ColorRules,
         line_ending: &LineEnding,
     ) -> Option<BufLine> {
+        debug_assert!(!kit.full_range_slice.slice.is_empty());
+
         let lossy_flavor = if kit.render.rendering.escape_unprintable_bytes {
             LossyFlavor::escaped_bytes_styled(Style::new().dark_gray())
         } else {
@@ -469,6 +477,10 @@ impl StyledLines {
         let RangeSlice {
             slice: original, ..
         } = &kit.full_range_slice;
+
+        if *original == line_ending.as_bytes() {
+            return Some(BufLine::hollow_port_line(kit, line_ending));
+        }
 
         let truncated = if original.has_line_ending(line_ending) {
             &original[..original.len() - line_ending.as_bytes().len()]
