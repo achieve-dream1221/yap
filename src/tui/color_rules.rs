@@ -165,6 +165,26 @@ impl ColorRules {
         })
     }
 
+    // Thinking a lot about how to redo this whole module:
+    //
+    // need a
+    // struct ColorActions {
+    //     whole_line_color: Option<Color>
+    //     whole_line_hide/censor: Option<Hide/Censor> (Hide has priority)
+    //     word_actions: Vec<(ColorCensorRemove, Range)>
+    // }
+    //
+    // for whole line rules, all that matters is the end results flatten out to the same
+    // and honestly, ditto goes for word actions, but thats less of a likelyhood.
+    //
+    // with
+    //
+    // fn unchanged_up_to(usize, actions) -> bool
+    // checking each action bound up to the index, also making sure the new actions
+    // doesn't go any further.
+    //
+    // or saving a "last action set hash" would work the same
+
     pub fn apply_onto<'a>(&self, original: &'a [u8], mut line: Line<'a>) -> Option<Line<'a>> {
         if line.is_empty() {
             return None;

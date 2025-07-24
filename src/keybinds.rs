@@ -36,6 +36,8 @@ use crate::{config_adjacent_path, traits::RequiresPort};
 // #[strum(prefix = "show-")]
 // nevermind, doesn't work with FromStr :(
 pub enum ShowPopupAction {
+    /// Show all current keybinds, highlighting unrecognized actions.
+    ShowKeybinds,
     #[strum(serialize = "show-portsettings")]
     /// Open the Port Settings menu.
     ShowPortSettings,
@@ -106,14 +108,12 @@ pub enum BaseAction {
     ToggleTimestamps,
     /// Toggle displaying line index and length in buffer.
     ToggleIndices,
-    // /// Toggle displaying line index and length in buffer.
-    // ToggleIndicesHex, // TODO
+    /// Toggle displaying index and length in hexadecimal format.
+    ToggleIndicesHex,
     /// Toggle displaying recieved bytes in a Hex+ASCII view.
     ToggleHex,
     /// Toggle displaying Address+Offset Markers+ASCII label above hex view.
     ToggleHexHeader,
-    /// Open menu to show current keybinds.
-    ShowKeybinds,
     /// Reload all Color Rules.
     ReloadColors,
     /// Reload all Keybinds.
@@ -149,14 +149,14 @@ pub enum PortAction {
     /// Toggle the state of RTS (Ready To Send).
     ToggleRts,
 
-    /// Set the state of RTS to active.
+    /// Set the state of RTS to active (true).
     AssertRts,
-    /// Set the state of RTS to in-active.
+    /// Set the state of RTS to inactive (false).
     DeassertRts,
 
-    /// Set the state of DTR to active.
+    /// Set the state of DTR to active (true).
     AssertDtr,
-    /// Set the state of DTR to in-active.
+    /// Set the state of DTR to inactive (false).
     DeassertDtr,
 
     /// Attempt to reconnect to device, must match USB info if applicable.
@@ -223,9 +223,6 @@ impl RequiresPort for MacroBuiltinAction {
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum EspAction {
-    #[strum(serialize = "reload-espflash")]
-    /// Reload all espflash profiles.
-    ReloadProfiles,
     /// Attempt to remotely reset the chip.
     EspHardReset,
     /// Attempt to reboot into bootloader, retries until success or eventual fail.
@@ -236,6 +233,9 @@ pub enum EspAction {
     EspDeviceInfo,
     /// Erase all ESP flash contents.
     EspEraseFlash,
+    #[strum(serialize = "reload-espflash")]
+    /// Reload all espflash profiles.
+    ReloadProfiles,
 }
 
 #[cfg(feature = "espflash")]
@@ -653,7 +653,7 @@ impl Keybinds {
 
                 matches!(
                     actions[0].parse::<AppAction>(),
-                    Ok(AppAction::Base(BaseAction::ShowKeybinds))
+                    Ok(AppAction::Popup(ShowPopupAction::ShowKeybinds))
                 )
             })
             .map(|(kc, _)| kc.to_compact_string());

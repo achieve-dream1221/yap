@@ -111,8 +111,7 @@ impl FirstChars for str {
     }
 }
 
-#[allow(dead_code)]
-// Not using the bottom two methods, but I don't wish to comment them out/remove them yet.
+#[allow(dead_code)] // Not using the bottom two methods, but I don't wish to comment them out/remove them yet.
 pub trait LineHelpers<'a> {
     /// Removes all tabs, carriage returns, newlines, and control characters from all spans in the line.
     fn remove_unsavory_chars(&mut self, replace: bool);

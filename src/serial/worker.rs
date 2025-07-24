@@ -5,6 +5,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use chrono::{DateTime, Local};
 use crossbeam::channel::{Receiver, Sender};
 use serialport::{SerialPort, SerialPortInfo, SerialPortType};
 use tracing::{debug, error, info, warn};
@@ -103,7 +104,7 @@ impl TakeablePort {
 pub struct SerialWorker {
     command_rx: Receiver<SerialWorkerCommand>,
     event_tx: Sender<Event>,
-    buffer_tx: Sender<Vec<u8>>,
+    buffer_tx: Sender<(DateTime<Local>, Vec<u8>)>,
     port: TakeablePort,
     last_signal_check: Instant,
     scan_snapshot: Vec<SerialPortInfo>,
@@ -117,7 +118,7 @@ impl SerialWorker {
     pub fn new(
         command_rx: Receiver<SerialWorkerCommand>,
         event_tx: Sender<Event>,
-        buffer_tx: Sender<Vec<u8>>,
+        buffer_tx: Sender<(DateTime<Local>, Vec<u8>)>,
         port_status: Arc<ArcSwap<PortStatus>>,
         port_settings: Arc<ArcSwap<PortSettings>>,
         ignored_devices: Ignored,
@@ -193,11 +194,11 @@ impl SerialWorker {
                 //     port.bytes_to_write().unwrap()
                 // );
                 match port.read(self.rx_buffer.as_mut_slice()) {
-                    // TODO timestamp *here*
                     Ok(t) if t > 0 => {
+                        let recieved_at = Local::now();
                         let cloned_buff = self.rx_buffer[..t].to_owned();
                         // info!("{:?}", &serial_buf[..t]);
-                        self.buffer_tx.send(cloned_buff)?;
+                        self.buffer_tx.send((recieved_at, cloned_buff))?;
                         // if let Err(e) = self.buffer_tx.send(cloned_buff) {
                         //     self.port.drop();
                         //     Err(e)?;
@@ -369,6 +370,7 @@ impl SerialWorker {
             SerialWorkerCommand::RequestReconnect(strictness_opt) => {
                 if let Err(e) = self.attempt_reconnect(strictness_opt) {
                     // TODO maybe show on UI?
+                    // Maybe direct to notification history?
                     error!("Failed reconnect attempt: {e}");
                 }
             }
@@ -436,12 +438,10 @@ impl SerialWorker {
 
                 // let mut writer = BufWriter::new(&mut port);
 
-                // TODO This is because the ESP32-S3's virtual USB serial port
+                // Blech... This is because the ESP32-S3's virtual USB serial port
                 // has an issue with payloads larger than 256 bytes????
                 // (Sending too fast causes the buffer to fill up too quickly for the
                 // actual firmware to notice anything present and drain it before it hits the cap)
-                // So this might need to be a throttle toggle,
-                // maybe on by default since its not too bad?
                 let slow_writes = self.shared_settings.load().limit_tx_speed;
 
                 let max_bytes = 8;

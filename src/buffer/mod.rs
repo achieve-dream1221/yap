@@ -907,18 +907,17 @@ impl Buffer {
     }
 
     // Forced to use Vec<u8> for now
-    pub fn fresh_rx_bytes(&mut self, bytes: Vec<u8>) {
-        let now = Local::now();
+    pub fn fresh_rx_bytes(&mut self, timestamp: DateTime<Local>, bytes: Vec<u8>) {
         // debug!("{lines:?}");
         // debug!("{:#?}", self.lines);
 
-        self.raw.feed(&bytes, now);
+        self.raw.feed(&bytes, timestamp);
 
         #[cfg(feature = "logging")]
-        self.log_handle.log_rx_bytes(now, bytes).unwrap();
+        self.log_handle.log_rx_bytes(timestamp, bytes).unwrap();
 
         // let meow = std::time::Instant::now();
-        self.consume_latest_bytes(now);
+        self.consume_latest_bytes(timestamp);
         // error!("{:?}", meow.elapsed());
 
         // self.raw.inner.extend(bytes.iter());

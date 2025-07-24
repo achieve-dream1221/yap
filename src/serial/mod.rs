@@ -29,7 +29,6 @@ pub enum SerialEvent {
     #[cfg(feature = "espflash")]
     EspFlash(EspEvent),
     Disconnected(SerialDisconnectReason),
-    ConnectionFailed(serialport::Error),
 }
 
 #[derive(Debug, Clone)]

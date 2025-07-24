@@ -2,6 +2,7 @@ use std::{sync::Arc, thread::JoinHandle, time::Duration};
 
 use arc_swap::ArcSwap;
 use bstr::ByteVec;
+use chrono::{DateTime, Local};
 use crossbeam::channel::{RecvTimeoutError, Sender, bounded};
 use serialport::SerialPortInfo;
 use tracing::{debug, error};
@@ -62,7 +63,7 @@ pub struct SerialHandle {
 impl SerialHandle {
     pub fn build(
         event_tx: Sender<Event>,
-        buffer_tx: Sender<Vec<u8>>,
+        buffer_tx: Sender<(DateTime<Local>, Vec<u8>)>,
         port_settings: PortSettings,
         ignored_devices: Ignored,
         timeout: Duration,

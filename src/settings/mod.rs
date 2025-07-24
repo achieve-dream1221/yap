@@ -304,14 +304,8 @@ pub struct Behavior {
 
     #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
-    /// Send symbols like \n or \xFF as their respective bytes.
-    pub fake_shell_unescape: bool,
-
-    // TODO reconsider
-    #[serde_inline_default_parent]
-    #[derivative(Default(value = "true"))]
-    /// Persist changes to Port Settings made while connected across sessions.
-    pub retain_port_setting_changes: bool,
+    /// Interpret typed escape sequences such as \n or \xFF and send corresponding byte values.
+    pub unescape_typed_bytes: bool,
 
     // #[serde(default)]
     // /// Persist Fake Shell's command history across sessions (TODO).

@@ -8,6 +8,7 @@ use std::{
 
 #[cfg(feature = "defmt")]
 use camino::Utf8Path;
+use chrono::{DateTime, Local};
 use color_eyre::eyre::Result;
 use crokey::{KeyCombination, key};
 use crossbeam::channel::{Receiver, Select, Sender, TrySendError};
@@ -124,7 +125,7 @@ impl From<CrosstermEvent> for Event {
 pub enum Event {
     Crossterm(CrosstermEvent),
     Serial(SerialEvent),
-    RxBuffer(Vec<u8>),
+    RxBuffer((DateTime<Local>, Vec<u8>)),
     Tick(Tick),
     #[cfg(feature = "logging")]
     Logging(LoggingEvent),
@@ -266,7 +267,7 @@ pub struct App {
 
     event_tx: Sender<Event>,
     event_rx: Receiver<Event>,
-    serial_buf_rx: Receiver<Vec<u8>>,
+    serial_buf_rx: Receiver<(DateTime<Local>, Vec<u8>)>,
 
     baud_selection_state: SingleLineSelectorState,
     baud_input: Input,
@@ -286,13 +287,7 @@ pub struct App {
     user_input: UserInput,
 
     pub buffer: Buffer,
-    // Tempted to move these into Buffer, or a new BufferState
-    // buffer_scroll: usize,
-    // buffer_scroll_state: ScrollbarState,
-    // buffer_stick_to_bottom: bool,
-    // buffer_wrapping: bool,
-    // Filled in while drawing UI
-    // buffer_rendered_lines: usize,
+
     repeating_line_flip: bool,
     failed_send_at: Option<Instant>,
 
@@ -310,8 +305,7 @@ pub struct App {
 
     #[cfg(feature = "defmt")]
     pub defmt_helpers: DefmtHelpers,
-    // TODO
-    // error_message: Option<String>,
+
     ctrl_c_tx: Sender<()>,
     tcp_log_health: Arc<TcpStreamHealth>,
 }
@@ -436,9 +430,7 @@ impl App {
             baud_selection_state: SingleLineSelectorState::new().with_selected(baud_index),
             baud_input,
             popup_menu_scroll: 0,
-            // popup_category_selector_state: SingleLineSelectorState::new(),
-            // popup_scrollbar_state: ScrollbarState::default(),
-            // popup_single_line_state: SingleLineSelectorState::new(),
+
             ports,
 
             carousel: event_carousel,
@@ -523,7 +515,7 @@ impl App {
             } else {
                 // Otherwise, discard whatever we get.
                 let mut bytes_discarded = 0;
-                while let Ok(vec_to_discard) = self.serial_buf_rx.try_recv() {
+                while let Ok((_timestamp, vec_to_discard)) = self.serial_buf_rx.try_recv() {
                     bytes_discarded += vec_to_discard.len();
                 }
                 if bytes_discarded > 0 {
@@ -579,8 +571,8 @@ impl App {
         match event {
             Event::Quit => self.shutdown(),
 
-            Event::RxBuffer(data) => {
-                self.buffer.fresh_rx_bytes(data);
+            Event::RxBuffer((timestamp, data)) => {
+                self.buffer.fresh_rx_bytes(timestamp, data);
                 self.buffer.scroll_by(0);
 
                 self.repeating_line_flip.flip();
@@ -658,9 +650,6 @@ impl App {
                 self.buffer.scroll_by(0);
                 self.user_broke_connection = false;
             }
-            Event::Serial(SerialEvent::ConnectionFailed(err)) => {
-                todo!("{err}")
-            }
             Event::Serial(SerialEvent::Disconnected(reason)) => {
                 #[cfg(feature = "espflash")]
                 self.espflash.reset_popup();
@@ -710,7 +699,10 @@ impl App {
 
                 self.ports = ports;
             }
-            Event::Serial(SerialEvent::UnsentTx(unsent)) => todo!("{unsent:?}"),
+            Event::Serial(SerialEvent::UnsentTx(unsent)) => error!(
+                "Serial worker reported an unsent buffer of len {}!",
+                unsent.len()
+            ),
             #[cfg(feature = "espflash")]
             Event::Serial(SerialEvent::EspFlash(esp_event)) => match esp_event {
                 EspEvent::Error(e) => {
@@ -1437,7 +1429,7 @@ impl App {
             #[cfg(feature = "espflash")]
             Action::EspFlashProfile(profile) => {
                 let Some(profile) = self.espflash.profile_from_name(&profile) else {
-                    todo!("espflash profile existed but disappeared?")
+                    panic!("espflash profile existed but disappeared?")
                 };
                 if let Some(key_combo) = key_combo_opt {
                     self.notifs.notify_str(
@@ -1533,6 +1525,14 @@ impl App {
                 );
             }
 
+            A::Base(BaseAction::ToggleIndicesHex) => {
+                let state = pretty_bool(self.settings.rendering.indices_as_hex.flip());
+                self.buffer
+                    .update_render_settings(self.settings.rendering.clone());
+                self.notifs
+                    .notify_str(format!("Toggled Indices as Hex {state}"), Color::Gray);
+            }
+
             A::Base(BaseAction::ToggleHex) => {
                 let state = pretty_bool(self.settings.rendering.hex_view.flip());
                 self.buffer
@@ -1549,11 +1549,6 @@ impl App {
                 self.notifs
                     .notify_str(format!("Toggled Hex View Header {state}"), Color::Gray);
             }
-
-            A::Base(BaseAction::ShowKeybinds) if self.popup == Some(Popup::CurrentKeybinds) => {
-                self.dismiss_popup()
-            }
-            A::Base(BaseAction::ShowKeybinds) => self.show_popup(Popup::CurrentKeybinds),
 
             #[cfg(feature = "macros")]
             A::MacroBuiltin(MacroBuiltinAction::ReloadMacros) => {
@@ -2099,18 +2094,9 @@ impl App {
 
                 self.serial.update_settings(self.scratch.serial.clone())?;
 
-                if matches!(self.menu, Menu::Terminal) {
-                    if self.settings.behavior.retain_port_setting_changes {
-                        self.settings.save()?;
-                        self.notifs.notify_str("Port settings saved!", Color::Green);
-                    } else {
-                        self.notifs
-                            .notify_str("Port settings applied!", Color::Gray);
-                    }
-                } else {
-                    self.settings.save()?;
-                    self.notifs.notify_str("Port settings saved!", Color::Green);
-                }
+                self.settings.save()?;
+                self.notifs.notify_str("Port settings saved!", Color::Green);
+
                 self.dismiss_popup();
             }
             Some(Popup::SettingsMenu(SettingsMenu::Behavior)) => {
@@ -2412,7 +2398,7 @@ impl App {
                         self.serial.send_str(
                             user_input,
                             user_le_bytes,
-                            self.settings.behavior.fake_shell_unescape,
+                            self.settings.behavior.unescape_typed_bytes,
                         )?;
                         self.buffer
                             .append_user_text(user_input, user_le_bytes, false, false);
@@ -2789,7 +2775,6 @@ impl App {
                 show_keybinds(&self.keybinds, &mut scroll, frame, area, self);
                 self.popup_menu_scroll = scroll as usize;
             }
-            // Popup::ErrorMessage(_) => todo!(),
             #[cfg(feature = "defmt")]
             Popup::DefmtNewElf(file_explorer) => {
                 let area = centered_rect_size(
@@ -4357,6 +4342,7 @@ impl App {
     }
     fn show_popup_from_action(&mut self, popup: ShowPopupAction) {
         let popup_menu = match popup {
+            ShowPopupAction::ShowKeybinds => Popup::CurrentKeybinds,
             ShowPopupAction::ShowPortSettings => Popup::SettingsMenu(SettingsMenu::SerialPort),
             ShowPopupAction::ShowBehavior => Popup::SettingsMenu(SettingsMenu::Behavior),
             ShowPopupAction::ShowRendering => Popup::SettingsMenu(SettingsMenu::Rendering),
@@ -4369,7 +4355,14 @@ impl App {
             #[cfg(feature = "defmt")]
             ShowPopupAction::ShowDefmt => Popup::SettingsMenu(SettingsMenu::Defmt),
         };
-        self.show_popup(popup_menu);
+
+        if let Some(current) = &self.popup
+            && *current == popup_menu
+        {
+            self.dismiss_popup();
+        } else {
+            self.show_popup(popup_menu);
+        }
     }
     fn dismiss_popup(&mut self) {
         self.refresh_scratch();
