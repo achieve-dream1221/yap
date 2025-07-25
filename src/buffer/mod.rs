@@ -492,29 +492,33 @@ impl StyledLines {
             original
         };
 
-        let (continue_index, style) = continue_from.unwrap_or_default();
+        // If the line was cleared before, we don't need to reconsume those cleared bytes for ansi-to-tui conversion.
+        // We still need the whole buffer for color rule determination though, since it's still part of the same line (just not yet terminated).
+        let (continue_index, continue_style) = continue_from.unwrap_or_default();
+        let truncated_continued = &truncated[continue_index..];
 
-        debug!("{continue_from:?}");
-
-        let truncated = &truncated[continue_index..];
-
-        let (line, clear_info) = match truncated.to_line_lossy_flagged(style, lossy_flavor) {
-            Ok((line, mut clear_info)) => {
-                if let Some((index, _)) = clear_info.as_mut() {
-                    *index += continue_index;
+        let (line, clear_info) =
+            match truncated_continued.to_line_lossy_flagged(continue_style, lossy_flavor) {
+                Ok((line, new_clear_info)) => {
+                    let combined_clear_info = if let Some((new_index, style)) = new_clear_info {
+                        Some((new_index + continue_index, style))
+                    } else {
+                        continue_from
+                    };
+                    (line, combined_clear_info)
                 }
-                (line, clear_info)
-            }
-            Err(_) => {
-                // i think technically unreachable
-                // but i'd rather handle the almost-impossible case than just crash.
-                error!("ansi-to-tui failed to parse input! Using unstyled text.");
-                (
-                    Line::from(String::from_utf8_lossy(truncated).to_string()),
-                    None,
-                )
-            }
-        };
+                Err(_) => {
+                    // I think this is technically unreachable
+                    // Since ansi-to-tui errors on invalid UTF-8 (not possible in this case),
+                    // and on a nom error, which I don't think is possible, even on empty/incomplete sequences.
+                    // But I'd rather handle the almost-impossible case than just crash.
+                    error!("ansi-to-tui failed to parse input! Using unstyled text.");
+                    (
+                        Line::from(String::from_utf8_lossy(truncated_continued).to_string()),
+                        None,
+                    )
+                }
+            };
 
         if let Some(mut recolored_line) = color_rules.apply_onto(truncated, line) {
             recolored_line.remove_unsavory_chars(kit.render.rendering.escape_unprintable_bytes);
