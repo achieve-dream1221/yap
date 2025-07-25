@@ -147,7 +147,10 @@ fn run_inner(
         }
         impl std::error::Error for SendError {}
         const CTRL_C_ACK_MAX_WAIT: Duration = Duration::from_secs(5);
-        let mut ctrl_c_recieved_at: Option<Instant> = None;
+        const CTRL_C_BURST_PERIOD: Duration = Duration::from_secs(1);
+        const CTRL_C_BURST_AMOUNT: u8 = 3;
+
+        let mut ctrl_c_count_and_start: Option<(u8, Instant)> = None;
 
         let filter_and_send = |event: Event| -> Result<(), SendError> {
             let send_event = |crossterm_event: CrosstermEvent| -> Result<(), SendError> {
@@ -195,21 +198,33 @@ fn run_inner(
 
             // Order matters, try to consume any un-seen acks even if we weren't expect one
             // such as from espflash action completion.
-            if ctrl_c_rx.try_recv().is_ok() && ctrl_c_recieved_at.is_some() {
-                _ = ctrl_c_recieved_at.take();
+            if ctrl_c_rx.try_recv().is_ok() && ctrl_c_count_and_start.is_some() {
+                _ = ctrl_c_count_and_start.take();
             }
 
             if let Event::Key(key) = &event
                 && is_ctrl_c(key)
             {
-                if let Some(time_since_ctrl_c) = ctrl_c_recieved_at.as_ref().map(Instant::elapsed) {
+                if let Some((count, _)) = ctrl_c_count_and_start.as_mut() {
+                    *count += 1;
+                } else {
+                    ctrl_c_count_and_start = Some((1, Instant::now()));
+                };
+
+                if let Some((count, instant)) = ctrl_c_count_and_start.as_ref() {
+                    let time_since_ctrl_c = instant.elapsed();
+
                     if time_since_ctrl_c > CTRL_C_ACK_MAX_WAIT {
                         panic!(
                             "Ctrl-C was not acknowledged within {CTRL_C_ACK_MAX_WAIT:?}, force exiting!"
                         );
+                    } else if time_since_ctrl_c <= CTRL_C_BURST_PERIOD
+                        && *count >= CTRL_C_BURST_AMOUNT
+                    {
+                        panic!(
+                            "Ctrl-C burst (of {CTRL_C_BURST_AMOUNT}) was not acknowledged within {CTRL_C_BURST_PERIOD:?}, force exiting!"
+                        );
                     }
-                } else {
-                    _ = ctrl_c_recieved_at.insert(Instant::now());
                 }
             }
 
