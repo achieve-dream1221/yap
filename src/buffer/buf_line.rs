@@ -74,20 +74,19 @@ pub struct RenderSettings<'a> {
 //     pub(super) is_macro: bool,
 // }
 
-// #[derive(Debug, Clone, PartialEq, Eq, strum::EnumIs)]
-// pub enum LineFinished {
-//     Unfinished {
-//         clear_occurred: Option<(usize, Style)>,
-//     },
-//     LineEnding(CompactString),
-//     CutShort,
-// }
+#[derive(Debug, Clone, PartialEq, Eq, strum::EnumIs)]
+pub enum LineFinished {
+    Unfinished {
+        clear_occurred: Option<(usize, Style)>,
+    },
+    LineEnding(CompactString),
+    CutShort,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LineType {
-    Port {
-        escaped_line_ending: Option<CompactString>,
-    },
+    Port(LineFinished),
+    PortHidden(LineFinished),
     User {
         is_bytes: bool,
         is_macro: bool,
@@ -102,6 +101,15 @@ pub(super) enum LineType {
         // /// Includes any potential prefix or terminator
         // total_frame_len: usize,
     },
+}
+
+impl LineType {
+    pub fn line_finished(&self) -> Option<&LineFinished> {
+        match self {
+            LineType::Port(l) | LineType::PortHidden(l) => Some(l),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(feature = "defmt")]
@@ -166,21 +174,60 @@ impl BufLine {
         bufline.update_line_height(kit.area_width, kit.render);
         bufline
     }
-    pub fn port_text_line(line: Line<'static>, kit: BufLineKit, line_ending: &LineEnding) -> Self {
-        let line_type = LineType::Port {
-            escaped_line_ending: line_ending.escaped_from(kit.full_range_slice.slice),
-        };
+    pub fn port_text_line(
+        line: Line<'static>,
+        kit: BufLineKit,
+        clear_info: Option<(usize, Style)>,
+        line_ending: &LineEnding,
+    ) -> Self {
+        let line_type = LineType::Port(
+            if let Some(escaped_line_ending) = line_ending.escaped_from(kit.full_range_slice.slice)
+            {
+                LineFinished::LineEnding(escaped_line_ending)
+            } else {
+                LineFinished::Unfinished {
+                    clear_occurred: clear_info,
+                }
+            },
+        );
 
         Self::new(line, kit, line_type)
     }
     /// Create a port line with no internal content but has a valid line ending.
+    //
+    // Thus hollow, not exactly empty, but not filled with content either.
     pub fn hollow_port_line(kit: BufLineKit, line_ending: &LineEnding) -> Self {
-        let escaped_line_ending = line_ending.as_escaped();
-        let line_type = LineType::Port {
-            escaped_line_ending,
-        };
+        let line_type = LineType::Port(
+            if let Some(escaped_line_ending) = line_ending.as_escaped() {
+                LineFinished::LineEnding(escaped_line_ending)
+            } else {
+                LineFinished::CutShort
+            },
+        );
 
         Self::new(Line::default(), kit, line_type)
+    }
+    // pub fn censored_port_line(kit: BufLineKit, line_ending: &LineEnding) -> Self {
+    //     todo!()
+    // }
+    pub fn hidden_content_port_line(kit: BufLineKit, line_ending: &LineEnding) -> Self {
+        let span = Span::styled(
+            "[All content hidden by color rules.]",
+            Style::new().dark_gray(),
+        );
+
+        let line_type = LineType::PortHidden(
+            if let Some(escaped_line_ending) = line_ending.escaped_from(kit.full_range_slice.slice)
+            {
+                LineFinished::LineEnding(escaped_line_ending)
+            } else {
+                LineFinished::Unfinished {
+                    clear_occurred: None,
+                }
+            },
+        );
+
+        Self::new(span.into(), kit, line_type)
     }
     #[cfg(feature = "defmt")]
     pub fn port_defmt_line(
@@ -217,12 +264,11 @@ impl BufLine {
     }
 
     pub fn update_line(&mut self, mut new: BufLine) {
-        assert_eq!(
+        assert!(matches!(
             self.line_type,
-            LineType::Port {
-                escaped_line_ending: None
-            }
-        );
+            LineType::Port(LineFinished::Unfinished { .. })
+                | LineType::PortHidden(LineFinished::Unfinished { .. })
+        ));
 
         new.timestamp = self.timestamp;
         // new.value.remove_unsavory_chars(false);
@@ -381,13 +427,15 @@ impl BufLine {
         let line_ending = std::iter::once(&self.line_type).filter_map(|lt| match lt {
             _ if !rendering.rendering.show_line_ending => None,
 
-            LineType::Port {
-                escaped_line_ending: Some(line_ending),
-            } => Some(Span::styled(Cow::Borrowed(line_ending.as_str()), dark_gray)),
+            LineType::Port(LineFinished::LineEnding(line_ending))
+            | LineType::PortHidden(LineFinished::LineEnding(line_ending)) => {
+                Some(Span::styled(Cow::Borrowed(line_ending.as_str()), dark_gray))
+            }
 
-            LineType::Port {
-                escaped_line_ending: None,
-            } => None,
+            LineType::Port(LineFinished::CutShort)
+            | LineType::PortHidden(LineFinished::CutShort) => None,
+            LineType::Port(LineFinished::Unfinished { .. })
+            | LineType::PortHidden(LineFinished::Unfinished { .. }) => None,
 
             LineType::User {
                 escaped_line_ending: Some(line_ending),

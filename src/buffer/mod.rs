@@ -1,6 +1,6 @@
 #[cfg(feature = "defmt")]
 use std::sync::Arc;
-use std::{cmp::Ordering, ops::Range, thread::JoinHandle};
+use std::{cell::Cell, cmp::Ordering, ops::Range, thread::JoinHandle};
 
 use ansi_to_tui::{IntoText, LossyFlavor};
 use bstr::{ByteSlice, ByteVec};
@@ -26,7 +26,7 @@ use crate::buffer::defmt::DefmtDecoder;
 use crate::settings::Defmt;
 use crate::{
     buffer::{
-        buf_line::{BufLineKit, RenderSettings},
+        buf_line::{BufLineKit, LineFinished, RenderSettings},
         tui::COLOR_RULES_PATH,
     },
     changed, config_adjacent_path,
@@ -437,7 +437,6 @@ pub enum DelimitedSlice<'a> {
 
 struct StyledLines {
     rx: Vec<BufLine>,
-    last_rx_was_complete: bool,
     tx: Vec<BufLine>,
 }
 
@@ -457,15 +456,20 @@ impl StyledLines {
         let mut text = format!("Couldn't decode defmt rzcobs packet ({reason}): ");
         text.extend(raw.iter().map(|b| format!("{b:02X}")));
 
-        self.rx
-            .push(BufLine::port_text_line(Line::raw(text), kit, line_ending));
+        self.rx.push(BufLine::port_text_line(
+            Line::raw(text),
+            kit,
+            None,
+            line_ending,
+        ));
     }
     // Returns None if the slice would be fully hidden by the color rules.
     fn slice_as_port_text(
         kit: BufLineKit,
+        continue_from: Option<(usize, Style)>,
         color_rules: &ColorRules,
         line_ending: &LineEnding,
-    ) -> Option<BufLine> {
+    ) -> BufLine {
         debug_assert!(!kit.full_range_slice.slice.is_empty());
 
         let lossy_flavor = if kit.render.rendering.escape_unprintable_bytes {
@@ -479,7 +483,7 @@ impl StyledLines {
         } = &kit.full_range_slice;
 
         if *original == line_ending.as_bytes() {
-            return Some(BufLine::hollow_port_line(kit, line_ending));
+            return BufLine::hollow_port_line(kit, line_ending);
         }
 
         let truncated = if original.has_line_ending(line_ending) {
@@ -488,19 +492,37 @@ impl StyledLines {
             original
         };
 
-        let line = match truncated.to_line_lossy(Style::new(), lossy_flavor) {
-            Ok(line) => line,
+        let (continue_index, style) = continue_from.unwrap_or_default();
+
+        debug!("{continue_from:?}");
+
+        let truncated = &truncated[continue_index..];
+
+        let (line, clear_info) = match truncated.to_line_lossy_flagged(style, lossy_flavor) {
+            Ok((line, mut clear_info)) => {
+                if let Some((index, _)) = clear_info.as_mut() {
+                    *index += continue_index;
+                }
+                (line, clear_info)
+            }
             Err(_) => {
+                // i think technically unreachable
+                // but i'd rather handle the almost-impossible case than just crash.
                 error!("ansi-to-tui failed to parse input! Using unstyled text.");
-                Line::from(String::from_utf8_lossy(truncated).to_string())
+                (
+                    Line::from(String::from_utf8_lossy(truncated).to_string()),
+                    None,
+                )
             }
         };
 
-        color_rules.apply_onto(truncated, line).map(|mut l| {
-            l.remove_unsavory_chars(kit.render.rendering.escape_unprintable_bytes);
-            let line: Line<'static> = l.new_owned();
-            BufLine::port_text_line(line, kit, line_ending)
-        })
+        if let Some(mut recolored_line) = color_rules.apply_onto(truncated, line) {
+            recolored_line.remove_unsavory_chars(kit.render.rendering.escape_unprintable_bytes);
+            let line: Line<'static> = recolored_line.new_owned();
+            BufLine::port_text_line(line, kit, clear_info, line_ending)
+        } else {
+            BufLine::hidden_content_port_line(kit, line_ending)
+        }
     }
     fn consume_as_text(
         &mut self,
@@ -509,10 +531,21 @@ impl StyledLines {
         kit: BufLineKit,
         line_ending: &LineEnding,
     ) {
-        let mut replace_last_rx = !self.last_rx_was_complete;
+        // debug!("got {:?}", kit.full_range_slice.slice);
 
-        let slice = if replace_last_rx {
+        let mut continue_for_first_line =
+            self.rx
+                .last()
+                .and_then(|b| match b.line_type.line_finished() {
+                    Some(LineFinished::Unfinished { clear_occurred }) => Some(*clear_occurred),
+                    _ => None,
+                });
+
+        let mut first_should_replace = continue_for_first_line.is_some();
+
+        let slice = if first_should_replace {
             let last_line = self.rx.last_mut().expect("can't replace nothing");
+
             let last_line_start = last_line.range().start;
             let slice_finish = kit.full_range_slice.range.end;
 
@@ -529,25 +562,21 @@ impl StyledLines {
                 ..kit
             };
 
-            Self::slice_as_port_text(kit, color_rules, line_ending)
+            Self::slice_as_port_text(
+                kit,
+                continue_for_first_line.take().flatten(),
+                color_rules,
+                line_ending,
+            )
         });
 
-        self.last_rx_was_complete = slice.has_line_ending(line_ending);
-
         for line_opt in lines {
-            if replace_last_rx {
-                replace_last_rx = false;
-                if let Some(line) = line_opt {
-                    let last_line = self.rx.last_mut().expect("can't replace nothing");
-                    last_line.update_line(line);
-                } else {
-                    _ = self.rx.pop();
-                    self.last_rx_was_complete = true;
-                }
+            if first_should_replace {
+                first_should_replace = false;
+                let last_line = self.rx.last_mut().expect("can't replace nothing");
+                last_line.update_line(line_opt);
             } else {
-                if let Some(line) = line_opt {
-                    self.rx.push(line);
-                }
+                self.rx.push(line_opt);
             }
         }
     }
@@ -559,18 +588,6 @@ impl StyledLines {
         frame: &defmt_decoder::Frame<'_>,
         color_rules: &ColorRules,
     ) {
-        // choosing to skip pushing instead of filtering at render time
-        // to keep consistent with other logic that expects
-        // invisible lines to not be pushed,
-        // and to skip further handling for those lines.
-        let commit_frame = match frame.level() {
-            None => true,
-            Some(level) => kit.render.defmt.max_log_level <= crate::settings::Level::from(level),
-        };
-        if !commit_frame {
-            return;
-        }
-
         // let meow = std::time::Instant::now();
         // error!("{:?}", meow.elapsed());
         // debug!("{frame:#?}");
@@ -616,6 +633,7 @@ impl StyledLines {
 pub struct Buffer {
     raw: RawBuffer,
     styled_lines: StyledLines,
+    cached_total_lines: Cell<Option<usize>>,
 
     /// The last-known size of the area given to render the buffer in
     last_terminal_size: Size,
@@ -718,9 +736,9 @@ impl Buffer {
             },
             styled_lines: StyledLines {
                 rx: Vec::with_capacity(1024),
-                last_rx_was_complete: true,
                 tx: Vec::with_capacity(1024),
             },
+            cached_total_lines: Cell::new(None),
 
             last_terminal_size: Size::default(),
             state: BufferState {
@@ -805,11 +823,18 @@ impl Buffer {
         };
         let user_buf_line = BufLine::user_line(line, kit, &line_ending, true, is_macro, &combined);
 
-        self.styled_lines.last_rx_was_complete = self
-            .rendering
-            .echo_user_input
-            .filter_user_line(&user_buf_line.line_type)
-            || (self.raw.inner.is_empty() || self.raw.inner.has_line_ending(&self.line_ending));
+        if let Some(last_rx) = self.styled_lines.rx.last_mut()
+            && matches!(
+                last_rx.line_type,
+                LineType::Port(LineFinished::Unfinished { .. })
+            )
+            && self
+                .rendering
+                .echo_user_input
+                .filter_user_line(&user_buf_line.line_type)
+        {
+            last_rx.line_type = LineType::Port(LineFinished::CutShort);
+        }
 
         #[cfg(feature = "logging")]
         if self.log_settings.log_text_to_file && self.log_settings.log_user_input {
@@ -818,6 +843,7 @@ impl Buffer {
                 .expect("Logging worker has disappeared!");
         }
         self.styled_lines.tx.push(user_buf_line);
+        self.invalidate_height_cache();
     }
 
     pub fn append_user_text(
@@ -885,12 +911,19 @@ impl Buffer {
                 },
             };
             let user_buf_line = BufLine::user_line(line, kit, &line_ending, false, is_macro, orig);
-            // Used to be out of the for loop.
-            self.styled_lines.last_rx_was_complete = self
-                .rendering
-                .echo_user_input
-                .filter_user_line(&user_buf_line.line_type)
-                || (self.raw.inner.is_empty() || self.raw.inner.has_line_ending(&self.line_ending));
+
+            if let Some(last_rx) = self.styled_lines.rx.last_mut()
+                && matches!(
+                    last_rx.line_type,
+                    LineType::Port(LineFinished::Unfinished { .. })
+                )
+                && self
+                    .rendering
+                    .echo_user_input
+                    .filter_user_line(&user_buf_line.line_type)
+            {
+                last_rx.line_type = LineType::Port(LineFinished::CutShort);
+            }
 
             #[cfg(feature = "logging")]
             if self.log_settings.log_text_to_file && self.log_settings.log_user_input {
@@ -904,6 +937,7 @@ impl Buffer {
             }
             self.styled_lines.tx.push(user_buf_line);
         }
+        self.invalidate_height_cache();
     }
 
     // Forced to use Vec<u8> for now
@@ -918,6 +952,7 @@ impl Buffer {
 
         // let meow = std::time::Instant::now();
         self.consume_latest_bytes(timestamp);
+        self.invalidate_height_cache();
         // error!("{:?}", meow.elapsed());
 
         // self.raw.inner.extend(bytes.iter());
@@ -1007,7 +1042,6 @@ impl Buffer {
                                     &frame,
                                     &self.color_rules,
                                 );
-                                self.styled_lines.last_rx_was_complete = true;
 
                                 self.raw.consumed(consumed);
                             }
@@ -1021,6 +1055,7 @@ impl Buffer {
                                 self.styled_lines.rx.push(BufLine::port_text_line(
                                     line,
                                     kit,
+                                    None,
                                     &LineEnding::None,
                                 ));
                                 break;
@@ -1076,7 +1111,6 @@ impl Buffer {
                         );
                     }
 
-                    self.styled_lines.last_rx_was_complete = true;
                     self.raw.consumed(raw_slice_len);
                 }
             }
@@ -1126,9 +1160,6 @@ impl Buffer {
             RawBuffer::with_capacities(orig_buf_len, timestamps_len),
         );
         let user_echo = self.rendering.echo_user_input;
-
-        // No lines to append to.
-        self.styled_lines.last_rx_was_complete = true;
 
         #[cfg(feature = "defmt")]
         {
@@ -1183,7 +1214,14 @@ impl Buffer {
             // If this was where a user line we allow to render is,
             // then we'll finish this line early if it's not already finished.
             if was_user_line {
-                self.styled_lines.last_rx_was_complete = true;
+                if let Some(last_rx) = self.styled_lines.rx.last_mut()
+                    && matches!(
+                        last_rx.line_type,
+                        LineType::Port(LineFinished::Unfinished { .. })
+                    )
+                {
+                    last_rx.line_type = LineType::Port(LineFinished::CutShort);
+                }
                 continue;
             }
             self.raw.feed(slice, timestamp);
@@ -1264,9 +1302,7 @@ impl Buffer {
             .collect();
         let orig_buf_len = self.raw.inner.len();
 
-        let blank_port_line_type = LineType::Port {
-            escaped_line_ending: None,
-        };
+        let blank_port_line_type = LineType::Port(LineFinished::CutShort);
         // Getting all time-tagged indices in the buffer where either
         // 1. Data came in through the port
         // 2. The user sent data
@@ -1312,7 +1348,10 @@ impl Buffer {
             });
 
         let (relog_tx, relog_rx) = unbounded();
-        use crate::buffer::logging::{Relogging, TxPayload};
+        use crate::buffer::{
+            buf_line::LineFinished,
+            logging::{Relogging, TxPayload},
+        };
 
         self.log_handle.begin_relogging(relog_rx)?;
 
@@ -1367,6 +1406,7 @@ impl Buffer {
 
     // pub fn update_line_ending(&mut self, line_ending: &str) {
     pub fn update_line_ending(&mut self, line_ending: &[u8]) {
+        self.invalidate_height_cache();
         if self.line_ending != line_ending {
             self.line_ending = line_ending.into();
             self.reconsume_raw_buffer();
@@ -1377,6 +1417,7 @@ impl Buffer {
         }
     }
     pub fn update_render_settings(&mut self, rendering: Rendering) {
+        self.invalidate_height_cache();
         let old = std::mem::replace(&mut self.rendering, rendering);
         let new = &self.rendering;
         let should_reconsume = changed!(old, new, echo_user_input, escape_unprintable_bytes);
@@ -1407,9 +1448,10 @@ impl Buffer {
     }
     #[cfg(feature = "defmt")]
     pub fn update_defmt_settings(&mut self, defmt: Defmt) {
+        self.invalidate_height_cache();
         let old = std::mem::replace(&mut self.defmt_settings, defmt);
         let new = &self.defmt_settings;
-        let should_reconsume = changed!(old, new, defmt_parsing, max_log_level);
+        let should_reconsume = changed!(old, new, defmt_parsing);
 
         let should_rewrap_lines = changed!(
             old,
@@ -1451,8 +1493,6 @@ impl Buffer {
 
         self.styled_lines.tx.clear();
         self.styled_lines.tx.shrink_to(1024);
-
-        self.styled_lines.last_rx_was_complete = true;
 
         self.raw.reset();
     }

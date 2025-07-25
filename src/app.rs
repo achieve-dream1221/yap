@@ -1634,8 +1634,10 @@ impl App {
                     self.notifs
                         .notify_str("Keypress was already escaped!", Color::Yellow);
                 } else if self.settings.behavior.fake_shell {
-                    self.notifs
-                        .notify_str("Only works when Fake Shell is disabled!", Color::Yellow);
+                    self.notifs.notify_str(
+                        "Can only escape keypress when Fake Shell is disabled!",
+                        Color::Yellow,
+                    );
                 }
             }
 

@@ -145,6 +145,10 @@ pub struct Rendering {
     pub escape_unprintable_bytes: bool,
 
     #[serde(default)]
+    /// Show a placeholder for lines who have had their entire content hidden by color rules.
+    pub show_hidden_lines: bool,
+
+    #[serde(default)]
     /// Show recieved bytes in a Hex+ASCII view.
     pub hex_view: bool,
 

@@ -313,9 +313,9 @@ impl<'a> LineMutator<'a> for Line<'a> {
             "Insertion operation index out of bounds: the index is {index} but the total length is {total_len}"
         );
 
-        if total_len == 0 {
-            return;
-        }
+        // if total_len == 0 {
+        //     return;
+        // }
 
         let mut index_within_span_opt = None;
         let mut last_span_style = None;

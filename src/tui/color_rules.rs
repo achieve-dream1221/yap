@@ -439,6 +439,8 @@ impl ColorRules {
             }
         }
 
+        // TODO check if anything is left to be visible to return None instead
+
         // debug!("applying to slice took {:?}", now2.elapsed());
         // tracing::debug!("apply color rules took {:?}", now.elapsed());
         Some(line)

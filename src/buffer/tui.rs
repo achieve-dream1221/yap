@@ -8,7 +8,7 @@ use ratatui::{
 use ratatui_macros::{horizontal, vertical};
 
 use crate::{
-    buffer::buf_line::RenderSettings,
+    buffer::{LineType, buf_line::RenderSettings},
     config_adjacent_path,
     settings::HexHighlightStyle,
     traits::{ToggleBool, interleave_by},
@@ -56,11 +56,19 @@ impl Buffer {
     //     self.styled_lines.rx.iter()
     // }
     fn buflines_iter(&self) -> impl Iterator<Item = &BufLine> {
+        let rx_iter = self.styled_lines.rx.iter().filter(|bf| match bf.line_type {
+            LineType::PortHidden(_) => self.rendering.show_hidden_lines,
+            #[cfg(feature = "defmt")]
+            LineType::PortDefmt {
+                level: Some(level), ..
+            } => self.defmt_settings.max_log_level <= crate::settings::Level::from(level),
+            _ => true,
+        });
         if self.rendering.echo_user_input == UserEcho::None {
-            Either::Left(self.styled_lines.rx.iter())
+            Either::Left(rx_iter)
         } else {
             Either::Right(interleave_by(
-                self.styled_lines.rx.iter(),
+                rx_iter,
                 self.styled_lines.tx.iter().filter(|l| {
                     self.rendering
                         .echo_user_input
@@ -256,10 +264,13 @@ impl Buffer {
     /// Returns the total amount of lines that can be rendered,
     /// taking into account if text wrapping is enabled or not.
     pub fn combined_height(&self) -> usize {
+        if let Some(cached) = self.cached_total_lines.get() {
+            return cached;
+        }
         if self.raw.inner.is_empty() {
             return 0;
         }
-        if !self.rendering.hex_view {
+        let result = if !self.rendering.hex_view {
             if self.rendering.wrap_text {
                 self.buflines_iter()
                     .map(|l| l.get_line_height() as usize)
@@ -271,7 +282,18 @@ impl Buffer {
                 // to avoid .count()-ing a potentially huge iter (100k+ items)
                 // (especially when wrapping is disabled, when its even more dead simple)
                 // when we can just read the length of a vector
-                let rx_lines = self.styled_lines.rx.len();
+                let can_use_vector_length =
+                    { !self.rendering.wrap_text && self.rendering.show_hidden_lines };
+                #[cfg(feature = "defmt")]
+                let can_use_vector_length = {
+                    can_use_vector_length
+                        && self.defmt_settings.max_log_level == crate::settings::Level::Trace
+                };
+                let rx_lines = if can_use_vector_length {
+                    self.styled_lines.rx.len()
+                } else {
+                    self.buflines_iter().count()
+                };
                 if self.rendering.echo_user_input == UserEcho::None {
                     rx_lines
                 } else {
@@ -292,7 +314,14 @@ impl Buffer {
             let header_margin = { if self.rendering.hex_view_header { 2 } else { 0 } };
             (self.raw.inner.len() as f64 / (self.state.hex_bytes_per_line as f64)).ceil() as usize
                 + header_margin
-        }
+        };
+
+        self.cached_total_lines.set(Some(result));
+        result
+    }
+
+    pub fn invalidate_height_cache(&self) {
+        self.cached_total_lines.set(None);
     }
 
     pub fn port_lines_len(&self) -> usize {
