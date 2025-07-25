@@ -333,6 +333,24 @@ pub struct SerializedEspFiles {
     bins: Vec<EspBins>,
 }
 
+impl SerializedEspFiles {
+    pub fn check_for_duplicate_names(&self) -> Result<(), EspProfileError> {
+        use std::collections::HashSet;
+        let mut names = HashSet::new();
+        for elf in &self.elfs {
+            if !names.insert(elf.name.as_str()) {
+                return Err(EspProfileError::DuplicateProfileName(elf.name.to_string()));
+            }
+        }
+        for bin in &self.bins {
+            if !names.insert(bin.name.as_str()) {
+                return Err(EspProfileError::DuplicateProfileName(bin.name.to_string()));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Default)]
 pub enum SegmentAction {
     #[default]
@@ -379,6 +397,8 @@ pub enum EspProfileError {
     FileWrite(#[source] std::io::Error),
     #[error("invalid espflash profile")]
     Deser(#[from] toml::de::Error),
+    #[error("duplicate profile name found: `{0}`")]
+    DuplicateProfileName(String),
     // #[error("failed serializing espflash profiles: {0}")]
     // Ser(#[from] toml::ser::Error),
 }
@@ -388,7 +408,10 @@ impl EspFlashHelper {
         let toml_path = config_adjacent_path(ESP_PROFILES_PATH);
         if toml_path.exists() {
             let profiles_toml = fs::read_to_string(toml_path).map_err(EspProfileError::FileRead)?;
-            let SerializedEspFiles { bins, elfs } = toml::from_str(&profiles_toml)?;
+            let profiles_wrapper: SerializedEspFiles = toml::from_str(&profiles_toml)?;
+            profiles_wrapper.check_for_duplicate_names()?;
+
+            let SerializedEspFiles { elfs, bins } = profiles_wrapper;
 
             Ok(Self {
                 bins,

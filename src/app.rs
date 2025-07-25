@@ -9,6 +9,8 @@ use std::{
 #[cfg(feature = "defmt")]
 use camino::Utf8Path;
 use chrono::{DateTime, Local};
+#[cfg(feature = "espflash")]
+use color_eyre::eyre::Context;
 use color_eyre::eyre::Result;
 use crokey::{KeyCombination, key};
 use crossbeam::channel::{Receiver, Select, Sender, TrySendError};
@@ -472,7 +474,7 @@ impl App {
             crossterm_rx,
 
             #[cfg(feature = "espflash")]
-            espflash: EspFlashHelper::build()?,
+            espflash: EspFlashHelper::build().wrap_err("failed to load espflash profiles")?,
 
             #[cfg(feature = "defmt")]
             defmt_helpers,
