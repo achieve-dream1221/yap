@@ -297,9 +297,11 @@ pub struct Behavior {
     /// Text scroll speed modifier, positive increases, negative decreases.
     pub text_scroll_speed: i8,
 
+    // TODO find a better name for this.
+    // Text Buffer or something?
     #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
-    /// Use text box to type in before sending, with history. If disabled, sends keyboard inputs directly (TODO).
+    /// Use text box to type in before sending, with history. If disabled, sends keyboard inputs directly.
     pub fake_shell: bool,
 
     #[serde_inline_default_parent]

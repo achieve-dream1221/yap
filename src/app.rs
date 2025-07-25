@@ -722,10 +722,13 @@ impl App {
 
                 self.ports = ports;
             }
-            Event::Serial(SerialEvent::UnsentTx(unsent)) => error!(
-                "Serial worker reported an unsent buffer of len {}!",
-                unsent.len()
-            ),
+            Event::Serial(SerialEvent::UnsentTx(unsent)) => {
+                error!(
+                    "Serial worker reported an unsent buffer of len {}!",
+                    unsent.len()
+                );
+                self.trigger_send_failed_visual()?;
+            }
             #[cfg(feature = "espflash")]
             Event::Serial(SerialEvent::EspFlash(esp_event)) => match esp_event {
                 EspEvent::Error(e) => {
@@ -969,7 +972,7 @@ impl App {
         Ok(())
     }
     // TODO fuzz this
-    fn handle_key_press(&mut self, key: KeyEvent) -> Result<()> {
+    fn handle_key_press(&mut self, key_event: KeyEvent) -> Result<()> {
         // Intentionally putting this before the Ctrl-C ack-er,
         // so it can be used to break any potential hung instances during flashing
         // (not that I've encountered that behavior *yet*),
@@ -980,7 +983,7 @@ impl App {
             return Ok(());
         }
 
-        if is_ctrl_c(&key) {
+        if is_ctrl_c(&key_event) {
             match self.ctrl_c_tx.try_send(()) {
                 Ok(()) => (),
                 Err(TrySendError::Full(_)) => panic!("Ctrl-C ack buffer full??"),
@@ -995,7 +998,7 @@ impl App {
             return Ok(());
         }
 
-        let key_combo = KeyCombination::from(key);
+        let key_combo = KeyCombination::from(key_event);
         // debug!("{key_combo}");
 
         // let at_port_selection = matches!(self.menu, Menu::PortSelection);
@@ -1009,14 +1012,14 @@ impl App {
             Some(Popup::ToolMenu(ToolMenu::Macros)) => {
                 self.macros
                     .search_input
-                    .handle_event(&ratatui::crossterm::event::Event::Key(key));
+                    .handle_event(&ratatui::crossterm::event::Event::Key(key_event));
             }
             _ => (),
         }
 
         #[cfg(feature = "defmt")]
         if let Some(Popup::DefmtNewElf(file_explorer)) = &mut self.popup {
-            let input = match key.code {
+            let input = match key_event.code {
                 KeyCode::Left | KeyCode::Char('h') => ratatui_explorer::Input::Left,
                 KeyCode::Down | KeyCode::Char('j') => ratatui_explorer::Input::Down,
                 KeyCode::Up | KeyCode::Char('k') => ratatui_explorer::Input::Up,
@@ -1070,63 +1073,58 @@ impl App {
                     key!(del) | key!(backspace) if self.user_input.all_text_selected => (),
 
                     _text_input if self.settings.behavior.fake_shell => {
-                        self.user_input.consume_typing_event(key)
+                        self.user_input.consume_typing_event(key_event)
                     }
 
-                    _ if !self.settings.behavior.fake_shell
-                        && !self.escape_next_keypress
-                        && self.keybinds.key_has_single_action(
-                            key_combo,
-                            BaseAction::EscapeKeypress.into(),
-                        ) =>
+                    _ if self
+                        .keybinds
+                        .key_has_single_action(key_combo, BaseAction::EscapeKeypress.into()) =>
                     {
-                        self.escape_next_keypress = true;
-                        return Ok(());
-                    }
-
-                    _terminal_input if !self.escape_next_keypress => {
-                        let serial_healthy = self.serial.port_status.load().inner.is_connected();
-
-                        if let Ok(term_event) = terminput_crossterm::to_terminput(
-                            crokey::crossterm::event::Event::Key(key),
-                        ) && serial_healthy
-                        {
-                            let mut buf = [0; 16];
-                            if let Ok(n) = term_event.encode(&mut buf, terminput::Encoding::Xterm) {
-                                self.serial.send_bytes(buf[..n].to_owned(), None)?;
-                                self.last_raw_sequence = buf[..n].to_owned();
-                            }
+                        // They pressed an escape key again? So they probably want to send it directly.
+                        if self.escape_next_keypress {
+                            self.escape_next_keypress = false;
+                            self.send_crossterm_event_to_port(key_event)?;
                             return Ok(());
                         } else {
-                            self.trigger_send_failed_visual()?;
-                            self.last_raw_sequence = Default::default();
+                            self.escape_next_keypress = true;
                             return Ok(());
                         }
                     }
 
+                    _terminal_input if !self.escape_next_keypress => {
+                        self.send_crossterm_event_to_port(key_event)?;
+                        return Ok(());
+                    }
+
+                    // At this point:
+                    // fake_shell is false,
+                    // escape_next_keypress is true,
+                    // and we're not processing a keybind for escaping keypresses.
+                    //
+                    // Unset the flag and don't return early so the keystroke is processed "normally".
                     _ => self.escape_next_keypress = false,
                 }
             }
-            (Menu::Terminal, Some(Popup::DisconnectPrompt)) if !is_ctrl_c(&key) => {
-                if let Some(pressed) = DisconnectPrompt::from_key_code(key.code) {
+            (Menu::Terminal, Some(Popup::DisconnectPrompt)) if !is_ctrl_c(&key_event) => {
+                if let Some(pressed) = DisconnectPrompt::from_key_code(key_event.code) {
                     self.disconnect_prompt_choice(pressed)?;
                 }
             }
-            (Menu::Terminal, Some(Popup::AttemptReconnectPrompt)) if !is_ctrl_c(&key) => {
-                if let Some(pressed) = AttemptReconnectPrompt::from_key_code(key.code) {
-                    let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
-                    let ctrl_pressed = key.modifiers.contains(KeyModifiers::CONTROL);
+            (Menu::Terminal, Some(Popup::AttemptReconnectPrompt)) if !is_ctrl_c(&key_event) => {
+                if let Some(pressed) = AttemptReconnectPrompt::from_key_code(key_event.code) {
+                    let shift_pressed = key_event.modifiers.contains(KeyModifiers::SHIFT);
+                    let ctrl_pressed = key_event.modifiers.contains(KeyModifiers::CONTROL);
 
                     self.reconnect_prompt_choice(pressed, shift_pressed, ctrl_pressed)?;
                 }
             }
-            (Menu::Terminal, Some(Popup::IgnoreByName(_))) if !is_ctrl_c(&key) => {
-                if let Some(pressed) = IgnorePortByNamePrompt::from_key_code(key.code) {
+            (Menu::Terminal, Some(Popup::IgnoreByName(_))) if !is_ctrl_c(&key_event) => {
+                if let Some(pressed) = IgnorePortByNamePrompt::from_key_code(key_event.code) {
                     self.ignore_port_name_prompt_choice(pressed)?;
                 }
             }
-            (Menu::Terminal, Some(Popup::IgnoreByUsb(_, _))) if !is_ctrl_c(&key) => {
-                if let Some(pressed) = IgnoreUsbDevicePrompt::from_key_code(key.code) {
+            (Menu::Terminal, Some(Popup::IgnoreByUsb(_, _))) if !is_ctrl_c(&key_event) => {
+                if let Some(pressed) = IgnoreUsbDevicePrompt::from_key_code(key_event.code) {
                     self.ignore_usb_device_prompt_choice(pressed)?;
                 }
             }
@@ -1136,11 +1134,11 @@ impl App {
             {
                 // Intentionally only allowing ASCII digits and backspace,
                 // since arrow keys are busy with menu navigation.
-                if matches!(key.code, KeyCode::Char(c) if c.is_ascii_digit())
-                    || matches!(key.code, KeyCode::Backspace)
+                if matches!(key_event.code, KeyCode::Char(c) if c.is_ascii_digit())
+                    || matches!(key_event.code, KeyCode::Backspace)
                 {
                     self.baud_input
-                        .handle_event(&ratatui::crossterm::event::Event::Key(key));
+                        .handle_event(&ratatui::crossterm::event::Event::Key(key_event));
 
                     if let Ok(baud_rate) = self.baud_input.value().parse::<u32>() {
                         self.scratch.serial.baud_rate = baud_rate;
@@ -1159,9 +1157,9 @@ impl App {
                     // filtering out just letters from being put into the custom baud entry
                     // since filtering input to just ascii digits prevents backspace/cursor ops
                     // extra checks will be needed at parse stage to ensure non-digit chars arent present
-                    if !matches!(key.code, KeyCode::Char(c) if c.is_alphabetic()) {
+                    if !matches!(key_event.code, KeyCode::Char(c) if c.is_alphabetic()) {
                         self.baud_input
-                            .handle_event(&ratatui::crossterm::event::Event::Key(key));
+                            .handle_event(&ratatui::crossterm::event::Event::Key(key_event));
 
                         if let Ok(baud_rate) = self.baud_input.value().parse::<u32>() {
                             self.scratch.serial.baud_rate = baud_rate;
@@ -1296,6 +1294,24 @@ impl App {
 
                 self.queue_action_set(actions, Some(key_combo))?;
             }
+        }
+        Ok(())
+    }
+    fn send_crossterm_event_to_port(&mut self, key_event: KeyEvent) -> Result<()> {
+        let serial_healthy = self.serial.port_status.load().inner.is_connected();
+
+        if let Ok(event) =
+            terminput_crossterm::to_terminput(crossterm::event::Event::Key(key_event))
+            && serial_healthy
+        {
+            let mut buf = [0; 16];
+            if let Ok(n) = event.encode(&mut buf, terminput::Encoding::Xterm) {
+                self.serial.send_bytes(buf[..n].to_owned(), None)?;
+                self.last_raw_sequence = buf[..n].to_owned();
+            }
+        } else {
+            self.trigger_send_failed_visual()?;
+            self.last_raw_sequence = Default::default();
         }
         Ok(())
     }
