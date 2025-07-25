@@ -115,6 +115,8 @@ pub enum BaseAction {
     ToggleHex,
     /// Toggle displaying Address+Offset Markers+ASCII label above hex view.
     ToggleHexHeader,
+    /// Toggle the ability to type into a text buffer before sending to device.
+    ToggleFakeShell,
     /// Reload all Color Rules.
     ReloadColors,
     /// Reload all Keybinds.

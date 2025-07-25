@@ -1587,6 +1587,7 @@ impl App {
                 let state = pretty_bool(self.settings.rendering.show_indices.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
+                self.settings.save()?;
                 self.notifs.notify_str(
                     format!("Toggled Line Indices + Length {state}"),
                     Color::Gray,
@@ -1597,6 +1598,7 @@ impl App {
                 let state = pretty_bool(self.settings.rendering.indices_as_hex.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
+                self.settings.save()?;
                 self.notifs
                     .notify_str(format!("Toggled Indices as Hex {state}"), Color::Gray);
             }
@@ -1605,6 +1607,7 @@ impl App {
                 let state = pretty_bool(self.settings.rendering.hex_view.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
+                self.settings.save()?;
                 self.buffer.scroll_by(0);
                 self.notifs
                     .notify_str(format!("Toggled Hex View {state}"), Color::Gray);
@@ -1614,8 +1617,16 @@ impl App {
                 let state = pretty_bool(self.settings.rendering.hex_view_header.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
+                self.settings.save()?;
                 self.notifs
                     .notify_str(format!("Toggled Hex View Header {state}"), Color::Gray);
+            }
+
+            A::Base(BaseAction::ToggleFakeShell) => {
+                let state = pretty_bool(self.settings.behavior.fake_shell.flip());
+                self.settings.save()?;
+                self.notifs
+                    .notify_str(format!("Toggled Fake Shell {state}"), Color::Gray);
             }
 
             A::Base(BaseAction::EscapeKeypress) => {
