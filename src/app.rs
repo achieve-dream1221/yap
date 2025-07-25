@@ -260,6 +260,8 @@ enum NoSenders {
     SerialRx,
     #[error("All event senders have hung up unexpectedly!")]
     Events,
+    #[error("Crossterm thread hung up unexpectedly!")]
+    Crossterm,
 }
 
 // Maybe have the buffer in a TUI struct?
@@ -272,6 +274,7 @@ pub struct App {
     event_tx: Sender<Event>,
     event_rx: Receiver<Event>,
     serial_buf_rx: Receiver<(DateTime<Local>, Vec<u8>)>,
+    crossterm_rx: Receiver<CrosstermEvent>,
 
     baud_selection_state: SingleLineSelectorState,
     baud_input: Input,
@@ -294,6 +297,9 @@ pub struct App {
 
     repeating_line_flip: bool,
     failed_send_at: Option<Instant>,
+    escape_next_keypress: bool,
+    // todo tinyvec
+    last_raw_sequence: Vec<u8>,
 
     #[cfg(feature = "macros")]
     macros: Macros,
@@ -319,6 +325,7 @@ impl App {
         event_tx: Sender<Event>,
         event_rx: Receiver<Event>,
         ctrl_c_tx: Sender<()>,
+        crossterm_rx: Receiver<CrosstermEvent>,
         settings: Settings,
         tcp_log_health: Arc<TcpStreamHealth>,
     ) -> Result<Self> {
@@ -449,6 +456,8 @@ impl App {
 
             repeating_line_flip: false,
             failed_send_at: None,
+            escape_next_keypress: false,
+            last_raw_sequence: Vec::new(),
 
             #[cfg(feature = "macros")]
             macros,
@@ -460,6 +469,7 @@ impl App {
             event_tx,
             event_rx,
             serial_buf_rx,
+            crossterm_rx,
 
             #[cfg(feature = "espflash")]
             espflash: EspFlashHelper::build()?,
@@ -501,6 +511,7 @@ impl App {
             let mut channel_notifier = Select::new();
             channel_notifier.recv(&self.event_rx);
             channel_notifier.recv(&self.serial_buf_rx);
+            channel_notifier.recv(&self.crossterm_rx);
             // Waiting...
             let _ready_index = channel_notifier.ready();
             // A channel is ready!
@@ -531,6 +542,14 @@ impl App {
 
             let end2 = start2.elapsed();
             let start3 = Instant::now();
+
+            match self.crossterm_rx.try_recv() {
+                Ok(event) => self.handle_event(event.into(), &mut terminal)?,
+                Err(crossbeam::channel::TryRecvError::Empty) => (),
+                Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                    return Err(NoSenders::Crossterm)?;
+                }
+            }
 
             match self.event_rx.try_recv() {
                 Ok(event) => self.handle_event(event, &mut terminal)?,
@@ -1054,15 +1073,38 @@ impl App {
                         self.user_input.consume_typing_event(key)
                     }
 
-                    // TODO
-                    _terminal_input => {
-                        // if let Ok(term_event) = terminput_crossterm::to_terminput(
-                        //     crokey::crossterm::event::Event::Key(key),
-                        // ) {
-                        //     let mut buf = [0; 16];
-                        //     term_event.encode(&mut buf, terminput::Encoding::Xterm);
-                        // }
+                    _ if !self.settings.behavior.fake_shell
+                        && !self.escape_next_keypress
+                        && self.keybinds.key_has_single_action(
+                            key_combo,
+                            BaseAction::EscapeKeypress.into(),
+                        ) =>
+                    {
+                        self.escape_next_keypress = true;
+                        return Ok(());
                     }
+
+                    _terminal_input if !self.escape_next_keypress => {
+                        let serial_healthy = self.serial.port_status.load().inner.is_connected();
+
+                        if let Ok(term_event) = terminput_crossterm::to_terminput(
+                            crokey::crossterm::event::Event::Key(key),
+                        ) && serial_healthy
+                        {
+                            let mut buf = [0; 16];
+                            if let Ok(n) = term_event.encode(&mut buf, terminput::Encoding::Xterm) {
+                                self.serial.send_bytes(buf[..n].to_owned(), None)?;
+                                self.last_raw_sequence = buf[..n].to_owned();
+                            }
+                            return Ok(());
+                        } else {
+                            self.trigger_send_failed_visual()?;
+                            self.last_raw_sequence = Default::default();
+                            return Ok(());
+                        }
+                    }
+
+                    _ => self.escape_next_keypress = false,
                 }
             }
             (Menu::Terminal, Some(Popup::DisconnectPrompt)) if !is_ctrl_c(&key) => {
@@ -1315,6 +1357,12 @@ impl App {
 
         #[cfg(feature = "espflash")]
         // Try to find esp profile by exact name match.
+        // Profile search always should go before macro search,
+        // since macros can use category + name to disambiguate.
+        // Otherwise if there's a espflash profile matching a macro's name
+        // and we return early from checking macros first,
+        // it'd be impossible for the user to make clear what they actually want,
+        // the macro by name, or the esp profile by name.
         if self.espflash.profile_from_name(action).is_some() {
             return Some(Action::EspFlashProfile(action.to_owned()));
         }
@@ -1552,6 +1600,16 @@ impl App {
                     .update_render_settings(self.settings.rendering.clone());
                 self.notifs
                     .notify_str(format!("Toggled Hex View Header {state}"), Color::Gray);
+            }
+
+            A::Base(BaseAction::EscapeKeypress) => {
+                if self.escape_next_keypress {
+                    self.notifs
+                        .notify_str("Keypress was already escaped!", Color::Yellow);
+                } else if self.settings.behavior.fake_shell {
+                    self.notifs
+                        .notify_str("Only works when Fake Shell is disabled!", Color::Yellow);
+                }
             }
 
             #[cfg(feature = "macros")]
@@ -2406,10 +2464,6 @@ impl App {
                         self.buffer
                             .append_user_text(user_input, user_le_bytes, false, false);
                         self.user_input.commit_input_to_history();
-                    } else {
-                        // self.serial.send_str(user_input, "").unwrap();
-                        todo!("not ready yet");
-                        // self.buffer.append_user_text(user_input);
                     }
 
                     self.repeating_line_flip.flip();
@@ -2417,20 +2471,24 @@ impl App {
                     // TODO: Make this behavior a toggle
                     self.buffer.scroll_by(i32::MIN);
                 } else {
-                    self.failed_send_at = Some(Instant::now());
-                    // Temporarily show text on red background when trying to send while unhealthy
-                    let tx = self.event_tx.clone();
-                    self.carousel.add_oneshot(
-                        "UnhealthyTxUi",
-                        Box::new(move || {
-                            tx.send(Tick::Requested("Unhealthy TX Background Removal").into())
-                                .map_err(|e| e.to_string())
-                        }),
-                        FAILED_SEND_VISUAL_TIME,
-                    )?;
+                    self.trigger_send_failed_visual()?;
                 }
             }
         }
+        Ok(())
+    }
+    fn trigger_send_failed_visual(&mut self) -> Result<()> {
+        self.failed_send_at = Some(Instant::now());
+        // Temporarily show text on red background when trying to send while unhealthy
+        let tx = self.event_tx.clone();
+        self.carousel.add_oneshot(
+            "UnhealthyTxUi",
+            Box::new(move || {
+                tx.send(Tick::Requested("Unhealthy TX Background Removal").into())
+                    .map_err(|e| e.to_string())
+            }),
+            FAILED_SEND_VISUAL_TIME,
+        )?;
         Ok(())
     }
     fn return_to_port_selection(&mut self) -> Result<()> {
@@ -2459,7 +2517,6 @@ impl App {
                 // This is intentionally being set true unconditionally here, and also when the event pops.
                 // This is so that I or a user can forcibly trigger the pausing of reconnections/the appearance of the
                 // manual reconnection Esc popup.
-                // TODO reconsider?
                 self.user_broke_connection = true;
                 self.show_popup(Popup::AttemptReconnectPrompt);
                 self.serial.request_break_connection()?;
@@ -3436,8 +3493,7 @@ impl App {
                 );
             }
         }
-        // TODO
-        // shrink scrollbar and change content length based on if its for a submenu or not
+
         let content_length = self.current_popup_selectable_item_count();
         let mut scrollbar_state = ScrollbarState::new(
             content_length
@@ -3562,7 +3618,6 @@ impl App {
             .end_symbol(Some("↓"));
 
         let height = match popup {
-            // TODO do for other popups?
             #[cfg(feature = "macros")]
             ToolMenu::Macros => macros_table_area.height,
             _ => settings_area.height,
@@ -3850,8 +3905,8 @@ impl App {
     ) {
         let area = frame.area();
         let popup_shown = self.popup.is_some();
-        let [terminal_area, line_area, input_area] = vertical![*=1, ==1, ==1].areas(area);
-        let [input_symbol_area, input_area] = horizontal![==1, *=1].areas(input_area);
+        let [terminal_area, line_area, whole_input_area] = vertical![*=1, ==1, ==1].areas(area);
+        let [input_symbol_area, input_area] = horizontal![==1, *=1].areas(whole_input_area);
 
         // let start = Instant::now();
         if self.settings.rendering.hex_view {
@@ -4013,45 +4068,94 @@ impl App {
             _ => Style::new(),
         };
 
-        // TODO have this turn into `§` or something when in bytes mode.
-        let input_symbol = Span::raw(">").style(if port_state.is_connected() {
-            input_style.not_reversed().green()
-        } else {
-            input_style.red()
-        });
+        if self.settings.behavior.fake_shell {
+            // TODO have this turn into `§` or something when in bytes mode.
+            let input_symbol = Span::raw(">").style(if port_state.is_connected() {
+                input_style.not_reversed().green()
+            } else {
+                input_style.red()
+            });
 
-        frame.render_widget(input_symbol, input_symbol_area);
+            frame.render_widget(input_symbol, input_symbol_area);
+        } else if self.popup.is_none() {
+            let value = if self.last_raw_sequence.is_empty() {
+                Cow::Borrowed("N/A")
+            } else {
+                Cow::Owned(
+                    self.last_raw_sequence
+                        .iter()
+                        .map(|b| format!("\\x{b:02X}"))
+                        .collect(),
+                )
+            };
+            let dark_gray = Style::new().dark_gray();
+            let line = line![span!(dark_gray; "Last sent: "), span!(dark_gray; value)];
 
-        let should_position_cursor = !popup_shown && self.popup.is_none();
+            frame.render_widget(line, whole_input_area);
+        }
 
-        if self.user_input.value().is_empty() {
-            // Leading space leaves room for full-width cursors.
-            let port_settings_hint = self.keybinds.port_settings_hint();
-            let input_hint = Line::raw(format!(
-                " Input goes here. `{port_settings_hint}` for port settings.",
-            ))
-            .style(input_style)
-            .dark_gray()
-            .italic();
-            frame.render_widget(input_hint, input_area);
-            if should_position_cursor {
-                frame.set_cursor_position(input_area.as_position());
+        let should_position_cursor = !popup_shown;
+
+        match (
+            self.settings.behavior.fake_shell,
+            self.user_input.value().is_empty(),
+        ) {
+            (true, true) => {
+                // Leading space leaves room for full-width cursors.
+                let port_settings_hint = self.keybinds.port_settings_hint();
+                let input_hint = Line::raw(format!(
+                    " Input goes here. `{port_settings_hint}` for port settings.",
+                ))
+                .style(input_style)
+                .dark_gray()
+                .italic();
+                frame.render_widget(input_hint, input_area);
+                if should_position_cursor {
+                    frame.set_cursor_position(input_area.as_position());
+                }
             }
-        } else {
-            let width = input_area.width.max(1).saturating_sub(1); // So the cursor doesn't bleed off the edge
-            let scroll = self.user_input.input_box().visual_scroll(width as usize);
-            let input_text = Paragraph::new(self.user_input.input_box().value())
-                .scroll((0, scroll as u16))
-                .style(input_style);
-            frame.render_widget(input_text, input_area);
-            if should_position_cursor {
-                frame.set_cursor_position((
-                    // Put cursor past the end of the input text
-                    input_area.x
-                        + ((self.user_input.input_box().visual_cursor()).max(scroll) - scroll)
-                            as u16,
-                    input_area.y,
-                ));
+            (true, false) => {
+                let width = input_area.width.max(1).saturating_sub(1); // So the cursor doesn't bleed off the edge
+                let scroll = self.user_input.input_box().visual_scroll(width as usize);
+                let input_text = Paragraph::new(self.user_input.input_box().value())
+                    .scroll((0, scroll as u16))
+                    .style(input_style);
+                frame.render_widget(input_text, input_area);
+                if should_position_cursor {
+                    frame.set_cursor_position((
+                        // Put cursor past the end of the input text
+                        input_area.x
+                            + ((self.user_input.input_box().visual_cursor()).max(scroll) - scroll)
+                                as u16,
+                        input_area.y,
+                    ));
+                }
+            }
+            (false, _) if self.escape_next_keypress => {
+                let input_hint = Line::raw(format!(
+                    "Escaping next keypress, will not be sent to connected device.",
+                ))
+                .style(input_style)
+                .yellow()
+                .centered();
+                frame.render_widget(input_hint, whole_input_area);
+            }
+            (false, _) if self.popup.is_some() => {
+                let input_hint = Line::raw(format!("Popup is active, not sending keypresses.",))
+                    .style(input_style)
+                    .dark_gray()
+                    .centered();
+                frame.render_widget(input_hint, whole_input_area);
+            }
+            (false, _) => {
+                let escape_hint = self.keybinds.escape_keypress_hint();
+                let input_hint = Line::raw(format!(
+                    "Keyboard input is being sent directly. Press `{escape_hint}` to escape a keypress.",
+                ))
+                .style(input_style)
+                .dark_gray()
+                .centered();
+                frame.render_widget(input_hint, whole_input_area);
             }
         }
 
@@ -4322,7 +4426,8 @@ impl App {
     }
     fn show_popup(&mut self, popup: Popup) {
         match &popup {
-            Popup::AttemptReconnectPrompt
+            Popup::CurrentKeybinds
+            | Popup::AttemptReconnectPrompt
             | Popup::DisconnectPrompt
             | Popup::IgnoreByName(_)
             | Popup::IgnoreByUsb(_, _) => self.popup_menu_scroll = 0,

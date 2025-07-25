@@ -133,7 +133,7 @@ fn run_inner(
     tcp_log_health: Arc<TcpStreamHealth>,
 ) -> color_eyre::Result<()> {
     let (tx, rx) = crossbeam::channel::unbounded::<app::Event>();
-    let crossterm_tx = tx.clone();
+    let (crossterm_tx, crossterm_rx) = crossbeam::channel::unbounded::<CrosstermEvent>();
     let (ctrl_c_tx, ctrl_c_rx) = crossbeam::channel::bounded::<()>(1);
     let _crossterm_thread = std::thread::spawn(move || {
         use crokey::crossterm::event::{Event, KeyEventKind};
@@ -184,6 +184,9 @@ fn run_inner(
             let event = match crossterm::event::read() {
                 Ok(ev) => ev,
                 Err(e) => {
+                    // maybe i shouldn't break here..?
+                    // one time when waking pc from an overnight sleep, i think this thread died
+                    // but the rest was fine?
                     error!("error encountered when reading crossterm event, shutting down. {e}");
                     // return Err(e);
                     break;
@@ -227,7 +230,14 @@ fn run_inner(
     //     error!("Failed to enable key combining! {e}");
     // };
 
-    let mut app = App::build(tx, rx, ctrl_c_tx, app_settings, tcp_log_health)?;
+    let mut app = App::build(
+        tx,
+        rx,
+        ctrl_c_tx,
+        crossterm_rx,
+        app_settings,
+        tcp_log_health,
+    )?;
 
     #[cfg(feature = "defmt")]
     if let Some(defmt_path) = cli_args.defmt_elf {

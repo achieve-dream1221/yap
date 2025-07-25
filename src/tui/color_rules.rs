@@ -170,7 +170,7 @@ impl ColorRules {
     // need a
     // struct ColorActions {
     //     whole_line_color: Option<Color>
-    //     whole_line_hide/censor: Option<Hide/Censor> (Hide has priority)
+    //     whole_line_hide/censor: Option<Hide/Censor> (Both Hide and Censor can never be undone, with Hide taking priority.)
     //     word_actions: Vec<(ColorCensorRemove, Range)>
     // }
     //
@@ -183,7 +183,7 @@ impl ColorRules {
     // checking each action bound up to the index, also making sure the new actions
     // doesn't go any further.
     //
-    // or saving a "last action set hash" would work the same
+    // or saving hashes for whole line actions and word actions would work the same
 
     pub fn apply_onto<'a>(&self, original: &'a [u8], mut line: Line<'a>) -> Option<Line<'a>> {
         if line.is_empty() {

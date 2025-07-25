@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use compact_str::{CompactString, ToCompactString};
 use crokey::KeyCombination;
+use crossterm::event::{KeyCode, KeyModifiers};
 use fs_err as fs;
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -118,6 +119,8 @@ pub enum BaseAction {
     ReloadColors,
     /// Reload all Keybinds.
     ReloadKeybinds,
+    /// Escape a Keypress to avoid sending a key to the device to trigger an app menu or action.
+    EscapeKeypress,
 }
 
 impl RequiresPort for BaseAction {
@@ -125,7 +128,10 @@ impl RequiresPort for BaseAction {
         false
     }
     fn requires_terminal_view(&self) -> bool {
-        self.requires_connection()
+        match self {
+            BaseAction::EscapeKeypress => true,
+            _ => false,
+        }
     }
 }
 
@@ -397,6 +403,12 @@ impl From<BaseAction> for AppAction {
     }
 }
 
+impl From<ShowPopupAction> for AppAction {
+    fn from(action: ShowPopupAction) -> Self {
+        AppAction::Popup(action)
+    }
+}
+
 impl From<PortAction> for AppAction {
     fn from(action: PortAction) -> Self {
         AppAction::Port(action)
@@ -505,7 +517,7 @@ ctrl-o = "toggle-dtr"
 ctrl-p = "toggle-rts"
 
 ctrl-w = "toggle-textwrap"
-ctrl-t = "toggle-timestamps"
+ctrl-y = "toggle-timestamps"
 ctrl-d = "toggle-indices"
 
 ctrl-b = "show-behavior"
@@ -513,12 +525,17 @@ ctrl-b = "show-behavior"
 
 ctrl-f = "reload-colors"
 
+ctrl-t = "escape-keypress"
+
 ctrl-h = "show-keybinds"
 ctrl-k = "show-keybinds"
 'ctrl-/' = "show-keybinds"
 "#;
 
 pub const CONFIG_TOML_PATH: &str = "yap_keybinds.toml";
+
+const DEFAULT_KEYPRESS_ESCAPE: KeyCombination =
+    KeyCombination::one_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
 
 #[derive(Deserialize)]
 pub struct Keybinds {
@@ -529,6 +546,8 @@ pub struct Keybinds {
     port_settings_hint: Option<CompactString>,
     #[serde(skip)]
     show_keybinds_hint: Option<CompactString>,
+    #[serde(skip)]
+    escape_keypress_hint: CompactString,
 }
 
 // fn serialize_macros_map<S>(
@@ -627,36 +646,43 @@ impl Keybinds {
         };
         Ok(keybinds)
     }
-    fn fill_hints(&mut self) {
-        self.port_settings_hint = self
-            .keybindings
+    fn find_key_with_single_action(&self, action: AppAction) -> Option<KeyCombination> {
+        self.keybindings
             .iter()
             .find(|(_, actions)| {
                 if actions.len() != 1 {
                     return false;
                 }
 
-                matches!(
-                    actions[0].parse::<AppAction>(),
-                    Ok(AppAction::Popup(ShowPopupAction::ShowPortSettings))
-                )
+                actions[0]
+                    .parse::<AppAction>()
+                    .ok()
+                    .map_or(false, |a| a == action)
             })
-            .map(|(kc, _)| kc.to_compact_string());
+            .map(|(key_combo, _)| *key_combo)
+    }
+    fn fill_hints(&mut self) {
+        // We require this to be bound since otherwise the user can get themselves stuck.
+        // Ideally this never overrides a user's action, but c'est la vie.
+        if let None = self.find_key_with_single_action(BaseAction::EscapeKeypress.into()) {
+            self.keybindings.insert(
+                DEFAULT_KEYPRESS_ESCAPE,
+                vec![BaseAction::EscapeKeypress.to_string()],
+            );
+        }
+
+        self.port_settings_hint = self
+            .find_key_with_single_action(ShowPopupAction::ShowPortSettings.into())
+            .map(|kc| kc.to_compact_string());
 
         self.show_keybinds_hint = self
-            .keybindings
-            .iter()
-            .find(|(_, actions)| {
-                if actions.len() != 1 {
-                    return false;
-                }
+            .find_key_with_single_action(ShowPopupAction::ShowKeybinds.into())
+            .map(|kc| kc.to_compact_string());
 
-                matches!(
-                    actions[0].parse::<AppAction>(),
-                    Ok(AppAction::Popup(ShowPopupAction::ShowKeybinds))
-                )
-            })
-            .map(|(kc, _)| kc.to_compact_string());
+        self.escape_keypress_hint = self
+            .find_key_with_single_action(BaseAction::EscapeKeypress.into())
+            .map(|kc| kc.to_compact_string())
+            .expect("This action must be bound, and should've been forcibly bound on load.");
     }
     pub fn port_settings_hint(&self) -> &str {
         self.port_settings_hint
@@ -669,6 +695,9 @@ impl Keybinds {
             .as_ref()
             .map(CompactString::as_str)
             .unwrap_or_else(|| "UNBOUND")
+    }
+    pub fn escape_keypress_hint(&self) -> &str {
+        self.escape_keypress_hint.as_ref()
     }
     fn overridable_defaults() -> Self {
         let mut deserialized: Self =
@@ -694,10 +723,19 @@ impl Keybinds {
         Ok(overridable)
     }
     pub fn action_set_from_key_combo(&self, key_combo: KeyCombination) -> Option<&Vec<String>> {
+        self.keybindings.get(&key_combo)
+    }
+    pub fn key_has_single_action(&self, key_combo: KeyCombination, action: AppAction) -> bool {
         self.keybindings
-            .iter()
-            .find(|(kc, _)| *kc == &key_combo)
-            .map(|(_, m)| m)
+            .get(&key_combo)
+            .and_then(|actions| {
+                if actions.len() == 1 {
+                    actions[0].parse().ok()
+                } else {
+                    None
+                }
+            })
+            .map_or(false, |parsed_action| action == parsed_action)
     }
 }
 

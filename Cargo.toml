@@ -92,8 +92,8 @@ strum = { version = "0.27", features = ["derive"] }
 takeable = "0.2.2"
 # TODO update once ratatui's exposed crossterm updates
 # but these work for now.
-# terminput = "0.4.2"
-# terminput-crossterm = "0.1.2"
+terminput = "0.4.2"
+terminput-crossterm = "0.1.2"
 textwrap = "0.16.2"
 thiserror = "2.0.12"
 tinyvec = { version = "1.9.0", features = ["std"] }
