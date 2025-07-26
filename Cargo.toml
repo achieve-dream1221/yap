@@ -102,7 +102,7 @@ tracing = { version = "0.1.41", features = ["log"] }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter"] }
 tui-big-text = "0.7.1"
-tui-input = "0.11.1"
+tui-input = "0.14"
 # unescaper = "0.1.5"
 unicode-width = "0.2.0"
 virtual-serialport = "0.1.3"
