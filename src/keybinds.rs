@@ -541,6 +541,9 @@ pub const CONFIG_TOML_PATH: &str = "yap_keybinds.toml";
 const DEFAULT_KEYPRESS_ESCAPE: KeyCombination =
     KeyCombination::one_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
 
+// TODO add a category for "text-based" actions?
+// like history scrolling/word removal/cursor manipulation?
+
 #[derive(Deserialize)]
 pub struct Keybinds {
     #[serde(deserialize_with = "deserialize_keybinds_map")]

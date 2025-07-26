@@ -16,6 +16,7 @@ use crokey::{KeyCombination, key};
 use crossbeam::channel::{Receiver, Select, Sender, TrySendError};
 use enum_rotate::EnumRotate;
 
+use num_integer::Integer;
 use ratatui::{
     Frame, Terminal,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
@@ -1010,10 +1011,8 @@ impl App {
         let key_combo = KeyCombination::from(key_event);
         // debug!("{key_combo}");
 
-        // let at_port_selection = matches!(self.menu, Menu::PortSelection);
-        // TODO soon, redo this variable's name + use
-        let mut at_port_selection = false;
-        let mut at_terminal = false;
+        let mut port_selection_actions = false;
+        let mut terminal_view_actions = false;
         // Filter for when we decide to handle user *text input*.
         // TODO move these into per-menu funcs.
         match self.popup {
@@ -1075,7 +1074,7 @@ impl App {
 
         match (self.menu, &self.popup) {
             (Menu::Terminal, None) => {
-                at_terminal = true;
+                terminal_view_actions = true;
                 match key_combo {
                     // Consuming Ctrl+A so input_box.handle_event doesn't move my cursor.
                     key!(ctrl - a) => (),
@@ -1175,7 +1174,7 @@ impl App {
                         }
                     }
                 } else {
-                    at_port_selection = true;
+                    port_selection_actions = true;
                 }
             }
             (Menu::PortSelection, Some(_)) => (),
@@ -1190,7 +1189,7 @@ impl App {
         // TODO split this up into more functions based on menu
         match key_combo {
             // Start of _Hardcoded_ keybinds.
-            key!(q) if at_port_selection && self.popup.is_none() => self.shutdown(),
+            key!(q) if port_selection_actions && self.popup.is_none() => self.shutdown(),
             key!(ctrl - shift - c) => self.shutdown(),
             // move into ctrl-c func?
             key!(ctrl - c) => match (self.menu, &self.popup) {
@@ -1205,13 +1204,17 @@ impl App {
                 }
                 _ => self.shutdown(),
             },
-            key!(ctrl - a) if at_terminal && !self.user_input.value().is_empty() => {
+            key!(ctrl - a) if terminal_view_actions && !self.user_input.value().is_empty() => {
                 self.user_input.all_text_selected = true;
+            }
+            key!(ctrl - backspace)
+                if terminal_view_actions && !self.user_input.value().is_empty() =>
+            {
+                self.user_input.remove_one_word();
             }
             key!(home) if self.popup.is_some() => {
                 self.popup_menu_scroll = 0;
             }
-            // TODO ctrl+backspace remove a word
             key!(ctrl - pageup) | key!(shift - pageup) => self.buffer.scroll_by(i32::MAX),
             key!(ctrl - pagedown) | key!(shift - pagedown) => self.buffer.scroll_by(i32::MIN),
             key!(ctrl - shift - delete) | key!(ctrl - shift - backspace) => {
@@ -1240,7 +1243,7 @@ impl App {
             key!(j) if vim_scrollable_menu => self.down_pressed(),
             key!(k) if vim_scrollable_menu => self.up_pressed(),
             key!(l) if vim_scrollable_menu => self.right_pressed(),
-            key!(i) if at_port_selection && self.port_selection_scroll < self.ports.len() => {
+            key!(i) if port_selection_actions && self.port_selection_scroll < self.ports.len() => {
                 match self.ports.get(self.port_selection_scroll) {
                     None => (),
                     Some(SerialPortInfo {
@@ -1262,7 +1265,7 @@ impl App {
             key!(ctrl - enter) => self.enter_pressed(true, false)?,
             key!(shift - enter) => self.enter_pressed(false, true)?,
             key!(ctrl - shift - enter) => self.enter_pressed(true, true)?,
-            key!(tab) if at_terminal && self.popup.is_none() => {
+            key!(tab) if terminal_view_actions && self.popup.is_none() => {
                 self.user_input.find_input_in_history();
             }
             // KeyCode::Tab => self.tab_pressed(),
@@ -2508,7 +2511,7 @@ impl App {
 
                 if self.user_input.byte_entry_active() {
                     // Odd-length inputs can't be parsed to be sent.
-                    if user_input.len() % 2 != 0 {
+                    if user_input.len().is_odd() {
                         self.trigger_send_failed_visual()?;
                         return Ok(());
                     }

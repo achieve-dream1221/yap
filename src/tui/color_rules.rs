@@ -184,6 +184,12 @@ impl ColorRules {
     // doesn't go any further.
     //
     // or saving hashes for whole line actions and word actions would work the same
+    //
+    // Extra notes:
+    //
+    // Could use a RegexSet for lines/words (each)!
+    // Would need to build when loading all rules from disk after all have been verified to be valid Regex,
+    // but could speed up some simple cases (lines) and can help skip searches for (words).
 
     pub fn apply_onto<'a>(&self, original: &'a [u8], mut line: Line<'a>) -> Option<Line<'a>> {
         if line.is_empty() {

@@ -4,6 +4,8 @@ use arboard::Clipboard;
 use crokey::crossterm::event::{Event, KeyEvent};
 use crossterm::event::KeyCode;
 use itertools::Itertools;
+use num_integer::Integer;
+use regex::Regex;
 use tracing::{error, warn};
 use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 
@@ -61,6 +63,8 @@ pub struct UserInput {
     history: History,
     preserved_input: Option<HistoryEntry<'static>>,
     search_result: Option<usize>,
+
+    last_word_regex: Regex,
 }
 
 impl Default for UserInput {
@@ -80,6 +84,13 @@ impl Default for UserInput {
             history: History::new(),
             clipboard,
             bytes_input: false,
+
+            // This regex matches the last "word" in the string, possibly with surrounding whitespace at start/end.
+            // Breakdown:
+            // \S+        - one or more non-whitespace characters (the "word" itself)
+            // (?:\s+)?   - optional whitespace after the word
+            // $          - must be at the end of the string
+            last_word_regex: Regex::new(r"\S+(?:\s+)?$").expect("pre-validated regex"),
         }
     }
 }
@@ -195,7 +206,7 @@ impl UserInput {
             self.replace_input_with_bytes(&input_bytes);
         } else {
             // true -> false
-            let value = if self.value().len() % 2 == 0 {
+            let value = if self.value().len().is_even() {
                 self.value()
             } else {
                 let len = self.value().len();
@@ -263,6 +274,20 @@ impl UserInput {
                 self.all_text_selected = false;
             }
             _ => (),
+        }
+    }
+    pub fn remove_one_word(&mut self) {
+        self.clear_history_selection();
+        let value_len = self.value().len();
+        if self.bytes_input {
+            let remove_amount = 1 + value_len.is_even() as usize;
+            self.input_box = self.value()[..value_len - remove_amount].to_owned().into();
+        } else if let Some(mat) = self.last_word_regex.find(self.value()) {
+            let new_len = mat.start();
+
+            self.input_box = self.value()[..new_len].to_owned().into();
+        } else {
+            self.clear();
         }
     }
     pub fn value(&self) -> &str {
