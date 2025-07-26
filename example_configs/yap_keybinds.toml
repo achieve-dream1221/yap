@@ -1,3 +1,5 @@
+# use --print-actions (-p) to see all built-in actions and more help!
+
 [keybindings]
 ctrl-w = "toggle-textwrap"
 ctrl-o = "toggle-dtr"

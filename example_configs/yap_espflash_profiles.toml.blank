@@ -10,6 +10,7 @@
 # any_chip = false ## (default: false) skip checking connected device matches expected chip
 # no_verify = false ## (default: false) skip verifying checksum of uploaded binaries
 # no_skip = false ## (default: false) don't attempt to skip sending segment by checking on-device flash checksum first
+# defmt_elf_path = "" ## (default: empty, requires defmt feature) load designated .elf into defmt decoder while flashing device with binaries
 
 # .elf example
 # [[elf]] ## type of profile (bin/elf)
@@ -23,3 +24,4 @@
 # no_verify = false ## (default: false) skip verifying checksum of uploaded binaries
 # no_skip = false ## (default: false) don't attempt to skip sending segment by checking on-device flash checksum first
 # ram = false ## (default: false) load .elf contents into RAM, skipping flash write
+# defmt = false ## (default: false, requires defmt feature) load .elf into defmt decoder while flashing device with same .elf

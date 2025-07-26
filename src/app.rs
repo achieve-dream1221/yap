@@ -1054,9 +1054,13 @@ impl App {
                     let current = file_explorer.current();
                     let is_file = current.is_file();
                     if is_file {
-                        use camino::Utf8PathBuf;
+                        let path_buf = current.path().to_owned();
 
-                        let elf_path: Utf8PathBuf = current.path().to_owned().try_into().unwrap();
+                        let Ok(elf_path) = camino::Utf8PathBuf::from_path_buf(path_buf) else {
+                            self.notifs
+                                .notify_str("Path is not valid UTF-8!", Color::Red);
+                            return Ok(());
+                        };
 
                         self.try_load_defmt_elf(
                             &elf_path,
@@ -1076,7 +1080,7 @@ impl App {
             (Menu::Terminal, None) => {
                 terminal_view_actions = true;
                 match key_combo {
-                    // Consuming Ctrl+A so input_box.handle_event doesn't move my cursor.
+                    // Consuming Ctrl-A so input_box.handle_event doesn't move my cursor.
                     key!(ctrl - a) => (),
                     key!(del) | key!(backspace) if self.user_input.all_text_selected => (),
 
@@ -1227,10 +1231,10 @@ impl App {
             key!(pagedown) => self.buffer.scroll_page_down(),
             // KeyCode::F(f_key) if ctrl_pressed && shift_pressed => {
             //     let meow = key!(ctrl - c);
-            //     self.notify(format!("Pressed Ctrl+Shift+F{f_key}"), Color::Blue)
+            //     self.notify(format!("Pressed Ctrl-Shift-F{f_key}"), Color::Blue)
             // }
             // KeyCode::F(f_key) if ctrl_pressed => {
-            //     self.notify(format!("Pressed Ctrl+F{f_key}"), Color::Blue)
+            //     self.notify(format!("Pressed Ctrl-F{f_key}"), Color::Blue)
             // }
             // KeyCode::F(f_key) if shift_pressed => {
             //     self.notify(format!("Pressed Shift+F{f_key}"), Color::Blue)
@@ -3786,7 +3790,7 @@ impl App {
                 frame.render_stateful_widget(table, macros_table_area, &mut table_state);
 
                 frame.render_widget(
-                    Line::raw("Ctrl+R: Reload")
+                    Line::raw("Ctrl-R: Reload")
                         .all_spans_styled(Color::DarkGray.into())
                         .centered(),
                     line_area,
@@ -3955,7 +3959,7 @@ impl App {
                     }
                 }
                 frame.render_widget(
-                    Line::raw("Flash Profiles | Ctrl+R: Reload")
+                    Line::raw("Flash Profiles | Ctrl-R: Reload")
                         .all_spans_styled(Color::DarkGray.into())
                         .centered(),
                     new_separator,
@@ -4003,33 +4007,6 @@ impl App {
         }
         // debug!("1: {:?}", start.elapsed());
         // let start = Instant::now();
-
-        // let total_lines = para.line_count(terminal_area.width.saturating_sub(1));
-
-        // info!(
-        //     "total rendered lines: {total_lines}, line vec count: {}",
-        //     self.buffer.strings.len()
-        // );
-
-        // info!("{}", total_lines);
-
-        // if self.buffer_stick_to_bottom {
-        //     let new_pos = total_lines.saturating_sub(terminal.height as usize);
-        //     self.buffer_scroll_state = self.buffer_scroll_state.position(new_pos);
-        //     vert_scroll = new_pos as u16;
-        // }
-
-        // info!(
-        //     "scroll: {vert_scroll}, lines: {}, term height: {}",
-        //     self.line_count(),
-        //     self.last_terminal_size.height
-        // );
-
-        // frame.render_widget(Clear, terminal);
-
-        // self.buffer_scroll_state = self.buffer_scroll_state.content_length(total_lines);
-        // self.buffer_rendered_lines = total_lines;
-        // maybe debug_assert this when we roll our own line-counting?
 
         let (port_state, serial_signals, port_text) = {
             let port_status_guard = self.serial.port_status.load();
@@ -4325,6 +4302,16 @@ impl App {
             .build();
         frame.render_widget(big_text, vertical_slices[0]);
 
+        let dark_gray = Style::new().dark_gray();
+
+        let [_, credit_and_version_area] = vertical![*=1, ==1].areas(frame_area);
+        let version =
+            Line::styled(format!("v{}", env!("CARGO_PKG_VERSION")), dark_gray).right_aligned();
+        let me_in_current_year = "nullstalgia, 2025".dark_gray();
+
+        frame.render_widget(me_in_current_year, credit_and_version_area);
+        frame.render_widget(version, credit_and_version_area);
+
         let area = if vertical_slices[1].width < 45 {
             vertical_slices[1]
         } else {
@@ -4332,7 +4319,6 @@ impl App {
             middle_area
         };
 
-        let dark_gray = Style::new().dark_gray();
         let show_keybinds_hint = self.keybinds.show_keybinds_hint();
         let controls = line![
             span!(dark_gray;"Ignore port: [I] | Show Keybinds: [{show_keybinds_hint}] | Select: [Enter]")
@@ -4744,24 +4730,6 @@ impl App {
         }
     }
 }
-// #[cfg(feature = "defmt")]
-// /// Try to load the given file path as a defmt elf,
-// /// if successful, loads decoder into Buffer and Logger
-// /// and informs the ELF Watcher about this latest file.
-// pub fn _try_load_defmt_elf(
-//     &mut self,
-//     path: &Utf8Path,
-// ) -> Result<Option<LocationsError>, YapLoadDefmtError> {
-//     _try_load_defmt_elf(
-//         path,
-//         &mut self.buffer.defmt_decoder,
-//         &mut self.defmt_helpers.recent_elfs,
-//         #[cfg(feature = "logging")]
-//         &self.buffer.log_handle,
-//         #[cfg(feature = "defmt_watch")]
-//         &mut self.defmt_helpers.watcher_handle,
-//     )
-// }
 
 #[cfg(feature = "defmt")]
 #[derive(Debug, thiserror::Error)]

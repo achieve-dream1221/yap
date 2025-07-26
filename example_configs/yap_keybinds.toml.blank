@@ -1,18 +1,22 @@
-# use --print-actions (-p) to see all built-in actions!
+# use --print-actions (-p) to see all built-in actions and more help!
 
 [keybindings]
 # ctrl-o = "toggle-dtr"
 # ctrl-p = "toggle-rts"
 
 # ctrl-w = "toggle-textwrap"
-# ctrl-t = "toggle-timestamps"
+# ctrl-y = "toggle-timestamps"
 # ctrl-d = "toggle-indices"
 
-# ctrl-b = "show-behavior"
+# ctrl-b = "toggle-fake-shell-hex"
 # 'ctrl-.' = "show-portsettings"
 
 # ctrl-f = "reload-colors"
+
+# ctrl-t = "escape-keypress"
+
 # ctrl-h = "show-keybinds"
+# ctrl-k = "show-keybinds"
 # 'ctrl-/' = "show-keybinds"
 
 # You can also bind Macros to a keybind!

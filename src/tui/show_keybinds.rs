@@ -282,6 +282,7 @@ pub fn show_keybinds(
 
     let block = Block::bordered()
         .title_top(" Keybinds ")
+        .title_bottom(Span::styled(" Ctrl-R: Reload ", Style::new().dark_gray()))
         .title_alignment(Alignment::Center);
     frame.render_widget(&block, area);
 

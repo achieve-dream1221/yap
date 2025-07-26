@@ -120,7 +120,8 @@ pub struct Rendering {
     /// Show user input in buffer after sending.
     pub echo_user_input: UserEcho,
 
-    #[serde(default)]
+    #[serde_inline_default_parent]
+    #[derivative(Default(value = "true"))]
     /// Show timestamps next to each incoming line.
     pub timestamps: bool,
 
@@ -132,19 +133,23 @@ pub struct Rendering {
     /// Whether indices for "Show Indices" should be in hex format.
     pub indices_as_hex: bool,
 
-    #[serde(default)]
+    #[serde_inline_default_parent]
+    #[derivative(Default(value = "true"))]
     /// Wrap text longer than the screen.
     pub wrap_text: bool,
 
-    #[serde(default)]
+    #[serde_inline_default_parent]
+    #[derivative(Default(value = "true"))]
     /// Show line ending at end of recieved lines.
     pub show_line_ending: bool,
 
-    #[serde(default)]
+    #[serde_inline_default_parent]
+    #[derivative(Default(value = "true"))]
     /// Show hidden chars and invalid UTF-8 byte sequences in \xFF notation.
     pub escape_unprintable_bytes: bool,
 
-    #[serde(default)]
+    #[serde_inline_default_parent]
+    #[derivative(Default(value = "true"))]
     /// Show a placeholder for lines who have had their entire content hidden by color rules.
     pub show_hidden_lines: bool,
 
