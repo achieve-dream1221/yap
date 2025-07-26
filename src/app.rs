@@ -1312,6 +1312,8 @@ impl App {
                 self.serial.send_bytes(buf[..n].to_owned(), None)?;
                 self.last_raw_sequence = ArrayVec::from_array_len(buf, n);
             }
+
+            self.repeating_line_flip.flip();
         } else {
             self.trigger_send_failed_visual()?;
             self.last_raw_sequence = Default::default();
@@ -1606,7 +1608,7 @@ impl App {
                     .notify_str(format!("Toggled Indices as Hex {state}"), Color::Gray);
             }
 
-            A::Base(BaseAction::ToggleHex) => {
+            A::Base(BaseAction::ToggleHexView) => {
                 let state = pretty_bool(self.settings.rendering.hex_view.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
@@ -1616,7 +1618,7 @@ impl App {
                     .notify_str(format!("Toggled Hex View {state}"), Color::Gray);
             }
 
-            A::Base(BaseAction::ToggleHexHeader) => {
+            A::Base(BaseAction::ToggleHexViewHeader) => {
                 let state = pretty_bool(self.settings.rendering.hex_view_header.flip());
                 self.buffer
                     .update_render_settings(self.settings.rendering.clone());
@@ -1630,6 +1632,12 @@ impl App {
                 self.settings.save()?;
                 self.notifs
                     .notify_str(format!("Toggled Fake Shell {state}"), Color::Gray);
+            }
+
+            A::Base(BaseAction::ToggleFakeShellHex) => {
+                debug!("{}", self.user_input.byte_entry_active());
+                self.user_input.toggle_bytes_entry();
+                debug!("{}", self.user_input.byte_entry_active());
             }
 
             A::Base(BaseAction::EscapeKeypress) => {
@@ -2216,7 +2224,7 @@ impl App {
                 let index = self
                     .get_corrected_popup_index()
                     .expect("expected cursor to be in table to get a macro");
-                let (tag, string) = self.macros.filtered_macro_iter().nth(index).unwrap();
+                let (tag, content) = self.macros.filtered_macro_iter().nth(index).unwrap();
                 let tag = tag.to_owned();
                 // let macro_ref: MacroNameTag = macro_binding.into();
 
@@ -2226,13 +2234,15 @@ impl App {
                         return Ok(());
                     }
                     // Putting macro content into buffer.
-                    match string {
-                        _ if string.is_empty() => (),
-                        _ if string.has_bytes => {
-                            todo!()
+                    match content {
+                        _ if content.is_empty() => (),
+                        bytes if content.has_bytes => {
+                            self.user_input
+                                .replace_input_with_bytes(&bytes.unescape_bytes());
+                            self.dismiss_popup();
                         }
                         text => {
-                            self.user_input.replace_input(text.as_str());
+                            self.user_input.replace_input_with_text(text.as_str());
                             self.dismiss_popup();
                         }
                     }
@@ -2241,8 +2251,8 @@ impl App {
                         self.notifs.notify_str("Port isn't ready!", Color::Red);
                         return Ok(());
                     }
-                    match string {
-                        _ if string.is_empty() => {
+                    match content {
+                        _ if content.is_empty() => {
                             self.notifs.notify_str("Macro is empty!", Color::Yellow)
                         }
                         _ => {
@@ -2481,13 +2491,51 @@ impl App {
                     }
                 }
             }
-            Menu::Terminal => {
-                if serial_healthy {
-                    let user_input = self.user_input.value();
+            Menu::Terminal if !serial_healthy => {
+                self.trigger_send_failed_visual()?;
+            }
+            Menu::Terminal if self.settings.behavior.fake_shell => {
+                let user_input = self.user_input.value();
 
-                    if self.settings.behavior.fake_shell {
-                        let user_le = &self.settings.serial.tx_line_ending;
-                        let user_le_bytes = user_le.as_bytes(&self.settings.serial.rx_line_ending);
+                let user_le = &self.settings.serial.tx_line_ending;
+                let user_le_bytes = user_le.as_bytes(&self.settings.serial.rx_line_ending);
+
+                if self.user_input.byte_entry_active() {
+                    // Odd-length inputs can't be parsed to be sent.
+                    if user_input.len() % 2 != 0 {
+                        self.trigger_send_failed_visual()?;
+                        return Ok(());
+                    }
+
+                    let bytes = match hex::decode(user_input) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            error!("Failed parsing user's bytes to send to port! {e}");
+                            self.notifs
+                                .notify_str(format!("Byte parse error! `{e}`"), Color::Red);
+                            return Ok(());
+                        }
+                    };
+
+                    let user_le_bytes = if self.settings.behavior.send_line_ending_with_bytes {
+                        // maybe also if ctrl/shift pressed?
+                        Some(user_le_bytes)
+                    } else {
+                        None
+                    };
+
+                    if user_le_bytes.is_some() || !bytes.is_empty() {
+                        self.serial.send_bytes(bytes.clone(), user_le_bytes)?;
+                        self.buffer.append_user_bytes(
+                            &bytes,
+                            user_le_bytes.unwrap_or(&[]),
+                            false,
+                            false,
+                        );
+                        self.repeating_line_flip.flip();
+                    }
+                } else {
+                    if !user_input.is_empty() || !user_le_bytes.is_empty() {
                         self.serial.send_str(
                             user_input,
                             user_le_bytes,
@@ -2495,17 +2543,16 @@ impl App {
                         )?;
                         self.buffer
                             .append_user_text(user_input, user_le_bytes, false, false);
-                        self.user_input.commit_input_to_history();
+                        self.repeating_line_flip.flip();
                     }
-
-                    self.repeating_line_flip.flip();
-                    // Scroll all the way down
-                    // TODO: Make this behavior a toggle
-                    self.buffer.scroll_by(i32::MIN);
-                } else {
-                    self.trigger_send_failed_visual()?;
                 }
+                self.user_input.commit_input_to_history();
+
+                // Scroll all the way down
+                // TODO: Make this behavior a toggle
+                self.buffer.scroll_by(i32::MIN);
             }
+            Menu::Terminal => (),
         }
         Ok(())
     }
@@ -4101,14 +4148,22 @@ impl App {
         };
 
         if self.settings.behavior.fake_shell {
-            // TODO have this turn into `§` or something when in bytes mode.
-            let input_symbol = Span::raw(">").style(if port_state.is_connected() {
+            let input_symbol_style = if port_state.is_connected() {
                 input_style.not_reversed().green()
             } else {
                 input_style.red()
-            });
+            };
 
-            frame.render_widget(input_symbol, input_symbol_area);
+            let input_symbol = if self.user_input.byte_entry_active() {
+                "§"
+            } else {
+                ">"
+            };
+
+            frame.render_widget(
+                Span::raw(input_symbol).style(input_symbol_style),
+                input_symbol_area,
+            );
         } else if self.popup.is_none() {
             let value = if self.last_raw_sequence.is_empty() {
                 Cow::Borrowed("N/A")
@@ -4135,8 +4190,13 @@ impl App {
             (true, true) => {
                 // Leading space leaves room for full-width cursors.
                 let port_settings_hint = self.keybinds.port_settings_hint();
+                let input_type = if self.user_input.byte_entry_active() {
+                    "Hex Bytes input goes here."
+                } else {
+                    "Text input goes here."
+                };
                 let input_hint = Line::raw(format!(
-                    " Input goes here. `{port_settings_hint}` for port settings.",
+                    " {input_type} `{port_settings_hint}` for port settings.",
                 ))
                 .style(input_style)
                 .dark_gray()
@@ -4144,6 +4204,53 @@ impl App {
                 frame.render_widget(input_hint, input_area);
                 if should_position_cursor {
                     frame.set_cursor_position(input_area.as_position());
+                }
+            }
+            (true, false) if self.user_input.byte_entry_active() => {
+                pub fn visual_scroll(
+                    cursor_pos: usize,
+                    width: usize,
+                    mut chars: impl Iterator<Item = char>,
+                ) -> usize {
+                    let scroll = (cursor_pos).max(width) - width;
+                    let mut uscroll = 0;
+                    while uscroll < scroll {
+                        match chars.next() {
+                            Some(c) => {
+                                uscroll += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                            }
+                            None => break,
+                        }
+                    }
+                    uscroll
+                }
+
+                let spaced_bytes_iter =
+                    itertools::Itertools::intersperse(self.user_input.entered_bytes_iter(), " ");
+                let bytes_text = Line::from_iter(spaced_bytes_iter);
+                let width = input_area.width.max(1).saturating_sub(1); // So the cursor doesn't bleed off the edge
+                let adj_cursor = {
+                    // note: the actual input_box holds no spaces for our bytes,
+                    // which is why we add them in the iterators.
+                    let cursor = self.user_input.input_box().visual_cursor();
+                    // adding however many spaces are in front of the current bytes
+                    cursor + cursor / 2
+                };
+                let input_para = Paragraph::new(bytes_text).style(input_style);
+
+                let spaced_bytes_iter =
+                    itertools::Itertools::intersperse(self.user_input.entered_bytes_iter(), " ");
+                let chars_iter = spaced_bytes_iter.map(|s| s.chars()).flatten();
+
+                let scroll = visual_scroll(adj_cursor, width as usize, chars_iter) as u16;
+
+                frame.render_widget(input_para.scroll((0, scroll as u16)), input_area);
+                if should_position_cursor {
+                    frame.set_cursor_position((
+                        // Put cursor past the end of the input text
+                        input_area.x + ((adj_cursor as u16).max(scroll) - scroll) as u16,
+                        input_area.y,
+                    ));
                 }
             }
             (true, false) => {

@@ -310,8 +310,12 @@ pub struct Behavior {
 
     #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
-    /// Interpret typed escape sequences such as \n or \xFF and send corresponding byte values.
+    /// Interpret typed escape sequences such as \n or \xFF and send corresponding byte values in text inputs.
     pub unescape_typed_bytes: bool,
+
+    #[serde(default)]
+    /// Whether to always send the TX Line Ending when using Fake Shell's byte input mode.
+    pub send_line_ending_with_bytes: bool,
 
     // #[serde(default)]
     // /// Persist Fake Shell's command history across sessions (TODO).

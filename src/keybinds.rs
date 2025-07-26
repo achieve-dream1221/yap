@@ -112,11 +112,13 @@ pub enum BaseAction {
     /// Toggle displaying index and length in hexadecimal format.
     ToggleIndicesHex,
     /// Toggle displaying recieved bytes in a Hex+ASCII view.
-    ToggleHex,
+    ToggleHexView,
     /// Toggle displaying Address+Offset Markers+ASCII label above hex view.
-    ToggleHexHeader,
+    ToggleHexViewHeader,
     /// Toggle the ability to type into a text buffer before sending to device.
     ToggleFakeShell,
+    /// Toggle whether the text buffer accepts bytes in Hex format, or plain text.
+    ToggleFakeShellHex,
     /// Reload all Color Rules.
     ReloadColors,
     /// Reload all Keybinds.
@@ -522,7 +524,7 @@ ctrl-w = "toggle-textwrap"
 ctrl-y = "toggle-timestamps"
 ctrl-d = "toggle-indices"
 
-ctrl-b = "show-behavior"
+ctrl-b = "toggle-fake-shell-hex"
 'ctrl-.' = "show-portsettings"
 
 ctrl-f = "reload-colors"

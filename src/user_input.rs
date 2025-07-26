@@ -1,24 +1,64 @@
+use std::borrow::Cow;
+
 use arboard::Clipboard;
 use crokey::crossterm::event::{Event, KeyEvent};
+use crossterm::event::KeyCode;
 use itertools::Itertools;
-use tracing::warn;
+use tracing::{error, warn};
 use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 
-use crate::traits::LastIndex as _;
+use crate::traits::{LastIndex as _, ToggleBool};
 
 #[derive(Debug, Default)]
 pub struct History {
     pub selected: Option<usize>,
-    pub inner: Vec<String>,
+    pub inner: Vec<HistoryEntry<'static>>,
+}
+
+#[derive(Debug, strum::EnumIs)]
+enum HistoryEntry<'a> {
+    Text(Cow<'a, str>),
+    Bytes(Cow<'a, str>),
+}
+
+impl<'a> HistoryEntry<'a> {
+    pub fn eq_text(&self, other: &str) -> bool {
+        match self {
+            HistoryEntry::Text(text) => text == other,
+            _ => false,
+        }
+    }
+
+    pub fn eq_bytes(&self, other: &str) -> bool {
+        match self {
+            HistoryEntry::Bytes(bytes) => bytes == other,
+            _ => false,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            HistoryEntry::Text(text) => text.as_ref(),
+            HistoryEntry::Bytes(bytes) => bytes.as_ref(),
+        }
+    }
+
+    pub fn as_ref(&self) -> HistoryEntry {
+        match self {
+            HistoryEntry::Text(text) => HistoryEntry::Text(Cow::Borrowed(text.as_ref())),
+            HistoryEntry::Bytes(bytes) => HistoryEntry::Bytes(Cow::Borrowed(bytes.as_ref())),
+        }
+    }
 }
 
 pub struct UserInput {
     input_box: Input,
     pub all_text_selected: bool,
-    pub preserved_input: Option<String>,
+    pub preserved_input: Option<HistoryEntry<'static>>,
     pub search_result: Option<usize>,
     pub history: History,
     pub clipboard: Option<Clipboard>,
+    bytes_input: bool,
 }
 
 impl Default for UserInput {
@@ -37,6 +77,7 @@ impl Default for UserInput {
             search_result: None,
             history: History::new(),
             clipboard,
+            bytes_input: false,
         }
     }
 }
@@ -57,15 +98,23 @@ impl UserInput {
         let entry = self.history.scroll(up);
         // When first entering into history, cache the user's unsent input.
         if entry.is_some() && self.preserved_input.is_none() {
-            self.preserved_input = Some(self.input_box.value().to_owned());
+            let input_to_preserve = self.input_box.value().to_owned();
+            let input_to_preserve = if self.bytes_input {
+                HistoryEntry::Bytes(input_to_preserve.into())
+            } else {
+                HistoryEntry::Text(input_to_preserve.into())
+            };
+            self.preserved_input = Some(input_to_preserve);
         }
         if let Some(entry) = entry {
-            self.input_box = Input::new(entry.to_owned());
+            self.bytes_input = entry.is_bytes();
+            self.input_box = Input::new(entry.as_str().to_owned());
         } else {
             // Returning user's input text when exiting history
             if let Some(preserved) = self.preserved_input.take() {
                 _ = self.search_result.take();
-                self.input_box = preserved.into();
+                self.bytes_input = preserved.is_bytes();
+                self.input_box = preserved.as_str().into();
             }
         }
     }
@@ -76,7 +125,8 @@ impl UserInput {
             && self
                 .preserved_input
                 .as_ref()
-                .map(String::is_empty)
+                .map(HistoryEntry::as_str)
+                .map(str::is_empty)
                 .unwrap_or(true)
         {
             assert!(self.search_result.is_none());
@@ -88,11 +138,11 @@ impl UserInput {
         }
         let history_len = self.history.inner.len();
 
-        let find = |last: usize, query: &str| {
+        let find = |last: usize, query: &str, bytes: bool| {
             self.history.inner[..last]
                 .iter()
                 .rev()
-                .find_position(|h| h.starts_with(query))
+                .find_position(|h| h.is_bytes() == bytes && h.as_str().starts_with(query))
                 .map(|(i, h)| (last - i - 1, h))
         };
 
@@ -101,9 +151,11 @@ impl UserInput {
                 if self.input_box.value().is_empty() {
                     return;
                 }
-                find(history_len, self.input_box.value())
+                find(history_len, self.input_box.value(), self.bytes_input)
             }
-            (Some(last_index), Some(saved_query)) => find(*last_index, saved_query.as_str()),
+            (Some(last_index), Some(saved_query)) => {
+                find(*last_index, saved_query.as_str(), saved_query.is_bytes())
+            }
             (Some(_), None) => unreachable!(),
         };
 
@@ -111,11 +163,63 @@ impl UserInput {
 
         if let Some((new_index, result_text)) = found {
             if self.preserved_input.is_none() {
-                self.preserved_input = Some(self.input_box.value().to_owned());
+                let input_to_preserve = self.input_box.value().to_owned();
+                let input_to_preserve = if self.bytes_input {
+                    HistoryEntry::Bytes(input_to_preserve.into())
+                } else {
+                    HistoryEntry::Text(input_to_preserve.into())
+                };
+                self.preserved_input = Some(input_to_preserve);
             }
             self.search_result = Some(new_index);
             self.input_box = result_text.as_str().into();
         }
+    }
+    pub fn entered_bytes_iter(&self) -> impl Iterator<Item = &str> {
+        if !self.bytes_input {
+            panic!("Should only be called when bytes_input is active!")
+        }
+
+        self.input_box
+            .value()
+            .as_bytes()
+            .chunks(2)
+            // Safety: Only values in the String should be 0-9, A-F (single-byte ASCII values).
+            .map(|chunk| unsafe { std::str::from_utf8_unchecked(chunk) })
+    }
+    pub fn toggle_bytes_entry(&mut self) {
+        // Flipping from false -> true
+        if self.bytes_input.flip() {
+            self.replace_input_with_bytes(&self.input_box.value().as_bytes().to_owned());
+        } else {
+            // true -> false
+            let value = if self.value().len() % 2 == 0 {
+                self.value()
+            } else {
+                let len = self.value().len();
+                &self.value()[..len - 1]
+            };
+            let bytes = match hex::decode(value) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    error!("Error converting input to bytes from hex ({e}), clearing.");
+                    self.clear();
+                    return;
+                }
+            };
+
+            let Some(utf8_chunk) = bytes.utf8_chunks().next() else {
+                error!("Error converting input from bytes to any text, clearing.");
+                self.clear();
+                return;
+            };
+
+            // Could replace with a blank input if nothing valid found, which is fine.
+            self.replace_input_with_text(utf8_chunk.valid());
+        }
+    }
+    pub fn byte_entry_active(&self) -> bool {
+        self.bytes_input
     }
     pub fn clear_history_selection(&mut self) {
         self.history.clear_selection();
@@ -123,21 +227,31 @@ impl UserInput {
         self.search_result = None;
         self.all_text_selected = false;
     }
-    pub fn commit_input_to_history(&mut self) {
-        self.history.push(self.input_box.value());
-        self.clear();
-    }
     #[cfg(feature = "macros")]
-    pub fn replace_input(&mut self, text: &str) {
+    pub fn replace_input_with_text(&mut self, text: &str) {
         self.clear_history_selection();
         self.input_box = text.into();
+        self.bytes_input = false;
+    }
+    #[cfg(feature = "macros")]
+    pub fn replace_input_with_bytes(&mut self, bytes: &[u8]) {
+        let hex = hex::encode_upper(bytes);
+        self.input_box = hex.into();
+        self.bytes_input = true;
     }
     pub fn append_to_input(&mut self, text: &str) {
         self.clear_history_selection();
         let current = self.input_box.value();
         self.input_box = format!("{current}{text}").into();
     }
-    pub fn consume_typing_event(&mut self, key: KeyEvent) {
+    pub fn consume_typing_event(&mut self, mut key: KeyEvent) {
+        if self.bytes_input {
+            match &mut key.code {
+                KeyCode::Char(c) if !c.is_ascii_hexdigit() => return,
+                KeyCode::Char(c) if c.is_ascii_hexdigit() => *c = c.to_ascii_uppercase(),
+                _ => (),
+            }
+        }
         match self.input_box.handle_event(&Event::Key(key)) {
             // If we changed something in the value when handling the key event,
             // we should clear the user_history selection.
@@ -157,38 +271,59 @@ impl UserInput {
     pub fn input_box(&self) -> &Input {
         &self.input_box
     }
+    pub fn commit_input_to_history(&mut self) {
+        self.history.push(self.input_box.value(), self.bytes_input);
+        self.clear();
+    }
 }
 
 impl History {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn push(&mut self, entry: &str) {
+    pub fn push(&mut self, entry: &str, bytes: bool) {
         if entry.is_empty() {
             return;
         }
         // Checking if the given string exists at the end of our buffer
-        if self.inner.last().is_some_and(|s| s.eq(entry)) {
+        if self.inner.last().is_some_and(|s| {
+            if bytes {
+                s.eq_bytes(entry)
+            } else {
+                s.eq_text(entry)
+            }
+        }) {
             return;
         }
         // If it's instead further up the history, let's move it down to the bottom instead
         // TODO toggle for this behavior?
-        if let Some(index) = self.inner.iter().position(|s| s.eq(entry)) {
+        if let Some(index) = self.inner.iter().position(|s| {
+            if bytes {
+                s.eq_bytes(entry)
+            } else {
+                s.eq_text(entry)
+            }
+        }) {
             let existing = self.inner.remove(index);
             self.inner.push(existing);
         } else {
             // Doesn't exist, push an owned version.
-            self.inner.push(entry.to_owned());
+            let entry = if bytes {
+                HistoryEntry::Bytes(entry.to_owned().into())
+            } else {
+                HistoryEntry::Text(entry.to_owned().into())
+            };
+            self.inner.push(entry);
         }
     }
-    pub fn get_selected(&self) -> Option<&str> {
+    fn get_selected(&self) -> Option<HistoryEntry> {
         self.selected
-            .and_then(|index| self.inner.get(index).map(String::as_str))
+            .and_then(|index| self.inner.get(index).map(HistoryEntry::as_ref))
     }
     fn clear_selection(&mut self) {
         self.selected = None;
     }
-    pub fn scroll(&mut self, up: bool) -> Option<&str> {
+    fn scroll(&mut self, up: bool) -> Option<HistoryEntry> {
         if self.inner.is_empty() {
             return None;
         }
