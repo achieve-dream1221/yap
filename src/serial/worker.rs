@@ -631,6 +631,8 @@ impl SerialWorker {
 
         ports.retain(|p| match &p.port_type {
             _ if self.ignored_devices.name.contains(&p.port_name) => false,
+
+            #[cfg(unix)]
             _ if !self.ignored_devices.show_ttys_ports && p.port_name.starts_with("/dev/ttyS") => {
                 false
             }
