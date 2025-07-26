@@ -36,6 +36,7 @@ use struct_table::{ArrowKey, StructTable};
 use strum::{VariantArray, VariantNames};
 use takeable::Takeable;
 
+use tinyvec::ArrayVec;
 use tracing::{debug, error, info, trace, warn};
 use tui_big_text::{BigText, PixelSize};
 use tui_input::{Input, backend::crossterm::EventHandler};
@@ -300,8 +301,8 @@ pub struct App {
     repeating_line_flip: bool,
     failed_send_at: Option<Instant>,
     escape_next_keypress: bool,
-    // todo tinyvec
-    last_raw_sequence: Vec<u8>,
+
+    last_raw_sequence: ArrayVec<[u8; 16]>,
 
     #[cfg(feature = "macros")]
     macros: Macros,
@@ -459,7 +460,7 @@ impl App {
             repeating_line_flip: false,
             failed_send_at: None,
             escape_next_keypress: false,
-            last_raw_sequence: Vec::new(),
+            last_raw_sequence: ArrayVec::new(),
 
             #[cfg(feature = "macros")]
             macros,
@@ -1309,7 +1310,7 @@ impl App {
             let mut buf = [0; 16];
             if let Ok(n) = event.encode(&mut buf, terminput::Encoding::Xterm) {
                 self.serial.send_bytes(buf[..n].to_owned(), None)?;
-                self.last_raw_sequence = buf[..n].to_owned();
+                self.last_raw_sequence = ArrayVec::from_array_len(buf, n);
             }
         } else {
             self.trigger_send_failed_visual()?;

@@ -335,7 +335,7 @@ pub struct Behavior {
     #[cfg(feature = "macros")]
     #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]
-    /// Fall back to macros with same name if category missing.
+    /// Allow entering Macros in keybinds without a category.
     pub fuzzy_macro_match: bool,
 }
 
