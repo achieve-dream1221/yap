@@ -1,6 +1,6 @@
 #[cfg(feature = "defmt")]
 use std::sync::Arc;
-use std::{cell::Cell, cmp::Ordering, ops::Range, thread::JoinHandle};
+use std::{cell::Cell, cmp::Ordering, ops::Range};
 
 use ansi_to_tui::{IntoText, LossyFlavor};
 use bstr::{ByteSlice, ByteVec};
@@ -653,7 +653,7 @@ pub struct Buffer {
     #[cfg(feature = "logging")]
     pub log_handle: LoggingHandle,
     #[cfg(feature = "logging")]
-    log_thread: Takeable<JoinHandle<()>>,
+    log_thread: Takeable<std::thread::JoinHandle<()>>,
     #[cfg(feature = "logging")]
     log_settings: Logging,
     #[cfg(feature = "defmt")]

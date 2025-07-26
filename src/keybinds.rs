@@ -661,14 +661,17 @@ impl Keybinds {
                 actions[0]
                     .parse::<AppAction>()
                     .ok()
-                    .map_or(false, |a| a == action)
+                    .is_some_and(|a| a == action)
             })
             .map(|(key_combo, _)| *key_combo)
     }
     fn fill_hints(&mut self) {
         // We require this to be bound since otherwise the user can get themselves stuck.
         // Ideally this never overrides a user's action, but c'est la vie.
-        if let None = self.find_key_with_single_action(BaseAction::EscapeKeypress.into()) {
+        if self
+            .find_key_with_single_action(BaseAction::EscapeKeypress.into())
+            .is_none()
+        {
             self.keybindings.insert(
                 DEFAULT_KEYPRESS_ESCAPE,
                 vec![BaseAction::EscapeKeypress.to_string()],
@@ -739,7 +742,7 @@ impl Keybinds {
                     None
                 }
             })
-            .map_or(false, |parsed_action| action == parsed_action)
+            .is_some_and(|parsed_action| action == parsed_action)
     }
 }
 

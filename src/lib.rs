@@ -154,9 +154,7 @@ fn run_inner(
 
         let filter_and_send = |event: Event| -> Result<(), SendError> {
             let send_event = |crossterm_event: CrosstermEvent| -> Result<(), SendError> {
-                crossterm_tx
-                    .send(crossterm_event.into())
-                    .map_err(|_| SendError)?;
+                crossterm_tx.send(crossterm_event).map_err(|_| SendError)?;
                 Ok(())
             };
             match event {

@@ -658,14 +658,20 @@ impl App {
                     // self.notifs.notify_str("Connected to port!", Color::Green);
                 }
 
-                if let Some(current_port) = &self.serial.port_status.load().current_port {
+                {
+                    let port_status_guard = self.serial.port_status.load();
+
+                    if port_status_guard.current_port.is_none() {
+                        error!("Was told about a port connection but no current port exists!");
+                        panic!("Was told about a port connection but no current port exists!");
+                    }
+
                     #[cfg(feature = "logging")]
-                    self.buffer
-                        .log_handle
-                        .log_port_connected(current_port.to_owned(), reconnect.clone())?;
-                } else {
-                    error!("Was told about a port connection but no current port exists!");
-                    panic!("Was told about a port connection but no current port exists!");
+                    if let Some(current_port) = &port_status_guard.current_port {
+                        self.buffer
+                            .log_handle
+                            .log_port_connected(current_port.to_owned(), reconnect.clone())?;
+                    }
                 }
 
                 // Dismiss attempt reconnect prompt if visible.
@@ -2534,18 +2540,17 @@ impl App {
                         );
                         self.repeating_line_flip.flip();
                     }
-                } else {
-                    if !user_input.is_empty() || !user_le_bytes.is_empty() {
-                        self.serial.send_str(
-                            user_input,
-                            user_le_bytes,
-                            self.settings.behavior.unescape_typed_bytes,
-                        )?;
-                        self.buffer
-                            .append_user_text(user_input, user_le_bytes, false, false);
-                        self.repeating_line_flip.flip();
-                    }
+                } else if !user_input.is_empty() || !user_le_bytes.is_empty() {
+                    self.serial.send_str(
+                        user_input,
+                        user_le_bytes,
+                        self.settings.behavior.unescape_typed_bytes,
+                    )?;
+                    self.buffer
+                        .append_user_text(user_input, user_le_bytes, false, false);
+                    self.repeating_line_flip.flip();
                 }
+
                 self.user_input.commit_input_to_history();
 
                 // Scroll all the way down
@@ -4240,7 +4245,7 @@ impl App {
 
                 let spaced_bytes_iter =
                     itertools::Itertools::intersperse(self.user_input.entered_bytes_iter(), " ");
-                let chars_iter = spaced_bytes_iter.map(|s| s.chars()).flatten();
+                let chars_iter = spaced_bytes_iter.flat_map(|s| s.chars());
 
                 let scroll = visual_scroll(adj_cursor, width as usize, chars_iter) as u16;
 
@@ -4271,16 +4276,15 @@ impl App {
                 }
             }
             (false, _) if self.escape_next_keypress => {
-                let input_hint = Line::raw(format!(
-                    "Escaping next keypress, will not be sent to connected device.",
-                ))
-                .style(input_style)
-                .yellow()
-                .centered();
+                let input_hint =
+                    Line::raw("Escaping next keypress, will not be sent to connected device.")
+                        .style(input_style)
+                        .yellow()
+                        .centered();
                 frame.render_widget(input_hint, whole_input_area);
             }
             (false, _) if self.popup.is_some() => {
-                let input_hint = Line::raw(format!("Popup is active, not sending keypresses.",))
+                let input_hint = Line::raw("Popup is active, not sending keypresses.")
                     .style(input_style)
                     .dark_gray()
                     .centered();

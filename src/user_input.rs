@@ -11,8 +11,8 @@ use crate::traits::{LastIndex as _, ToggleBool};
 
 #[derive(Debug, Default)]
 pub struct History {
-    pub selected: Option<usize>,
-    pub inner: Vec<HistoryEntry<'static>>,
+    selected: Option<usize>,
+    inner: Vec<HistoryEntry<'static>>,
 }
 
 #[derive(Debug, strum::EnumIs)]
@@ -53,12 +53,14 @@ impl<'a> HistoryEntry<'a> {
 
 pub struct UserInput {
     input_box: Input,
-    pub all_text_selected: bool,
-    pub preserved_input: Option<HistoryEntry<'static>>,
-    pub search_result: Option<usize>,
-    pub history: History,
-    pub clipboard: Option<Clipboard>,
     bytes_input: bool,
+
+    pub all_text_selected: bool,
+    pub clipboard: Option<Clipboard>,
+
+    history: History,
+    preserved_input: Option<HistoryEntry<'static>>,
+    search_result: Option<usize>,
 }
 
 impl Default for UserInput {
@@ -180,8 +182,7 @@ impl UserInput {
             panic!("Should only be called when bytes_input is active!")
         }
 
-        self.input_box
-            .value()
+        self.value()
             .as_bytes()
             .chunks(2)
             // Safety: Only values in the String should be 0-9, A-F (single-byte ASCII values).
@@ -190,7 +191,8 @@ impl UserInput {
     pub fn toggle_bytes_entry(&mut self) {
         // Flipping from false -> true
         if self.bytes_input.flip() {
-            self.replace_input_with_bytes(&self.input_box.value().as_bytes().to_owned());
+            let input_bytes = self.value().as_bytes().to_owned();
+            self.replace_input_with_bytes(&input_bytes);
         } else {
             // true -> false
             let value = if self.value().len() % 2 == 0 {
@@ -227,13 +229,11 @@ impl UserInput {
         self.search_result = None;
         self.all_text_selected = false;
     }
-    #[cfg(feature = "macros")]
     pub fn replace_input_with_text(&mut self, text: &str) {
         self.clear_history_selection();
         self.input_box = text.into();
         self.bytes_input = false;
     }
-    #[cfg(feature = "macros")]
     pub fn replace_input_with_bytes(&mut self, bytes: &[u8]) {
         let hex = hex::encode_upper(bytes);
         self.input_box = hex.into();

@@ -1032,6 +1032,7 @@ impl SerialWorker {
         Ok(())
     }
 
+    #[cfg(feature = "espflash")]
     fn return_native_port(&mut self, mut port: NativePort) -> Result<(), WorkerError> {
         let mut status = self.shared_status.load().as_ref().clone();
 
