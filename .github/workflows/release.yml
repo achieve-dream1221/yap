@@ -34,10 +34,7 @@ jobs:
             - name: Conditionally add -pre to built version number
               if: endsWith(github.event.release.tag_name, '-pre')
               run: |
-                  cargo install cargo-edit --no-default-features --features set-version
-                  ORIGINAL_VERSION=$(cargo pkgid | sed -n 's/.*#//p')
-                  NEW_VERSION="${ORIGINAL_VERSION}-pre"
-                  cargo set-version "$NEW_VERSION"
+                  sed -i -E 's/^(version = ")([^"]+)"/\1\2-pre"/' Cargo.toml
             - uses: taiki-e/upload-rust-binary-action@v1
               with:
                   bin: yap
