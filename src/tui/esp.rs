@@ -583,7 +583,7 @@ impl EspFlashHelper {
     pub fn device_info_shown(&self) -> bool {
         matches!(&self.popup, Some(EspPopup::DeviceInfo(_)))
     }
-    pub fn render_espflash(&self, frame: &mut Frame, screen: Rect) {
+    pub fn render_espflash_popups(&self, frame: &mut Frame, screen: Rect) {
         let center_area = centered_rect_size(
             Size {
                 width: 60,

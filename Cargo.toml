@@ -1,12 +1,15 @@
 [package]
 name = "yap"
 repository = "https://github.com/nullstalgia/yap"
-version = "0.1.0-pre.1"
+version = "0.1.0-pre.0"
+# Note to self, if doing a pre-release:
+# start at: -pre.0
+# just -pre has undesirable/inconsistent behavior
 edition = "2024"
 
 [features]
-default = ["macros", "espflash", "defmt_watch", "logging"]
-# Allow flashing ESP32 targets with binary and ELF files
+default = []
+# Allow flashing connected ESP32 targets with binary and ELF files
 espflash = ["dep:espflash"]
 logging = []
 defmt = [
@@ -17,9 +20,18 @@ defmt = [
     "dep:notify",
     "dep:native-dialog",
 ]
-defmt_watch = ["defmt", "dep:notify"]
+defmt-watch = ["defmt", "dep:notify"]
 macros = []
+# Application will default to placing configs/logs adjacent to executable
 portable = []
+# defaults to Lite.
+self-replace = ["dep:self-replace", "portable", "yap-lite"]
+
+# GitHub release flavors
+# Full should have _all_ features enabled and available
+yap-full = ["yap-lite", "espflash", "defmt-watch"]
+# Lite trims things not everyone might want (i.e. espflash and defmt support)
+yap-lite = ["self-replace", "logging", "macros"]
 
 [dependencies]
 ansi-to-tui = { git = "https://github.com/nullstalgia/ansi-to-tui", branch = "lossy_and_line_endings" }
@@ -56,6 +68,7 @@ espflash = { version = "4.0.1", optional = true, default-features = false, featu
 # ] }
 fs-err = "3.1.0"
 hex = "0.4.3"
+http = "1.3.1"
 human-panic = "2.0.2"
 indexmap = { version = "2.9.0", features = ["serde"] }
 # int-enum = { git = "https://github.com/nullstalgia/int-enum-rs", branch = "feat/colors-and-discriminators" }
@@ -71,14 +84,17 @@ notify = { version = "8.0.0", features = [
     "crossbeam-channel",
 ], optional = true }
 num-integer = "0.1.46"
+opener = "0.8.2"
 # log = "0.4.25"
 # num_enum = "0.7.3"
 ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
 ratatui-explorer = { version = "0.2.1", optional = true }
 ratatui-macros = "0.6.0"
 regex = "1.11.1"
+reqwest = "0.12.22"
 # regex-lite = "0.1.6"
 rolling-file = "0.2.0"
+self-replace = { version = "1.5.0", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 # serde-inline-default = "0.2.3"
 # technically older but i don't suffer from the bug it's fixing
@@ -86,6 +102,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde-inline-default = { git = "https://github.com/kaphula/serde-inline-default", rev = "fa7656d5335b9c31febaddbf071995e93944f33f" }
 serde_with = "3.14.0"
 serialport = { version = "4.7.2", features = ["serde"] }
+sha2 = "0.10.9"
 strip-ansi-escapes = "0.2.1"
 struct-table = { path = "struct-table" }
 strum = { version = "0.27", features = ["derive"] }
@@ -107,9 +124,21 @@ tui-input = "0.14"
 unicode-width = "0.2.0"
 virtual-serialport = "0.1.3"
 
+[target.'cfg(windows)'.dependencies]
+self_update = { version = "0.42.0", features = [
+    "compression-zip-bzip2",
+    "compression-zip-deflate",
+] }
+
+[target.'cfg(unix)'.dependencies]
+self_update = { version = "0.42.0", features = ["compression-flate2"] }
+
 # PR #18 finally got merged! But still not on crates.io yet.
 [patch.crates-io]
 indenter = { git = "https://github.com/eyre-rs/indenter", rev = "9ed7e012c678ac58e3204d01af6e23696cf9795d" }
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "1.4"
 
 [build-dependencies]
 copy_to_output = { git = "https://github.com/dougcooper/copy_to_output", rev = "270cffcb13b6e3716a3309515b20f0d70137561c" }

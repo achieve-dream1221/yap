@@ -1,3 +1,9 @@
+#![allow(clippy::mut_range_bound)]
+// Due to the `breaks` in determine_bytes_per_line not being
+// seen by the lint, causing a false-positive.
+// In addition, placing the allow directive inside the function
+// was't silencing it, so I'm making it file-wide.
+
 use std::cmp::Ordering;
 
 use itertools::{Either, Itertools};
@@ -345,10 +351,6 @@ impl Buffer {
         Ok(())
     }
 
-    // pub fn rx_tx_ending_bytes(&self) -> &[u8] {
-    //     self.line_ending.as_ref().as_bytes()
-    // }
-
     pub fn reload_color_rules(&mut self) -> Result<(), ColorRuleLoadError> {
         self.color_rules = ColorRules::load_from_file(config_adjacent_path(COLOR_RULES_PATH))?;
         self.reconsume_raw_buffer();
@@ -454,8 +456,6 @@ impl Buffer {
                     .saturating_sub(1) // space between bytes
                 ;
 
-                #[allow(clippy::mut_range_bound)]
-                // doesn't see the break right there >:C
                 if bytes_per_line != 0 && bytes_per_line % 8 == 0 {
                     if remaining_width < 4 {
                         break;
@@ -495,9 +495,9 @@ impl Buffer {
         let [
             addresses_area,
             line_1_area,
-            opt_spacing_1,
+            _opt_spacing_1,
             hex_area,
-            opt_spacing_2,
+            _opt_spacing_2,
             line_2_area,
             ascii_area,
             mut scrollbar_area

@@ -6,11 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(feature = "defmt")]
-use camino::Utf8Path;
 use chrono::{DateTime, Local};
-#[cfg(feature = "espflash")]
-use color_eyre::eyre::Context;
+
 use color_eyre::eyre::Result;
 use crokey::{KeyCombination, key};
 use crossbeam::channel::{Receiver, Select, Sender, TrySendError};
@@ -29,8 +26,7 @@ use ratatui::{
         ScrollbarState, Table, TableState,
     },
 };
-#[cfg(feature = "defmt")]
-use ratatui_explorer::FileExplorer;
+
 use ratatui_macros::{horizontal, line, span, vertical};
 use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
 use struct_table::{ArrowKey, StructTable};
@@ -42,9 +38,6 @@ use tracing::{debug, error, info, trace, warn};
 use tui_big_text::{BigText, PixelSize};
 use tui_input::{Input, backend::crossterm::EventHandler};
 
-#[cfg(feature = "defmt")]
-#[cfg(feature = "defmt_watch")]
-use crate::buffer::defmt::elf_watcher::{ElfWatchHandle, ElfWatcherMissing};
 #[cfg(feature = "defmt")]
 #[cfg(feature = "logging")]
 use crate::buffer::{LoggingHandle, LoggingWorkerMissing};
@@ -72,44 +65,49 @@ use crate::{
         show_keybinds,
         single_line_selector::{SingleLineSelector, SingleLineSelectorState, StateBottomed},
     },
+    updates::{UpdateBeginPrompt, UpdateCheckConsentPrompt, UpdateHandle},
     user_input::UserInput,
 };
+
+#[cfg(all(windows, feature = "self-replace"))]
+use crate::updates::UpdateLaunchPrompt;
 
 #[cfg(feature = "defmt")]
 use crate::{
     buffer::defmt::{DefmtDecoder, DefmtLoadError, LocationsError},
-    tui::defmt::{DefmtRecentElfs, DefmtRecentError},
+    keybinds::DefmtSelectAction,
+    settings::Defmt,
+    tui::defmt::{DefmtHelpers, DefmtRecentElfs, DefmtRecentError},
 };
-
 #[cfg(feature = "defmt")]
-use crate::{keybinds::DefmtSelectAction, settings::Defmt, tui::defmt::DefmtHelpers};
+use {camino::Utf8Path, ratatui_explorer::FileExplorer};
 
-#[cfg(feature = "defmt_watch")]
-use crate::buffer::defmt::elf_watcher::ElfWatchEvent;
-
-#[cfg(feature = "macros")]
-use crate::macros::{MacroNameTag, MacroNotFound, Macros};
+#[cfg(feature = "defmt-watch")]
+use crate::buffer::defmt::elf_watcher::{ElfWatchEvent, ElfWatchHandle, ElfWatcherMissing};
 
 #[cfg(feature = "macros")]
-use crate::keybinds::MacroBuiltinAction;
+use crate::{
+    keybinds::MacroBuiltinAction,
+    macros::{MacroNameTag, MacroNotFound, Macros},
+};
 
 #[cfg(feature = "logging")]
-use crate::settings::Logging;
-#[cfg(feature = "logging")]
-use crate::tui::logging::sync_logs_button;
-#[cfg(feature = "logging")]
-use crate::{buffer::LoggingEvent, keybinds::LoggingAction};
-
-#[cfg(feature = "espflash")]
-use crate::serial::{
-    esp::{EspEvent, EspRestartType},
-    handle::SerialWorkerMissing,
+use crate::{
+    buffer::LoggingEvent, keybinds::LoggingAction, settings::Logging,
+    tui::logging::sync_logs_button,
 };
 
 #[cfg(feature = "espflash")]
-use crate::keybinds::EspAction;
-#[cfg(feature = "espflash")]
-use crate::tui::esp::{self, EspFlashHelper};
+use crate::{
+    keybinds::EspAction,
+    serial::{
+        esp::{EspEvent, EspRestartType},
+        handle::SerialWorkerMissing,
+    },
+    tui::esp::{self, EspFlashHelper},
+};
+
+use crate::updates::UpdateEvent;
 
 #[derive(Clone, Debug)]
 pub enum CrosstermEvent {
@@ -133,10 +131,11 @@ pub enum Event {
     Tick(Tick),
     #[cfg(feature = "logging")]
     Logging(LoggingEvent),
-    #[cfg(feature = "defmt_watch")]
+    #[cfg(feature = "defmt-watch")]
     DefmtElfWatch(ElfWatchEvent),
     #[cfg(feature = "defmt")]
     DefmtFromFilePicker(camino::Utf8PathBuf),
+    Updates(UpdateEvent),
     Quit,
 }
 
@@ -204,8 +203,8 @@ pub enum ToolMenu {
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, PartialEq, Eq)]
-enum Popup {
+#[derive(Debug, PartialEq)]
+pub enum Popup {
     SettingsMenu(SettingsMenu),
     #[cfg(any(feature = "espflash", feature = "macros"))]
     ToolMenu(ToolMenu),
@@ -220,6 +219,14 @@ enum Popup {
     IgnoreByUsb(String, UsbPortInfo),
     IgnoreByName(String),
     ConnectionFailed(String),
+
+    UpdateCheckConsentPrompt,
+
+    UpdateBeginPrompt,
+    #[cfg(all(windows, feature = "self-replace"))]
+    UpdateLaunchPrompt,
+    #[cfg(feature = "self-replace")]
+    UpdateDownloading(f64),
 }
 
 #[cfg(any(feature = "espflash", feature = "macros"))]
@@ -283,11 +290,11 @@ pub struct App {
     baud_selection_state: SingleLineSelectorState,
     baud_input: Input,
 
-    popup: Option<Popup>,
+    pub popup: Option<Popup>,
     popup_menu_scroll: usize,
     popup_hint_scroll: i32,
 
-    notifs: Notifications,
+    pub notifs: Notifications,
     ports: Vec<SerialPortInfo>,
     serial: SerialHandle,
     serial_thread: Takeable<JoinHandle<()>>,
@@ -310,7 +317,7 @@ pub struct App {
     action_queue: VecDeque<(Option<KeyCombination>, Action)>,
 
     user_broke_connection: bool,
-    settings: Settings,
+    pub settings: Settings,
     scratch: Settings,
     keybinds: Keybinds,
 
@@ -322,6 +329,10 @@ pub struct App {
 
     ctrl_c_tx: Sender<()>,
     tcp_log_health: Arc<TcpStreamHealth>,
+
+    pub update_found_version: Option<String>,
+    pub update_worker: UpdateHandle,
+    allow_first_time_setup: bool,
 }
 
 impl App {
@@ -332,6 +343,7 @@ impl App {
         crossterm_rx: Receiver<CrosstermEvent>,
         settings: Settings,
         tcp_log_health: Arc<TcpStreamHealth>,
+        allow_first_time_setup: bool,
     ) -> Result<Self> {
         let keybinds = Keybinds::build()?;
 
@@ -378,7 +390,7 @@ impl App {
 
         #[cfg(feature = "defmt")]
         let mut defmt_helpers = DefmtHelpers::build(
-            #[cfg(feature = "defmt_watch")]
+            #[cfg(feature = "defmt-watch")]
             event_tx.clone(),
         )?;
 
@@ -407,7 +419,7 @@ impl App {
                 &mut defmt_helpers.recent_elfs,
                 #[cfg(feature = "logging")]
                 &buffer.log_handle,
-                #[cfg(feature = "defmt_watch")]
+                #[cfg(feature = "defmt-watch")]
                 &mut defmt_helpers.watcher_handle,
             ) {
                 Ok(None) => (),
@@ -435,6 +447,13 @@ impl App {
             }
             macros
         };
+
+        let update_worker = UpdateHandle::new(event_tx.clone());
+
+        if settings.updates.allow_checking_for_updates {
+            update_worker.query_latest(settings.updates.allow_pre_releases)?;
+        }
+
         // debug!("{buffer:#?}");
         Ok(Self {
             state: RunningState::Running,
@@ -476,7 +495,10 @@ impl App {
             crossterm_rx,
 
             #[cfg(feature = "espflash")]
-            espflash: EspFlashHelper::build().wrap_err("failed to load espflash profiles")?,
+            espflash: {
+                use color_eyre::eyre::Context;
+                EspFlashHelper::build().wrap_err("failed to load espflash profiles")?
+            },
 
             #[cfg(feature = "defmt")]
             defmt_helpers,
@@ -485,12 +507,19 @@ impl App {
 
             ctrl_c_tx,
             tcp_log_health,
+
+            update_found_version: None,
+            update_worker,
+            allow_first_time_setup,
         })
     }
     fn is_running(&self) -> bool {
         self.state == RunningState::Running
     }
     pub fn run(&mut self, mut terminal: Terminal<impl Backend>) -> Result<()> {
+        if self.allow_first_time_setup {
+            self.first_time_setup();
+        }
         // Get initial size of buffer.
         self.buffer.update_terminal_size(&mut terminal)?;
         let mut max_draw = Duration::default();
@@ -866,31 +895,69 @@ impl App {
             #[cfg(feature = "defmt")]
             Event::DefmtFromFilePicker(elf_path) => self.try_load_defmt_elf(
                 &elf_path,
-                #[cfg(feature = "defmt_watch")]
+                #[cfg(feature = "defmt-watch")]
                 false,
             ),
-            #[cfg(feature = "defmt_watch")]
+            #[cfg(feature = "defmt-watch")]
             Event::DefmtElfWatch(ElfWatchEvent::ElfUpdated(elf_path)) => {
                 if self.settings.defmt.watch_elf_for_changes {
                     info!("ELF File Watch triggered, reloading ELF at {elf_path}");
 
                     self.try_load_defmt_elf(
                         &elf_path,
-                        #[cfg(feature = "defmt_watch")]
+                        #[cfg(feature = "defmt-watch")]
                         true,
                     );
                 } else {
                     trace!("Ignoring ELF file watch event!");
                 }
             }
-            #[cfg(feature = "defmt_watch")]
+            #[cfg(feature = "defmt-watch")]
             Event::DefmtElfWatch(ElfWatchEvent::Error(err)) => {
                 self.notifs.notify_str(err, Color::Red);
+            }
+
+            Event::Updates(UpdateEvent::UpToDate) => {
+                info!("App is up-to-date!");
+            }
+            Event::Updates(UpdateEvent::UpdateFound(new)) => {
+                if new != self.settings.updates.skipped_version {
+                    info!("Update found! v{new}");
+                    self.update_found_version = Some(new);
+                } else {
+                    info!("Update found, but ignoring! (v{new})");
+                }
+            }
+            Event::Updates(UpdateEvent::UpdateCheckError(e)) => {
+                // TODO maybe red version number?
+                // or -> ??
+                let report = color_eyre::Report::new(e);
+                error!("error when checking for update: {report:#}");
+            }
+            #[cfg(feature = "self-replace")]
+            Event::Updates(UpdateEvent::DownloadProgress(percentage)) => {
+                self.popup = Some(Popup::UpdateDownloading(percentage))
+            }
+            #[cfg(feature = "self-replace")]
+            Event::Updates(UpdateEvent::UpdateError(e)) => {
+                error!("error when performing update: {e}");
+                Err(e)?
+            }
+
+            #[cfg(all(windows, feature = "self-replace"))]
+            Event::Updates(UpdateEvent::ReadyToLaunch) => {
+                info!("Ready to start new version!");
+                self.popup = Some(Popup::UpdateLaunchPrompt)
+            }
+            #[cfg(all(unix, feature = "self-replace"))]
+            Event::Updates(UpdateEvent::ReadyToLaunch) => {
+                info!("Starting new version!");
+                self.update_worker.start_new_version()?;
             }
         }
         Ok(())
     }
-    fn shutdown(&mut self) {
+    pub fn shutdown(&mut self) {
         self.state = RunningState::Finished;
     }
     #[cfg(feature = "macros")]
@@ -1064,7 +1131,7 @@ impl App {
 
                         self.try_load_defmt_elf(
                             &elf_path,
-                            #[cfg(feature = "defmt_watch")]
+                            #[cfg(feature = "defmt-watch")]
                             false,
                         );
 
@@ -1117,12 +1184,12 @@ impl App {
                     _ => self.escape_next_keypress = false,
                 }
             }
-            (Menu::Terminal, Some(Popup::DisconnectPrompt)) if !is_ctrl_c(&key_event) => {
+            (_, Some(Popup::DisconnectPrompt)) if !is_ctrl_c(&key_event) => {
                 if let Some(pressed) = DisconnectPrompt::from_key_code(key_event.code) {
                     self.disconnect_prompt_choice(pressed)?;
                 }
             }
-            (Menu::Terminal, Some(Popup::AttemptReconnectPrompt)) if !is_ctrl_c(&key_event) => {
+            (_, Some(Popup::AttemptReconnectPrompt)) if !is_ctrl_c(&key_event) => {
                 if let Some(pressed) = AttemptReconnectPrompt::from_key_code(key_event.code) {
                     let shift_pressed = key_event.modifiers.contains(KeyModifiers::SHIFT);
                     let ctrl_pressed = key_event.modifiers.contains(KeyModifiers::CONTROL);
@@ -1130,14 +1197,30 @@ impl App {
                     self.reconnect_prompt_choice(pressed, shift_pressed, ctrl_pressed)?;
                 }
             }
-            (Menu::Terminal, Some(Popup::IgnoreByName(_))) if !is_ctrl_c(&key_event) => {
+            (_, Some(Popup::IgnoreByName(_))) if !is_ctrl_c(&key_event) => {
                 if let Some(pressed) = IgnorePortByNamePrompt::from_key_code(key_event.code) {
                     self.ignore_port_name_prompt_choice(pressed)?;
                 }
             }
-            (Menu::Terminal, Some(Popup::IgnoreByUsb(_, _))) if !is_ctrl_c(&key_event) => {
+            (_, Some(Popup::IgnoreByUsb(_, _))) if !is_ctrl_c(&key_event) => {
                 if let Some(pressed) = IgnoreUsbDevicePrompt::from_key_code(key_event.code) {
                     self.ignore_usb_device_prompt_choice(pressed)?;
+                }
+            }
+            (_, Some(Popup::UpdateCheckConsentPrompt)) if !is_ctrl_c(&key_event) => {
+                if let Some(pressed) = UpdateCheckConsentPrompt::from_key_code(key_event.code) {
+                    self.update_check_consent_choice(pressed)?;
+                }
+            }
+            (_, Some(Popup::UpdateBeginPrompt)) if !is_ctrl_c(&key_event) => {
+                if let Some(pressed) = UpdateBeginPrompt::from_key_code(key_event.code) {
+                    self.update_begin_choice(pressed)?;
+                }
+            }
+            #[cfg(all(windows, feature = "self-replace"))]
+            (_, Some(Popup::UpdateLaunchPrompt)) if !is_ctrl_c(&key_event) => {
+                if let Some(pressed) = UpdateLaunchPrompt::from_key_code(key_event.code) {
+                    self.update_launch_choice(pressed)?;
                 }
             }
 
@@ -1194,6 +1277,13 @@ impl App {
         match key_combo {
             // Start of _Hardcoded_ keybinds.
             key!(q) if port_selection_actions && self.popup.is_none() => self.shutdown(),
+            key!(u)
+                if port_selection_actions
+                    && self.popup.is_none()
+                    && self.update_found_version.is_some() =>
+            {
+                self.show_popup(Popup::UpdateBeginPrompt);
+            }
             key!(ctrl - shift - c) => self.shutdown(),
             // move into ctrl-c func?
             key!(ctrl - c) => match (self.menu, &self.popup) {
@@ -1544,7 +1634,7 @@ impl App {
         if let Some(elf_path) = profile_defmt_path {
             self.try_load_defmt_elf(
                 &elf_path,
-                #[cfg(feature = "defmt_watch")]
+                #[cfg(feature = "defmt-watch")]
                 false,
             );
         }
@@ -1884,6 +1974,22 @@ impl App {
                 _ => self.popup_menu_scroll -= 1,
             },
 
+            Some(Popup::UpdateCheckConsentPrompt) | Some(Popup::UpdateBeginPrompt) => {
+                match self.popup_menu_scroll {
+                    0 => self.select_last_popup_item(),
+                    _ => self.popup_menu_scroll -= 1,
+                }
+            }
+
+            #[cfg(feature = "self-replace")]
+            Some(Popup::UpdateDownloading(_)) => (),
+
+            #[cfg(all(windows, feature = "self-replace"))]
+            Some(Popup::UpdateLaunchPrompt) => match self.popup_menu_scroll {
+                0 => self.select_last_popup_item(),
+                _ => self.popup_menu_scroll -= 1,
+            },
+
             Some(Popup::ConnectionFailed(_)) => (),
         }
 
@@ -1930,6 +2036,22 @@ impl App {
             | Some(Popup::DisconnectPrompt)
             | Some(Popup::IgnoreByName(_))
             | Some(Popup::IgnoreByUsb(_, _)) => match self.popup_menu_scroll {
+                _last if self.last_popup_item_selected() => self.popup_menu_scroll = 0,
+                _ => self.popup_menu_scroll += 1,
+            },
+
+            Some(Popup::UpdateCheckConsentPrompt) | Some(Popup::UpdateBeginPrompt) => {
+                match self.popup_menu_scroll {
+                    _last if self.last_popup_item_selected() => self.popup_menu_scroll = 0,
+                    _ => self.popup_menu_scroll += 1,
+                }
+            }
+
+            #[cfg(feature = "self-replace")]
+            Some(Popup::UpdateDownloading(_)) => (),
+
+            #[cfg(all(windows, feature = "self-replace"))]
+            Some(Popup::UpdateLaunchPrompt) => match self.popup_menu_scroll {
                 _last if self.last_popup_item_selected() => self.popup_menu_scroll = 0,
                 _ => self.popup_menu_scroll += 1,
             },
@@ -2047,6 +2169,14 @@ impl App {
             Some(Popup::DefmtNewElf(_)) => (),
             #[cfg(feature = "defmt")]
             Some(Popup::DefmtRecentElf) => (),
+
+            Some(Popup::UpdateCheckConsentPrompt) | Some(Popup::UpdateBeginPrompt) => (),
+
+            #[cfg(feature = "self-replace")]
+            Some(Popup::UpdateDownloading(_)) => (),
+
+            #[cfg(all(windows, feature = "self-replace"))]
+            Some(Popup::UpdateLaunchPrompt) => (),
         }
         if self.popup.is_some() {
             return;
@@ -2163,6 +2293,14 @@ impl App {
             Some(Popup::DefmtNewElf(_)) => (),
             #[cfg(feature = "defmt")]
             Some(Popup::DefmtRecentElf) => (),
+
+            Some(Popup::UpdateCheckConsentPrompt) | Some(Popup::UpdateBeginPrompt) => (),
+
+            #[cfg(feature = "self-replace")]
+            Some(Popup::UpdateDownloading(_)) => (),
+
+            #[cfg(all(windows, feature = "self-replace"))]
+            Some(Popup::UpdateLaunchPrompt) => (),
         }
         if self.popup.is_some() {
             return;
@@ -2412,7 +2550,7 @@ impl App {
                         .to_owned();
                     self.try_load_defmt_elf(
                         &elf_path,
-                        #[cfg(feature = "defmt_watch")]
+                        #[cfg(feature = "defmt-watch")]
                         false,
                     );
                 }
@@ -2442,6 +2580,24 @@ impl App {
                 )?;
             }
             Some(Popup::ConnectionFailed(_)) => self.dismiss_popup(),
+            Some(Popup::UpdateCheckConsentPrompt) => {
+                self.update_check_consent_choice(
+                    UpdateCheckConsentPrompt::try_from(self.popup_menu_scroll as u8).unwrap(),
+                )?;
+            }
+            Some(Popup::UpdateBeginPrompt) => {
+                self.update_begin_choice(
+                    UpdateBeginPrompt::try_from(self.popup_menu_scroll as u8).unwrap(),
+                )?;
+            }
+            #[cfg(all(windows, feature = "self-replace"))]
+            Some(Popup::UpdateLaunchPrompt) => {
+                self.update_launch_choice(
+                    UpdateLaunchPrompt::try_from(self.popup_menu_scroll as u8).unwrap(),
+                )?;
+            }
+            #[cfg(feature = "self-replace")]
+            Some(Popup::UpdateDownloading(_)) => (),
         }
         if self.popup.is_some() || popup_was_some {
             return Ok(());
@@ -2778,6 +2934,12 @@ impl App {
             }
             Popup::IgnoreByName(_) => <IgnorePortByNamePrompt as VariantArray>::VARIANTS.len(),
             Popup::IgnoreByUsb(_, _) => <IgnoreUsbDevicePrompt as VariantArray>::VARIANTS.len(),
+            Popup::UpdateBeginPrompt => <UpdateBeginPrompt as VariantArray>::VARIANTS.len(),
+            Popup::UpdateCheckConsentPrompt => {
+                <UpdateCheckConsentPrompt as VariantArray>::VARIANTS.len()
+            }
+            #[cfg(all(windows, feature = "self-replace"))]
+            Popup::UpdateLaunchPrompt => <UpdateLaunchPrompt as VariantArray>::VARIANTS.len(),
             _ => unreachable!("popup {popup:?} has no item count"),
         }
     }
@@ -2900,7 +3062,7 @@ impl App {
         // debug!("a3: {:?}", start.elapsed());
 
         #[cfg(feature = "espflash")]
-        self.espflash.render_espflash(frame, frame.area());
+        self.espflash.render_espflash_popups(frame, frame.area());
 
         // TODO:
         // self.render_error_messages(frame, frame.area());
@@ -3061,6 +3223,79 @@ impl App {
                 frame.render_widget(Clear, area);
                 frame.render_widget(&block, area);
                 frame.render_widget(para, block.inner(area));
+            }
+            Popup::UpdateCheckConsentPrompt => {
+                let mut table_state = TableState::new().with_selected(Some(self.popup_menu_scroll));
+
+                UpdateCheckConsentPrompt::render_prompt_block_popup(
+                    Some("Allow checking for updates on startup?"),
+                    None,
+                    Style::new().yellow(),
+                    frame,
+                    area,
+                    &mut table_state,
+                );
+            }
+            Popup::UpdateBeginPrompt => {
+                let mut table_state = TableState::new().with_selected(Some(self.popup_menu_scroll));
+
+                let current_version = env!("CARGO_PKG_VERSION");
+                let new_version = self.update_found_version.as_ref().unwrap();
+
+                UpdateBeginPrompt::render_prompt_block_popup(
+                    Some(&format!("New version found! v{current_version}")),
+                    Some(&format!("v{current_version} -> v{new_version}")),
+                    Style::new().green(),
+                    frame,
+                    area,
+                    &mut table_state,
+                );
+            }
+            #[cfg(all(windows, feature = "self-replace"))]
+            Popup::UpdateLaunchPrompt => {
+                let mut table_state = TableState::new().with_selected(Some(self.popup_menu_scroll));
+
+                UpdateLaunchPrompt::render_prompt_block_popup(
+                    Some("Launch new version now?"),
+                    None,
+                    Style::new().green(),
+                    frame,
+                    area,
+                    &mut table_state,
+                );
+            }
+            #[cfg(feature = "self-replace")]
+            Popup::UpdateDownloading(percentage) => {
+                let center_area = centered_rect_size(
+                    Size {
+                        width: 60,
+                        height: 8,
+                    },
+                    area,
+                );
+
+                // Create the outer block with borders and title
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().light_blue())
+                    .title("Update Downloading...");
+
+                // Get the inner area of the block
+                let inner_area = block.inner(center_area);
+
+                let color = if *percentage >= 1.0 {
+                    Color::Green
+                } else {
+                    Color::LightBlue
+                };
+
+                let gauge = ratatui::widgets::Gauge::default()
+                    .ratio(*percentage)
+                    .gauge_style(color);
+
+                frame.render_widget(Clear, inner_area);
+                frame.render_widget(block, center_area);
+                frame.render_widget(gauge, inner_area);
             }
         }
     }
@@ -3711,7 +3946,8 @@ impl App {
         let height = match popup {
             #[cfg(feature = "macros")]
             ToolMenu::Macros => macros_table_area.height,
-            _ => settings_area.height,
+            #[cfg(feature = "espflash")]
+            ToolMenu::EspFlash => settings_area.height,
         };
 
         match popup {
@@ -4303,14 +4539,23 @@ impl App {
         frame.render_widget(big_text, vertical_slices[0]);
 
         let dark_gray = Style::new().dark_gray();
+        let green = Style::new().green();
 
         let [_, credit_and_version_area] = vertical![*=1, ==1].areas(frame_area);
-        let version =
-            Line::styled(format!("v{}", env!("CARGO_PKG_VERSION")), dark_gray).right_aligned();
+
+        let current_version = Span::styled(format!("v{}", env!("CARGO_PKG_VERSION")), dark_gray);
+
+        let version = if let Some(new) = &self.update_found_version {
+            let meow = Span::styled(format!(" -> v{new}! [U]pdate found!"), green);
+            Line::from_iter([current_version, meow])
+        } else {
+            Line::from(current_version)
+        };
+
         let me_in_current_year = "nullstalgia, 2025".dark_gray();
 
         frame.render_widget(me_in_current_year, credit_and_version_area);
-        frame.render_widget(version, credit_and_version_area);
+        frame.render_widget(version.right_aligned(), credit_and_version_area);
 
         let area = if vertical_slices[1].width < 45 {
             vertical_slices[1]
@@ -4562,7 +4807,9 @@ impl App {
             | Popup::AttemptReconnectPrompt
             | Popup::DisconnectPrompt
             | Popup::IgnoreByName(_)
-            | Popup::IgnoreByUsb(_, _) => self.popup_menu_scroll = 0,
+            | Popup::IgnoreByUsb(_, _)
+            | Popup::UpdateBeginPrompt
+            | Popup::UpdateCheckConsentPrompt => self.popup_menu_scroll = 0,
 
             #[cfg(feature = "defmt")]
             Popup::DefmtRecentElf => {
@@ -4584,10 +4831,19 @@ impl App {
         self.refresh_scratch();
         self.popup_hint_scroll = -2;
 
-        self.event_tx
-            .send(Tick::Scroll.into())
-            .map_err(|e| e.to_string())
-            .expect("failed to send into own event queue?");
+        let has_scrollable_text = match self.popup.as_ref().unwrap() {
+            Popup::SettingsMenu(_) => true,
+            #[cfg(any(feature = "espflash", feature = "macros"))]
+            Popup::ToolMenu(_) => true,
+            _ => false,
+        };
+
+        if has_scrollable_text {
+            self.event_tx
+                .send(Tick::Scroll.into())
+                .map_err(|e| e.to_string())
+                .expect("failed to send into own event queue?");
+        }
     }
     fn show_popup_from_action(&mut self, popup: ShowPopupAction) {
         let popup_menu = match popup {
@@ -4613,7 +4869,16 @@ impl App {
             self.show_popup(popup_menu);
         }
     }
-    fn dismiss_popup(&mut self) {
+    pub fn dismiss_popup(&mut self) {
+        // These shouldn't be dismissed ever.
+        match &self.popup {
+            #[cfg(feature = "self-replace")]
+            Some(Popup::UpdateDownloading(_)) => return,
+            #[cfg(all(windows, feature = "self-replace"))]
+            Some(Popup::UpdateLaunchPrompt) => return,
+            _ => (),
+        }
+
         self.refresh_scratch();
         self.popup.take();
         self.popup_menu_scroll = 0;
@@ -4681,26 +4946,26 @@ impl App {
     pub fn try_load_defmt_elf(
         &mut self,
         path: &Utf8Path,
-        #[cfg(feature = "defmt_watch")] reload: bool,
+        #[cfg(feature = "defmt-watch")] reload: bool,
     ) {
         let success_text = {
-            #[cfg(feature = "defmt_watch")]
+            #[cfg(feature = "defmt-watch")]
             if reload {
                 "defmt ELF reloaded due to file update!"
             } else {
                 "defmt ELF loaded successfully!"
             }
-            #[cfg(not(feature = "defmt_watch"))]
+            #[cfg(not(feature = "defmt-watch"))]
             "defmt ELF loaded successfully!"
         };
         let fail_text = {
-            #[cfg(feature = "defmt_watch")]
+            #[cfg(feature = "defmt-watch")]
             if reload {
                 "defmt ELF auto-reload failed!"
             } else {
                 "defmt ELF load failed!"
             }
-            #[cfg(not(feature = "defmt_watch"))]
+            #[cfg(not(feature = "defmt-watch"))]
             "defmt ELF load failed!"
         };
 
@@ -4710,7 +4975,7 @@ impl App {
             &mut self.defmt_helpers.recent_elfs,
             #[cfg(feature = "logging")]
             &self.buffer.log_handle,
-            #[cfg(feature = "defmt_watch")]
+            #[cfg(feature = "defmt-watch")]
             &mut self.defmt_helpers.watcher_handle,
         ) {
             Ok(None) => {
@@ -4729,6 +4994,11 @@ impl App {
             }
         }
     }
+    fn first_time_setup(&mut self) {
+        if !self.settings.updates.user_dismissed_prompt {
+            self.show_popup(Popup::UpdateCheckConsentPrompt);
+        }
+    }
 }
 
 #[cfg(feature = "defmt")]
@@ -4741,7 +5011,7 @@ pub enum YapLoadDefmtError {
     #[cfg(feature = "logging")]
     #[error("failed to send logging worker new defmt table")]
     LoggingWorker(#[from] LoggingWorkerMissing),
-    #[cfg(feature = "defmt_watch")]
+    #[cfg(feature = "defmt-watch")]
     #[error(transparent)]
     ElfWatcher(#[from] ElfWatcherMissing),
 }
@@ -4752,7 +5022,7 @@ pub fn _try_load_defmt_elf(
     decoder_opt: &mut Option<Arc<DefmtDecoder>>,
     recent_elfs: &mut DefmtRecentElfs,
     #[cfg(feature = "logging")] logging: &LoggingHandle,
-    #[cfg(feature = "defmt_watch")] watcher_handle: &mut ElfWatchHandle,
+    #[cfg(feature = "defmt-watch")] watcher_handle: &mut ElfWatchHandle,
 ) -> Result<Option<LocationsError>, YapLoadDefmtError> {
     let new_decoder = DefmtDecoder::from_elf_path(path);
     match new_decoder {
@@ -4762,7 +5032,7 @@ pub fn _try_load_defmt_elf(
             recent_elfs.elf_loaded(path)?;
             #[cfg(feature = "logging")]
             logging.update_defmt_decoder(Some(decoder_arc.clone()))?;
-            #[cfg(feature = "defmt_watch")]
+            #[cfg(feature = "defmt-watch")]
             watcher_handle.watch_path(path)?;
 
             Ok(locations_err_opt)

@@ -43,6 +43,7 @@ mod serial;
 mod settings;
 mod traits;
 mod tui;
+mod updates;
 mod user_input;
 
 static CONFIG_PARENT_PATH_CELL: OnceLock<Utf8PathBuf> = OnceLock::new();
@@ -243,6 +244,8 @@ fn run_inner(
     //     error!("Failed to enable key combining! {e}");
     // };
 
+    let allow_first_time_setup = cli_args.port.is_none();
+
     let mut app = App::build(
         tx,
         rx,
@@ -250,6 +253,7 @@ fn run_inner(
         crossterm_rx,
         app_settings,
         tcp_log_health,
+        allow_first_time_setup,
     )?;
 
     #[cfg(feature = "defmt")]
@@ -260,7 +264,7 @@ fn run_inner(
             &mut app.defmt_helpers.recent_elfs,
             #[cfg(feature = "logging")]
             &app.buffer.log_handle,
-            #[cfg(feature = "defmt_watch")]
+            #[cfg(feature = "defmt-watch")]
             &mut app.defmt_helpers.watcher_handle,
         ) {
             Ok(None) => (),

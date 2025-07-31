@@ -10,10 +10,10 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 
 use fs_err as fs;
-#[cfg(feature = "defmt_watch")]
+#[cfg(feature = "defmt-watch")]
 use takeable::Takeable;
 
-#[cfg(feature = "defmt_watch")]
+#[cfg(feature = "defmt-watch")]
 use crate::buffer::defmt::elf_watcher::ElfWatchHandle;
 use crate::{app::Event, config_adjacent_path};
 
@@ -45,13 +45,13 @@ impl From<usize> for DefmtPopupSelection {
 /// This holds the recently used ELF paths, and the handle to the worker thread that watches for updates to the current ELF.
 pub struct DefmtHelpers {
     pub recent_elfs: DefmtRecentElfs,
-    #[cfg(feature = "defmt_watch")]
+    #[cfg(feature = "defmt-watch")]
     pub watcher_handle: ElfWatchHandle,
-    #[cfg(feature = "defmt_watch")]
+    #[cfg(feature = "defmt-watch")]
     watcher_join_handle: Takeable<JoinHandle<()>>,
 }
 
-#[cfg(feature = "defmt_watch")]
+#[cfg(feature = "defmt-watch")]
 impl Drop for DefmtHelpers {
     fn drop(&mut self) {
         use tracing::debug;
@@ -72,16 +72,16 @@ pub enum DefmtHelperBuildError {
     #[error(transparent)]
     RecentElfs(#[from] DefmtRecentError),
 
-    #[cfg(feature = "defmt_watch")]
+    #[cfg(feature = "defmt-watch")]
     #[error(transparent)]
     Watcher(#[from] notify::Error),
 }
 
 impl DefmtHelpers {
     pub fn build(
-        #[cfg(feature = "defmt_watch")] event_tx: Sender<Event>,
+        #[cfg(feature = "defmt-watch")] event_tx: Sender<Event>,
     ) -> Result<Self, DefmtHelperBuildError> {
-        #[cfg(feature = "defmt_watch")]
+        #[cfg(feature = "defmt-watch")]
         {
             let (watcher_handle, watcher_join_handle) = ElfWatchHandle::build(event_tx)?;
             let watcher_join_handle = Takeable::new(watcher_join_handle);
@@ -92,7 +92,7 @@ impl DefmtHelpers {
             })
         }
 
-        #[cfg(not(feature = "defmt_watch"))]
+        #[cfg(not(feature = "defmt-watch"))]
         Ok(Self {
             recent_elfs: DefmtRecentElfs::load()?,
         })

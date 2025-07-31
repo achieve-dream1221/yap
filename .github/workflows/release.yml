@@ -44,15 +44,28 @@ jobs:
             #   if: endsWith(github.event.release.tag_name, '-pre') && startsWith(matrix.os, 'windows')
             #   shell: pwsh
             #   run: (Get-Content Cargo.toml) -replace '^(version = ")([^"]+)(")', '${1}${2}-pre${3}' | Set-Content Cargo.toml
-            - uses: taiki-e/upload-rust-binary-action@v1
+            - name: Build and Publish yap-full
+              uses: taiki-e/upload-rust-binary-action@v1
               with:
                   bin: yap
-                  features: portable
+                  features: yap-full
                   target: ${{ matrix.target }}
                   # include: LICENSE,README.md
                   tar: unix
                   zip: windows
-                  archive: $bin-$tag-$target
+                  archive: $bin-full-$tag-$target
+                  token: ${{ secrets.GITHUB_TOKEN }}
+                  checksum: sha512
+            - name: Build and Publish yap-lite
+              uses: taiki-e/upload-rust-binary-action@v1
+              with:
+                  bin: yap
+                  features: yap-lite
+                  target: ${{ matrix.target }}
+                  # include: LICENSE,README.md
+                  tar: unix
+                  zip: windows
+                  archive: $bin-lite-$tag-$target
                   token: ${{ secrets.GITHUB_TOKEN }}
                   checksum: sha512
             # - uses: actions/attest-build-provenance@v1

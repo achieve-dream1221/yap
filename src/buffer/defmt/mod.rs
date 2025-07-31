@@ -17,7 +17,7 @@ pub struct DefmtDecoder {
     pub locations: Option<Locations>,
 }
 
-#[cfg(feature = "defmt_watch")]
+#[cfg(feature = "defmt-watch")]
 pub mod elf_watcher;
 
 pub mod frame_delimiting;

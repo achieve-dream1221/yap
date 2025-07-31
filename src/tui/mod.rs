@@ -33,8 +33,8 @@ pub const POPUP_MENU_SELECTOR_COUNT: usize = 2;
 /// Returns a centered `Rect` with the provided size inside of the parent `Rect`.
 pub fn centered_rect_size(size: Size, parent: Rect) -> Rect {
     Rect {
-        width: size.width,
-        height: size.height,
+        width: size.width.min(parent.width),
+        height: size.height.min(parent.height),
         x: (parent.width.saturating_sub(size.width)) / 2,
         y: (parent.height.saturating_sub(size.height)) / 2,
     }

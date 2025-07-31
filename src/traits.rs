@@ -130,6 +130,10 @@ pub trait LineHelpers<'a> {
     fn is_styled(&self) -> bool;
     /// Returns a new `Line` that borrows from all of the current line's spans.
     fn new_borrowing(&'a self) -> Line<'a>;
+
+    fn spaced(self, both_sides_padding: usize) -> Line<'a>;
+    fn spaced_l(self, left_padding: usize) -> Line<'a>;
+    fn spaced_r(self, right_padding: usize) -> Line<'a>;
 }
 
 impl<'a> LineHelpers<'a> for Line<'a> {
@@ -246,6 +250,21 @@ impl<'a> LineHelpers<'a> for Line<'a> {
         }
         line.style = self.style;
         line
+    }
+
+    fn spaced(self, both_sides_padding: usize) -> Line<'a> {
+        self.spaced_l(both_sides_padding)
+            .spaced_r(both_sides_padding)
+    }
+    fn spaced_l(mut self, left_padding: usize) -> Line<'a> {
+        let spaces = std::iter::repeat_n(Span::raw(" "), left_padding);
+        self.spans.splice(0..0, spaces);
+        self
+    }
+    fn spaced_r(mut self, right_padding: usize) -> Line<'a> {
+        let spaces = std::iter::repeat_n(Span::raw(" "), right_padding);
+        self.spans.extend(spaces);
+        self
     }
 }
 

@@ -72,6 +72,9 @@ pub struct Settings {
     pub logging: Logging,
 
     #[serde(default)]
+    pub updates: Updates,
+
+    #[serde(default)]
     pub ignored_devices: Ignored,
 
     #[serde(skip)]
@@ -477,7 +480,7 @@ pub struct Defmt {
     pub defmt_parsing: DefmtSupport,
 
     #[serde(default)]
-    #[cfg(feature = "defmt_watch")]
+    #[cfg(feature = "defmt-watch")]
     #[table(rename = "Watch ELF for Changes")]
     /// Reload defmt data from ELF when file is updated.
     pub watch_elf_for_changes: bool,
@@ -597,6 +600,21 @@ pub struct PortSettings {
     )]
     #[serde_inline_default(MacroTxLineEnding::InheritTx)]
     pub macro_line_ending: MacroTxLineEnding,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, Derivative)]
+pub struct Updates {
+    #[serde(default)]
+    pub user_dismissed_prompt: bool,
+
+    #[serde(default)]
+    pub allow_checking_for_updates: bool,
+
+    #[serde(default)]
+    pub skipped_version: String,
+
+    #[serde(default)]
+    pub allow_pre_releases: bool,
 }
 
 #[serde_inline_default]

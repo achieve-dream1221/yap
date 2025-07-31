@@ -1,10 +1,12 @@
 use std::{
     borrow::Cow,
     io::{Seek, Write},
-    sync::Arc,
     thread::JoinHandle,
     time::Duration,
 };
+
+#[cfg(feature = "defmt")]
+use std::sync::Arc;
 
 use chrono::{DateTime, Local};
 use crossbeam::channel::{Receiver, RecvError, SendError, Sender};
@@ -13,12 +15,10 @@ use serialport::SerialPortInfo;
 use tracing::{debug, error, warn};
 
 #[cfg(feature = "defmt")]
-use crate::settings::Defmt;
+use crate::{changed, settings::Defmt};
+
 use crate::{
-    app::Event,
-    changed, config_adjacent_path,
-    serial::ReconnectType,
-    settings::{self, Logging},
+    app::Event, config_adjacent_path, serial::ReconnectType, settings::Logging,
     traits::ByteSuffixCheck,
 };
 
@@ -475,7 +475,7 @@ impl LoggingWorker {
     ) -> Result<(), LoggingError> {
         #[cfg(feature = "defmt")]
         if let Some(text_file) = &mut self.text_file {
-            use settings::DefmtSupport;
+            use crate::settings::DefmtSupport;
 
             match self.defmt.settings.defmt_parsing {
                 DefmtSupport::Disabled => {

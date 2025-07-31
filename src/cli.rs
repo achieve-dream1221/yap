@@ -23,6 +23,7 @@ pub struct YapCli {
     #[clap(short, long)]
     pub print_actions: bool,
 }
+
 // #[derive(Debug, thiserror::Error)]
 // pub enum CliError {
 // }
