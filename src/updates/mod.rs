@@ -516,7 +516,7 @@ impl App {
     pub fn update_launch_choice(&mut self, choice: UpdateLaunchPrompt) -> Result<()> {
         match choice {
             UpdateLaunchPrompt::OpenInNewWindow => {
-                self.update_worker.as_ref().unwrap().start_new_version()?;
+                self.update_worker.start_new_version()?;
             }
             UpdateLaunchPrompt::Close => self.shutdown(),
         }
