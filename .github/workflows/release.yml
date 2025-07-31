@@ -31,10 +31,16 @@ jobs:
               shell: bash
               run: sudo apt-get update && sudo apt-get install -y libudev-dev
               if: startsWith(matrix.os, 'ubuntu')
-            - name: Conditionally add -pre to built version number
-              if: endsWith(github.event.release.tag_name, '-pre')
-              run: |
-                  sed -i -E 's/^(version = ")([^"]+)"/\1\2-pre"/' Cargo.toml
+            - name: Conditionally add -pre to built version number (Ubuntu)
+              if: endsWith(github.event.release.tag_name, '-pre') && startsWith(matrix.os, 'ubuntu')
+              run: sed -i -E 's/^(version = ")([^"]+)"/\1\2-pre"/' Cargo.toml
+            - name: Conditionally add -pre to built version number (MacOS)
+              if: endsWith(github.event.release.tag_name, '-pre') && startsWith(matrix.os, 'macos')
+              run: sed -i '' -E 's/^(version = ")([^"]+)"/\1\2-pre"/' Cargo.toml
+            - name: Conditionally add -pre to built version number (Windows)
+              if: endsWith(github.event.release.tag_name, '-pre') && startsWith(matrix.os, 'windows')
+              shell: pwsh
+              run: (Get-Content Cargo.toml) -replace '^(version = ")([^"]+)(")', '${1}${2}-pre${3}' | Set-Content Cargo.toml
             - uses: taiki-e/upload-rust-binary-action@v1
               with:
                   bin: yap
