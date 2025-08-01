@@ -24,11 +24,10 @@ ctrl-h = "toggle-hex"
 ctrl-l = "show-logging"
 ctrl-k = "show-keybinds"
 ctrl-n = ["Core v2 1.4.0"]
-ctrl-b = "toggle-pseudo-shell-hex"
 
 # macros
 F19 = "Restart"
-ctrl-s = "CaiX Vib (ID 12345, 0.5s)"
+# ctrl-s = "CaiX Vib (ID 12345, 0.5s)"
 ctrl-g = "OpenShock Setup|Echo Off"
 ctrl-j = [
     "PAUSE_MS:2000",
