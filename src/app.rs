@@ -3899,10 +3899,11 @@ impl App {
             &mut menu_selector_state,
         );
 
-        let settings_area = {
+        #[cfg(feature = "espflash")]
+        let bins_area = {
             let mut area = center_inner_area;
-            area.height = area.height.saturating_sub(3);
-            area.y += 1;
+            area.height = area.height.saturating_sub(8);
+            area.y = area.top().saturating_add(6);
             area
         };
 
@@ -3926,6 +3927,7 @@ impl App {
             area
         };
 
+        #[cfg(feature = "macros")]
         let macros_table_area = {
             let mut area = center_inner_area;
             area.height = area.height.saturating_sub(5);
@@ -3951,7 +3953,7 @@ impl App {
             #[cfg(feature = "macros")]
             ToolMenu::Macros => macros_table_area.height,
             #[cfg(feature = "espflash")]
-            ToolMenu::EspFlash => settings_area.height,
+            ToolMenu::EspFlash => bins_area.height,
         };
 
         match popup {
@@ -4086,10 +4088,10 @@ impl App {
                     area.y = area.top().saturating_add(5);
                     area
                 };
-                let bins_area = {
+                let espflash_buttons_area = {
                     let mut area = center_inner_area;
-                    area.height = area.height.saturating_sub(8);
-                    area.y = area.top().saturating_add(6);
+                    area.height = area.height.saturating_sub(3);
+                    area.y += 1;
                     area
                 };
                 let line_block = Block::new()
@@ -4119,7 +4121,7 @@ impl App {
                             self.espflash.unchecked_bootloader,
                             self.espflash.first_erase_press.is_some(),
                         ),
-                        settings_area,
+                        espflash_buttons_area,
                     );
                     frame.render_widget(&line_block, new_separator);
                     frame.render_stateful_widget(
@@ -4175,7 +4177,7 @@ impl App {
                             self.espflash.unchecked_bootloader,
                             self.espflash.first_erase_press.is_some(),
                         ),
-                        settings_area,
+                        espflash_buttons_area,
                         &mut table_state,
                     );
                     frame.render_widget(&line_block, new_separator);

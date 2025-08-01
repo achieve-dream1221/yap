@@ -1,7 +1,4 @@
-use std::thread::JoinHandle;
-
 use camino::{Utf8Path, Utf8PathBuf};
-use crossbeam::channel::Sender;
 use ratatui::{
     prelude::*,
     widgets::{Cell, HighlightSpacing, Row, Table},
@@ -10,12 +7,16 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 
 use fs_err as fs;
-#[cfg(feature = "defmt-watch")]
-use takeable::Takeable;
 
 #[cfg(feature = "defmt-watch")]
-use crate::buffer::defmt::elf_watcher::ElfWatchHandle;
-use crate::{app::Event, config_adjacent_path};
+use {
+    crate::{app::Event, buffer::defmt::elf_watcher::ElfWatchHandle},
+    crossbeam::channel::Sender,
+    std::thread::JoinHandle,
+    takeable::Takeable,
+};
+
+use crate::config_adjacent_path;
 
 const DEFMT_RECENT_PATH: &str = "yap_defmt_recent.toml";
 

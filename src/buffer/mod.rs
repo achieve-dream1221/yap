@@ -881,7 +881,7 @@ impl Buffer {
         let user_span = span!(Color::DarkGray;"USER> ");
 
         // TODO HANDLE MULTI-LINE USER INPUT AAAA
-        for (trunc, orig, _range) in line_ending_iter(text.as_bytes(), &tx_line_ending) {
+        for (trunc, _orig, _range) in line_ending_iter(text.as_bytes(), &tx_line_ending) {
             let line = if !sensitive {
                 let mut line = Line::from(String::from_utf8_lossy(trunc).to_string());
                 line.spans.insert(0, user_span.clone());
