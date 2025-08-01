@@ -151,8 +151,8 @@ enable-ansi-support = "0.2.1"
 # [profile.release]
 # debug = true
 
-# [profile.release]
-# lto = true
+[profile.release]
+lto = true
 
 # Speeds up rendering operations for debug builds
 [profile.dev.package.ratatui]
