@@ -4,7 +4,7 @@ repository = "https://github.com/nullstalgia/yap"
 version = "0.1.0-pre.0"
 # Note to self, if doing a pre-release:
 # start at: -pre.0
-# just -pre has undesirable/inconsistent behavior
+# just -pre will go before any .x entries
 edition = "2024"
 
 [features]
@@ -95,6 +95,7 @@ reqwest = "0.12.22"
 # regex-lite = "0.1.6"
 rolling-file = "0.2.0"
 self-replace = { version = "1.5.0", optional = true }
+semver = "1.0.26"
 serde = { version = "1.0", features = ["derive"] }
 # serde-inline-default = "0.2.3"
 # technically older but i don't suffer from the bug it's fixing

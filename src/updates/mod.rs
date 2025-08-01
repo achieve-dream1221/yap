@@ -1,9 +1,8 @@
 use color_eyre::Result;
 use crossbeam::channel::{Receiver, Sender, bounded};
 use ratatui::style::Color;
-use self_update::{
-    cargo_crate_version, get_target, update::ReleaseAsset, version::bump_is_greater,
-};
+use self_update::{get_target, update::ReleaseAsset};
+use semver::Version;
 use tracing::{error, info};
 
 use crate::app::{App, Event};
@@ -128,34 +127,31 @@ impl UpdateBackend {
         #[cfg(not(any(feature = "yap-full", feature = "yap-lite")))]
         let bin_flavor = "yap";
 
-        let current = cargo_crate_version!();
+        let current_str = env!("CARGO_PKG_VERSION");
+        let current = Version::parse(current_str).expect("failed to parse app's own semver");
         let releases = self_update::backends::github::Update::configure()
             // .auth_token("github_pat_xyz")
             .repo_owner("nullstalgia")
             .repo_name("yap")
             .bin_name("yap")
-            .current_version(current)
+            .current_version(current_str)
             .build()?
-            .get_latest_releases(current)?;
+            .get_latest_releases(current_str)?;
 
-        let newest = releases.into_iter().fold(None, |last_found, rel| {
-            if rel.version.contains("pre") && !allow_pre_releases {
-                return last_found;
-            }
-            match bump_is_greater(current, &rel.version) {
-                Ok(true) => Some(rel),
-                Ok(false) => last_found,
+        let newest = releases
+            .into_iter()
+            .filter(|rel| allow_pre_releases || !rel.version.contains("pre"))
+            .filter_map(|rel| match Version::parse(&rel.version) {
+                Ok(v) => Some((rel, v)),
                 Err(e) => {
-                    error!(
-                        "Error comparing version numbers! {e} {current} vs {}",
-                        rel.version
-                    );
-                    last_found
+                    error!("Failed to parse semver from {}, {e}", rel.version);
+                    None
                 }
-            }
-        });
+            })
+            .filter(|(_, ver)| *ver > current)
+            .max_by(|(_, a_ver), (_, b_ver)| a_ver.cmp(b_ver));
 
-        let Some(release) = newest else {
+        let Some((release, _version)) = newest else {
             return Ok(None);
         };
 
