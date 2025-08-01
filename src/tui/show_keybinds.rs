@@ -133,6 +133,8 @@ pub fn show_keybinds(
         }
     };
 
+    #[allow(clippy::type_complexity)]
+    // Eh, isn't *that* bad.
     let (single_action_binds, unknown_single_actions): (
         Vec<(&KeyCombination, ActionOption)>,
         Vec<(&KeyCombination, ActionOption)>,

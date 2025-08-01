@@ -299,19 +299,20 @@ impl BufLine {
 
         let dark_gray = Style::new().dark_gray();
 
-        let indices_and_len = rendering
-            .rendering
-            .show_indices
-            .then(|| {
-                Span::styled(
-                    make_index_info(
-                        &self.range_in_raw_buffer,
-                        rendering.rendering.indices_as_hex,
-                    ),
-                    dark_gray,
-                )
+        let indices_and_len = std::iter::once(&self.line_type)
+            .filter_map(|lt| match lt {
+                _ if !rendering.rendering.show_indices => None,
+                LineType::User { reloggable_raw, .. } => Some(make_user_index_info(
+                    self.range(),
+                    reloggable_raw.len(),
+                    rendering.rendering.indices_as_hex,
+                )),
+                _ => Some(make_index_info(
+                    self.range(),
+                    rendering.rendering.indices_as_hex,
+                )),
             })
-            .into_iter();
+            .map(|i| Span::styled(i, dark_gray));
 
         let timestamp = rendering
             .rendering
@@ -474,7 +475,6 @@ impl BufLine {
     }
 }
 
-// TODO dont show len for user lines wheres its always 0
 fn make_index_info(range: &Range<usize>, hex: bool) -> CompactString {
     let start = range.start;
     let end = range.end;
@@ -484,5 +484,15 @@ fn make_index_info(range: &Range<usize>, hex: bool) -> CompactString {
         format_compact!("({start:#08X}..{end:#08X}, {len:#4X}) ")
     } else {
         format_compact!("({start:06}..{end:06}, {len:3}) ")
+    }
+}
+
+fn make_user_index_info(range: &Range<usize>, len: usize, hex: bool) -> CompactString {
+    let start = range.start;
+
+    if hex {
+        format_compact!("({start:#08X}=={start:#08X}, {len:#4X}) ")
+    } else {
+        format_compact!("({start:06}=={start:06}, {len:3}) ")
     }
 }

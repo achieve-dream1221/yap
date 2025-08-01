@@ -44,6 +44,7 @@ use crate::buffer::{LoggingHandle, LoggingWorkerMissing};
 use crate::{
     TcpStreamHealth,
     buffer::Buffer,
+    config_adjacent_path,
     event_carousel::CarouselHandle,
     is_ctrl_c,
     keybinds::{Action, AppAction, BaseAction, Keybinds, PortAction, ShowPopupAction},
@@ -439,9 +440,8 @@ impl App {
 
         #[cfg(feature = "macros")]
         let macros = {
-            let (macros, errors) = Macros::load_from_folder(crate::config_adjacent_path(
-                crate::macros::MACROS_DIR_PATH,
-            ))?;
+            let (macros, errors) =
+                Macros::load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))?;
             if let Some(e) = errors.into_iter().next() {
                 return Err(e)?;
             }
@@ -1757,9 +1757,8 @@ impl App {
 
             #[cfg(feature = "macros")]
             A::MacroBuiltin(MacroBuiltinAction::ReloadMacros) => {
-                match Macros::load_from_folder(crate::config_adjacent_path(
-                    crate::macros::MACROS_DIR_PATH,
-                )) {
+                match Macros::load_from_folder(config_adjacent_path(crate::macros::MACROS_DIR_PATH))
+                {
                     Ok((macros, errors)) => {
                         let err_len = errors.len();
                         self.macros = macros;
@@ -3633,7 +3632,7 @@ impl App {
                     .borders(Borders::TOP)
                     .border_style(Style::from(block_color));
 
-                let logs_dir = crate::config_adjacent_path("logs/");
+                let logs_dir = config_adjacent_path("logs/");
                 let log_path_text = format!("Saving to: {logs_dir}");
                 let log_path_line = Line::raw(log_path_text)
                     .all_spans_styled(Color::DarkGray.into())
@@ -4793,6 +4792,12 @@ impl App {
             .dark_gray();
             misc_lines.push(line);
         }
+
+        let config_path = config_adjacent_path("");
+        let config_path_line = line!["Config and logs at: ", config_path.to_string()]
+            .centered()
+            .dark_gray();
+        misc_lines.push(config_path_line);
 
         // if !misc_lines.is_empty() {
         frame.render_widget(Paragraph::new(misc_lines), vertical_slices[2]);
