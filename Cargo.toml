@@ -8,7 +8,7 @@ version = "0.1.0-pre.0"
 edition = "2024"
 
 [features]
-default = []
+default = ["yap-full"]
 # Allow flashing connected ESP32 targets with binary and ELF files
 espflash = ["dep:espflash"]
 logging = []

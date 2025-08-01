@@ -2372,6 +2372,10 @@ impl App {
             }
             #[cfg(feature = "macros")]
             Some(Popup::ToolMenu(ToolMenu::Macros)) => {
+                // Category selector active, just ignore.
+                if self.popup_menu_scroll == 2 {
+                    return Ok(());
+                }
                 let index = self
                     .get_corrected_popup_index()
                     .expect("expected cursor to be in table to get a macro");

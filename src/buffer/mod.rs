@@ -206,6 +206,7 @@ impl LineEnding {
             _ => Some(self.as_bytes().escape_bytes().to_compact_string()),
         }
     }
+
     fn escaped_from(&self, buffer: &[u8]) -> Option<CompactString> {
         if buffer.has_line_ending(self) {
             self.as_escaped()
@@ -775,7 +776,7 @@ impl Buffer {
     pub fn append_user_bytes(
         &mut self,
         bytes: &[u8],
-        line_ending: &[u8],
+        line_ending_bytes: &[u8],
         is_macro: bool,
         sensitive: bool,
     ) {
@@ -785,7 +786,7 @@ impl Buffer {
         let text = if !sensitive {
             let text: Span = bytes
                 .iter()
-                .chain(line_ending.iter())
+                .chain(line_ending_bytes.iter())
                 .map(|b| format!("\\x{b:02X}"))
                 .join("")
                 .into();
@@ -797,8 +798,7 @@ impl Buffer {
 
         let line = Line::from(vec![user_span, text]);
 
-        let combined: Vec<_> = bytes.iter().chain(line_ending.iter()).copied().collect();
-        let line_ending: LineEnding = line_ending.into();
+        let tx_line_ending: LineEnding = line_ending_bytes.into();
 
         // line.spans.insert(0, user_span.clone());
         // line.style_all_spans(Color::DarkGray.into());
@@ -825,7 +825,13 @@ impl Buffer {
                 slice: &[],
             },
         };
-        let user_buf_line = BufLine::user_line(line, kit, &line_ending, true, is_macro, &combined);
+        let reloggable_raw = bytes
+            .iter()
+            .chain(line_ending_bytes.iter())
+            .copied()
+            .collect::<Vec<u8>>();
+        let user_buf_line =
+            BufLine::user_line(line, kit, &tx_line_ending, true, is_macro, reloggable_raw);
 
         if let Some(last_rx) = self.styled_lines.rx.last_mut()
             && matches!(
@@ -843,7 +849,11 @@ impl Buffer {
         #[cfg(feature = "logging")]
         if self.log_settings.log_text_to_file && self.log_settings.log_user_input {
             self.log_handle
-                .log_tx_bytes(now, bytes.to_owned(), line_ending.as_bytes().to_owned())
+                .log_tx_bytes(
+                    now,
+                    bytes.to_owned(),
+                    line_ending_bytes.as_bytes().to_owned(),
+                )
                 .expect("Logging worker has disappeared!");
         }
         self.styled_lines.tx.push(user_buf_line);
@@ -853,7 +863,7 @@ impl Buffer {
     pub fn append_user_text(
         &mut self,
         text: &str,
-        line_ending: &[u8],
+        line_ending_bytes: &[u8],
         is_macro: bool,
         sensitive: bool,
     ) {
@@ -866,21 +876,12 @@ impl Buffer {
         //     .map(|i| *i)
         //     .collect();
 
-        let line_ending: LineEnding = line_ending.into();
+        let tx_line_ending: LineEnding = line_ending_bytes.into();
 
         let user_span = span!(Color::DarkGray;"USER> ");
-        // let Text { lines, .. } = text;
-        // TODO HANDLE MULTI-LINE USER INPUT AAAA
-        for (trunc, orig, _range) in line_ending_iter(text.as_bytes(), &line_ending) {
-            // not sure if i want to ansi-style user text?
-            // let mut line = match trunc.into_line_lossy(Style::new()) {
-            //     Ok(line) => line,
-            //     Err(_) => {
-            //         error!("ansi-to-tui failed to parse input! Using unstyled text.");
-            //         Line::from(String::from_utf8_lossy(trunc).to_string())
-            //     }
-            // };
 
+        // TODO HANDLE MULTI-LINE USER INPUT AAAA
+        for (trunc, orig, _range) in line_ending_iter(text.as_bytes(), &tx_line_ending) {
             let line = if !sensitive {
                 let mut line = Line::from(String::from_utf8_lossy(trunc).to_string());
                 line.spans.insert(0, user_span.clone());
@@ -914,7 +915,13 @@ impl Buffer {
                     slice: &[],
                 },
             };
-            let user_buf_line = BufLine::user_line(line, kit, &line_ending, false, is_macro, orig);
+            let reloggable_raw = trunc
+                .iter()
+                .chain(line_ending_bytes.iter())
+                .copied()
+                .collect::<Vec<u8>>();
+            let user_buf_line =
+                BufLine::user_line(line, kit, &tx_line_ending, false, is_macro, reloggable_raw);
 
             if let Some(last_rx) = self.styled_lines.rx.last_mut()
                 && matches!(
@@ -935,7 +942,7 @@ impl Buffer {
                     .log_tx_bytes(
                         now,
                         text.as_bytes().to_owned(),
-                        line_ending.as_bytes().to_owned(),
+                        tx_line_ending.as_bytes().to_owned(),
                     )
                     .expect("Logging worker has disappeared!");
             }

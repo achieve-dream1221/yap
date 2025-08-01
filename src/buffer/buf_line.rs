@@ -251,13 +251,13 @@ impl BufLine {
         tx_line_ending: &LineEnding,
         is_bytes: bool,
         is_macro: bool,
-        reloggable_raw: &[u8],
+        reloggable_raw: Vec<u8>,
     ) -> Self {
         let line_type = LineType::User {
             is_bytes,
             is_macro,
-            reloggable_raw: reloggable_raw.to_vec(),
-            escaped_line_ending: tx_line_ending.escaped_from(reloggable_raw),
+            escaped_line_ending: tx_line_ending.escaped_from(&reloggable_raw),
+            reloggable_raw,
         };
 
         Self::new(line, kit, line_type)
