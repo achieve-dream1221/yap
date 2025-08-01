@@ -11,8 +11,8 @@ bytes_per_line = 0
 hex_view_highlights = "HighlightAsciiSymbols"
 
 [behavior]
-fake_shell = true
-fake_shell_unescape = true
+pseudo_shell = true
+pseudo_shell_unescape = true
 retain_port_setting_changes = true
 retain_history = false
 action_chain_delay_ms = 500

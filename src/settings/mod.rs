@@ -302,19 +302,12 @@ pub struct Logging {
 #[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
 #[derivative(Default)]
 pub struct Behavior {
-    #[table(allow_unknown_values)]
-    #[serde(default)]
-    #[table(display = ["-3", "-2", "-1", "Default", "+1", "+2", "+3"])]
-    #[table(values = [-3, -2, -1, 0, 1, 2, 3])]
-    /// Text scroll speed modifier, positive increases, negative decreases.
-    pub text_scroll_speed: i8,
-
     // TODO find a better name for this.
     // Text Buffer or something?
     #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Use text box to type in before sending, with history. If disabled, sends keyboard inputs directly.
-    pub fake_shell: bool,
+    pub pseudo_shell: bool,
 
     #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
@@ -322,11 +315,18 @@ pub struct Behavior {
     pub unescape_typed_bytes: bool,
 
     #[serde(default)]
-    /// Whether to always send the TX Line Ending when using Fake Shell's byte input mode.
+    /// Whether to always send the TX Line Ending when using Pseudo Shell's typed byte input mode.
     pub send_line_ending_with_bytes: bool,
 
+    #[table(allow_unknown_values)]
+    #[serde(default)]
+    #[table(display = ["-3", "-2", "-1", "Default", "+1", "+2", "+3"])]
+    #[table(values = [-3, -2, -1, 0, 1, 2, 3])]
+    /// Text scroll speed modifier, positive increases, negative decreases.
+    pub text_scroll_speed: i8,
+
     // #[serde(default)]
-    // /// Persist Fake Shell's command history across sessions (TODO).
+    // /// Persist Pseudo Shell's command history across sessions (TODO).
     // pub retain_history: bool,
     //
     #[serde_inline_default_parent]

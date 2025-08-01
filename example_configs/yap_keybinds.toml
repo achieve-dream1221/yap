@@ -14,6 +14,7 @@ ctrl-b = "show-behavior"
 # ctrl-d = "toggle-indices"
 ctrl-d = "show-defmt"
 ctrl-f = "reload-colors"
+ctrl-s = "toggle-pseudo-shell"
 F20 = "esp-hard-reset"
 F21 = "esp-bootloader"
 shift-F21 = "esp-bootloader-unchecked"
@@ -23,6 +24,7 @@ ctrl-h = "toggle-hex"
 ctrl-l = "show-logging"
 ctrl-k = "show-keybinds"
 ctrl-n = ["Core v2 1.4.0"]
+ctrl-b = "toggle-pseudo-shell-hex"
 
 # macros
 F19 = "Restart"

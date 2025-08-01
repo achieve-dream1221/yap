@@ -8,7 +8,7 @@
 # ctrl-y = "toggle-timestamps"
 # ctrl-d = "toggle-indices"
 
-# ctrl-b = "toggle-fake-shell-hex"
+# ctrl-b = "toggle-pseudo-shell-hex"
 # 'ctrl-.' = "show-portsettings"
 
 # ctrl-f = "reload-colors"

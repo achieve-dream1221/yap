@@ -1151,7 +1151,7 @@ impl App {
                     key!(ctrl - a) => (),
                     key!(del) | key!(backspace) if self.user_input.all_text_selected => (),
 
-                    _text_input if self.settings.behavior.fake_shell => {
+                    _text_input if self.settings.behavior.pseudo_shell => {
                         self.user_input.consume_typing_event(key_event)
                     }
 
@@ -1176,7 +1176,7 @@ impl App {
                     }
 
                     // At this point:
-                    // fake_shell is false,
+                    // pseudo_shell is false,
                     // escape_next_keypress is true,
                     // and we're not processing a keybind for escaping keypresses.
                     //
@@ -1730,14 +1730,14 @@ impl App {
                     .notify_str(format!("Toggled Hex View Header {state}"), Color::Gray);
             }
 
-            A::Base(BaseAction::ToggleFakeShell) => {
-                let state = pretty_bool(self.settings.behavior.fake_shell.flip());
+            A::Base(BaseAction::TogglePseudoShell) => {
+                let state = pretty_bool(self.settings.behavior.pseudo_shell.flip());
                 self.settings.save()?;
                 self.notifs
-                    .notify_str(format!("Toggled Fake Shell {state}"), Color::Gray);
+                    .notify_str(format!("Toggled Pseudo Shell {state}"), Color::Gray);
             }
 
-            A::Base(BaseAction::ToggleFakeShellHex) => {
+            A::Base(BaseAction::TogglePseudoShellHex) => {
                 debug!("{}", self.user_input.byte_entry_active());
                 self.user_input.toggle_bytes_entry();
                 debug!("{}", self.user_input.byte_entry_active());
@@ -1747,9 +1747,9 @@ impl App {
                 if self.escape_next_keypress {
                     self.notifs
                         .notify_str("Keypress was already escaped!", Color::Yellow);
-                } else if self.settings.behavior.fake_shell {
+                } else if self.settings.behavior.pseudo_shell {
                     self.notifs.notify_str(
-                        "Can only escape keypress when Fake Shell is disabled!",
+                        "Can only escape keypress when Pseudo Shell is disabled!",
                         Color::Yellow,
                     );
                 }
@@ -2666,7 +2666,7 @@ impl App {
             Menu::Terminal if !serial_healthy => {
                 self.trigger_send_failed_visual()?;
             }
-            Menu::Terminal if self.settings.behavior.fake_shell => {
+            Menu::Terminal if self.settings.behavior.pseudo_shell => {
                 let user_input = self.user_input.value();
 
                 let user_le = &self.settings.serial.tx_line_ending;
@@ -4373,7 +4373,7 @@ impl App {
             _ => Style::new(),
         };
 
-        if self.settings.behavior.fake_shell {
+        if self.settings.behavior.pseudo_shell {
             let input_symbol_style = if port_state.is_connected() {
                 input_style.not_reversed().green()
             } else {
@@ -4410,7 +4410,7 @@ impl App {
         let should_position_cursor = !popup_shown;
 
         match (
-            self.settings.behavior.fake_shell,
+            self.settings.behavior.pseudo_shell,
             self.user_input.value().is_empty(),
         ) {
             (true, true) => {

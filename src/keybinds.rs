@@ -116,9 +116,9 @@ pub enum BaseAction {
     /// Toggle displaying Address+Offset Markers+ASCII label above hex view.
     ToggleHexViewHeader,
     /// Toggle the ability to type into a text buffer before sending to device.
-    ToggleFakeShell,
+    TogglePseudoShell,
     /// Toggle whether the text buffer accepts bytes in Hex format, or plain text.
-    ToggleFakeShellHex,
+    TogglePseudoShellHex,
     /// Reload all Color Rules.
     ReloadColors,
     /// Reload all Keybinds.
@@ -524,7 +524,7 @@ ctrl-w = "toggle-textwrap"
 ctrl-y = "toggle-timestamps"
 ctrl-d = "toggle-indices"
 
-ctrl-b = "toggle-fake-shell-hex"
+ctrl-b = "toggle-pseudo-shell-hex"
 'ctrl-.' = "show-portsettings"
 
 ctrl-f = "reload-colors"
