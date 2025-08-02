@@ -909,8 +909,6 @@ impl SerialWorker {
                             .send(EspEvent::Error(format!("espflash error: {e}")).into())?;
                         error!("Error during binary flashing: {e}");
                     }
-
-                    self.event_tx.send(EspEvent::PortReturned.into())?;
                 } else {
                     self.event_tx.send(
                         EspEvent::Error(
@@ -998,8 +996,6 @@ impl SerialWorker {
                             error!("Error during ELF flashing: {e}");
                         }
                     }
-
-                    self.event_tx.send(EspEvent::PortReturned.into())?;
                 } else {
                     self.event_tx.send(
                         EspEvent::Error(
@@ -1029,17 +1025,19 @@ impl SerialWorker {
         };
 
         self.return_native_port(returned_port)?;
-        self.event_tx.send(EspEvent::PortReturned.into())?;
 
         Ok(())
     }
 
     #[cfg(feature = "espflash")]
+    /// Used when an espflash operation has finished (successfully or otherwise),
+    /// and we were able to regain ownership of the port object.
     fn return_native_port(&mut self, mut port: NativePort) -> Result<(), WorkerError> {
         let mut status = self.shared_status.load().as_ref().clone();
 
+        // Re-applying our expected settings.
+        // TODO consolidate with connect fn?
         port.set_timeout(Duration::from_millis(100))?;
-
         let baud_rate = self.shared_settings.load().baud_rate;
         port.set_baud_rate(baud_rate)?;
         port.write_data_terminal_ready(status.signals.dtr)?;
@@ -1051,7 +1049,9 @@ impl SerialWorker {
 
         self.shared_status.store(Arc::new(status));
 
-        self.event_tx.send(SerialEvent::Connected(None).into())?;
+        // Let the UI thread know to update
+        // self.event_tx.send(SerialEvent::Connected(None).into())?;
+        self.event_tx.send(EspEvent::PortReturned.into())?;
 
         Ok(())
     }
@@ -1083,6 +1083,12 @@ impl SerialWorker {
         self.event_tx.send(EspEvent::Connected { chip }.into())?;
 
         Ok(flasher)
+    }
+}
+
+impl Drop for SerialWorker {
+    fn drop(&mut self) {
+        self.port.drop();
     }
 }
 

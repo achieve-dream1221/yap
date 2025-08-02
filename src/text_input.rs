@@ -11,49 +11,7 @@ use tui_input::{Input, StateChanged, backend::crossterm::EventHandler};
 
 use crate::traits::{LastIndex as _, ToggleBool};
 
-#[derive(Debug, Default)]
-pub struct History {
-    selected: Option<usize>,
-    inner: Vec<HistoryEntry<'static>>,
-}
-
-#[derive(Debug, strum::EnumIs)]
-enum HistoryEntry<'a> {
-    Text(Cow<'a, str>),
-    Bytes(Cow<'a, str>),
-}
-
-impl<'a> HistoryEntry<'a> {
-    pub fn eq_text(&self, other: &str) -> bool {
-        match self {
-            HistoryEntry::Text(text) => text == other,
-            _ => false,
-        }
-    }
-
-    pub fn eq_bytes(&self, other: &str) -> bool {
-        match self {
-            HistoryEntry::Bytes(bytes) => bytes == other,
-            _ => false,
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        match self {
-            HistoryEntry::Text(text) => text.as_ref(),
-            HistoryEntry::Bytes(bytes) => bytes.as_ref(),
-        }
-    }
-
-    pub fn as_ref(&self) -> HistoryEntry {
-        match self {
-            HistoryEntry::Text(text) => HistoryEntry::Text(Cow::Borrowed(text.as_ref())),
-            HistoryEntry::Bytes(bytes) => HistoryEntry::Bytes(Cow::Borrowed(bytes.as_ref())),
-        }
-    }
-}
-
-pub struct UserInput {
+pub struct TextInput {
     input_box: Input,
     bytes_input: bool,
 
@@ -61,13 +19,14 @@ pub struct UserInput {
     pub clipboard: Option<Clipboard>,
 
     history: History,
+    /// Cache for user's input for when the user begins scrolling/searching in history.
     preserved_input: Option<HistoryEntry<'static>>,
     search_result: Option<usize>,
 
     last_word_regex: Regex,
 }
 
-impl Default for UserInput {
+impl Default for TextInput {
     fn default() -> Self {
         let clipboard = Clipboard::new().map_or_else(
             |e| {
@@ -95,7 +54,7 @@ impl Default for UserInput {
     }
 }
 
-impl UserInput {
+impl TextInput {
     /// Clear the input box, preserves history.
     pub fn clear(&mut self) {
         self.input_box.reset();
@@ -103,6 +62,11 @@ impl UserInput {
         self.preserved_input = None;
         self.all_text_selected = false;
     }
+    /// The public method for scrolling through history, replacing the contents of the text buffer temporarily*.
+    ///
+    /// * Becomes not-so-temporary if user edits the input at all.
+    ///
+    /// Stores any previous input the user may have had to return it if they scroll back to the bottom.
     pub fn scroll_history(&mut self, up: bool) {
         if self.history.selected.is_none() && self.search_result.is_some() {
             self.history.selected = self.search_result;
@@ -132,6 +96,10 @@ impl UserInput {
         }
     }
     // TODO add way to get to bottom of history/back to preserved input without page up/down.
+    /// Try to find an entry in the history, starting from the newest, that begins with the
+    /// user's currently entered text.
+    ///
+    /// If in byte-entry mode, only searches for byte history entries, and the same goes for text entries.
     pub fn find_input_in_history(&mut self) {
         // Skip if there's no text to search with.
         if self.input_box.value().is_empty()
@@ -151,11 +119,22 @@ impl UserInput {
         }
         let history_len = self.history.inner.len();
 
-        let find = |last: usize, query: &str, bytes: bool| {
+        let find = |last: usize, query: &str, bytes_only: bool| {
+            let query_len = query.len();
             self.history.inner[..last]
                 .iter()
                 .rev()
-                .find_position(|h| h.is_bytes() == bytes && h.as_str().starts_with(query))
+                .find_position(|h| {
+                    h.is_bytes() == bytes_only && {
+                        let history_str = h.as_str();
+                        // maybe add a toggle for the case-sensitive search? unsure
+                        if history_str.is_char_boundary(query_len) {
+                            history_str[..query_len].eq_ignore_ascii_case(query)
+                        } else {
+                            false
+                        }
+                    }
+                })
                 .map(|(i, h)| (last - i - 1, h))
         };
 
@@ -276,6 +255,7 @@ impl UserInput {
             _ => (),
         }
     }
+    /// Remove text up until the space before the previous word.
     pub fn remove_one_word(&mut self) {
         self.clear_history_selection();
         let value_len = self.value().len();
@@ -296,16 +276,25 @@ impl UserInput {
     pub fn input_box(&self) -> &Input {
         &self.input_box
     }
+    /// Consume the current text and append it to user history.
     pub fn commit_input_to_history(&mut self) {
         self.history.push(self.input_box.value(), self.bytes_input);
         self.clear();
     }
 }
 
+#[derive(Debug, Default)]
+pub struct History {
+    selected: Option<usize>,
+    inner: Vec<HistoryEntry<'static>>,
+}
+
 impl History {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Appends given text to history,
+    /// byte inputs are stored as the user-entered string.
     pub fn push(&mut self, entry: &str, bytes: bool) {
         if entry.is_empty() {
             return;
@@ -341,6 +330,7 @@ impl History {
             self.inner.push(entry);
         }
     }
+    /// Create a borrowing version of the selected entry if present.
     fn get_selected(&self) -> Option<HistoryEntry> {
         self.selected
             .and_then(|index| self.inner.get(index).map(HistoryEntry::as_ref))
@@ -348,6 +338,8 @@ impl History {
     fn clear_selection(&mut self) {
         self.selected = None;
     }
+    /// Scroll through history, returning an enum containing a reference to the
+    /// (potentially-newly) selected element.
     fn scroll(&mut self, up: bool) -> Option<HistoryEntry> {
         if self.inner.is_empty() {
             return None;
@@ -373,5 +365,41 @@ impl History {
         }
 
         self.get_selected()
+    }
+}
+
+#[derive(Debug, strum::EnumIs)]
+enum HistoryEntry<'a> {
+    Text(Cow<'a, str>),
+    Bytes(Cow<'a, str>),
+}
+
+impl<'a> HistoryEntry<'a> {
+    pub fn eq_text(&self, other: &str) -> bool {
+        match self {
+            HistoryEntry::Text(text) => text == other,
+            _ => false,
+        }
+    }
+
+    pub fn eq_bytes(&self, other: &str) -> bool {
+        match self {
+            HistoryEntry::Bytes(bytes) => bytes == other,
+            _ => false,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            HistoryEntry::Text(text) => text.as_ref(),
+            HistoryEntry::Bytes(bytes) => bytes.as_ref(),
+        }
+    }
+
+    pub fn as_ref(&self) -> HistoryEntry {
+        match self {
+            HistoryEntry::Text(text) => HistoryEntry::Text(Cow::Borrowed(text.as_ref())),
+            HistoryEntry::Bytes(bytes) => HistoryEntry::Bytes(Cow::Borrowed(bytes.as_ref())),
+        }
     }
 }

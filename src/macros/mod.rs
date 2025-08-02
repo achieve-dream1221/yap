@@ -347,26 +347,23 @@ impl Macros {
                     }
                 };
 
-                if let Some(fallback_category) = &deserialized.category_name {
-                    deserialized
-                        .macros
-                        .iter_mut()
-                        .filter(|m| m.category.is_none())
-                        .for_each(|m| m.category = Some(fallback_category.to_owned()));
-                } else {
-                    deserialized
-                        .macros
-                        .iter_mut()
-                        .filter(|m| m.category.is_none())
-                        .for_each(|m| {
-                            m.category = Some(
-                                file_path
-                                    .file_stem()
-                                    .expect("expected to remove toml extension")
-                                    .into(),
-                            )
-                        });
-                }
+                // If a macro has no category set, use either the stem of the file
+                // or the override if one was provided.
+                let fallback_category = deserialized
+                    .category_override
+                    .as_ref()
+                    .map(CompactString::as_str)
+                    .unwrap_or_else(|| {
+                        file_path
+                            .file_stem()
+                            .expect("expected to remove toml extension")
+                    });
+
+                deserialized
+                    .macros
+                    .iter_mut()
+                    .filter(|m| m.category.is_none())
+                    .for_each(|m| m.category = Some(fallback_category.into()));
 
                 for ser_macro in deserialized.macros {
                     let (mut tag, content) = ser_macro.into_tag_and_content();
@@ -414,7 +411,7 @@ struct MacroFile {
     #[serde(default)]
     #[serde(alias = "name")]
     #[serde(alias = "category")]
-    category_name: Option<CompactString>,
+    category_override: Option<CompactString>,
     #[serde(rename = "macro")]
     macros: Vec<SerializedMacro>,
 }
