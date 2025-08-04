@@ -9,8 +9,6 @@ use ratatui::{
     text::{Line, Span},
 };
 
-// use crate::tui::buffer::LineEnding;
-
 /// Trait that provides simple methods to get the last valid index of a collection or slice.
 pub trait LastIndex {
     /// Returns the index of the last element in the collection.

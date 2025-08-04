@@ -38,9 +38,6 @@ use tracing::{debug, error, info, trace, warn};
 use tui_big_text::{BigText, PixelSize};
 use tui_input::{Input, backend::crossterm::EventHandler};
 
-#[cfg(feature = "defmt")]
-#[cfg(feature = "logging")]
-use crate::buffer::{LoggingHandle, LoggingWorkerMissing};
 use crate::{
     TcpStreamHealth,
     buffer::Buffer,
@@ -95,7 +92,9 @@ use crate::{
 
 #[cfg(feature = "logging")]
 use crate::{
-    buffer::LoggingEvent, keybinds::LoggingAction, settings::Logging,
+    buffer::{LoggingEvent, LoggingHandle, LoggingWorkerMissing},
+    keybinds::LoggingAction,
+    settings::Logging,
     tui::logging::sync_logs_button,
 };
 

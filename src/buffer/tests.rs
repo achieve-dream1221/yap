@@ -224,6 +224,7 @@ fn test_finder_multiple_consecutive() {
 fn reconsumption_smoke_test() {
     use rand::prelude::*;
 
+    let line_ending = b"\n";
     let settings = crate::settings::Settings::default();
 
     let color_rules = ColorRules::default();
@@ -232,7 +233,7 @@ fn reconsumption_smoke_test() {
     let (tx, rx) = crossbeam::channel::bounded(0);
 
     let mut buffer = Buffer::new(
-        &[b'\n'],
+        line_ending,
         color_rules,
         &settings,
         #[cfg(feature = "logging")]
@@ -240,7 +241,7 @@ fn reconsumption_smoke_test() {
     );
 
     let mut rng = rand::rng();
-    let alphanumeric = rand::distr::Alphanumeric::default();
+    let alphanumeric = rand::distr::Alphanumeric;
 
     let line_count = rng.random_range(128..=512);
 
@@ -257,26 +258,24 @@ fn reconsumption_smoke_test() {
                 let text = alphanumeric.sample_string(&mut rng, byte_count as usize);
                 buffer.append_user_text(
                     &text,
-                    &[b'\n'],
+                    line_ending,
                     #[cfg(feature = "macros")]
                     None,
                 );
             } else {
                 buffer.append_user_bytes(
                     &bytes,
-                    &[b'\n'],
+                    line_ending,
                     #[cfg(feature = "macros")]
                     None,
                 );
             }
+        } else if random_string {
+            let text = alphanumeric.sample_string(&mut rng, byte_count as usize);
+            let bytes = text.into();
+            buffer.fresh_rx_bytes(Local::now(), bytes);
         } else {
-            if random_string {
-                let text = alphanumeric.sample_string(&mut rng, byte_count as usize);
-                let bytes = text.into();
-                buffer.fresh_rx_bytes(Local::now(), bytes);
-            } else {
-                buffer.fresh_rx_bytes(Local::now(), bytes);
-            }
+            buffer.fresh_rx_bytes(Local::now(), bytes);
         }
     }
     let pre_raw = buffer.raw.clone();

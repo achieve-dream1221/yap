@@ -36,6 +36,9 @@ use crate::{
     settings::{Defmt, DefmtSupport},
 };
 
+#[cfg(feature = "logging")]
+use crate::{app::Event, settings::Logging};
+
 mod buf_line;
 mod hex_spans;
 pub use hex_spans::*;
@@ -43,28 +46,19 @@ mod range_slice;
 pub use range_slice::RangeSlice;
 mod tui;
 
+#[cfg(feature = "defmt")]
+pub mod defmt;
+
 #[cfg(feature = "logging")]
 mod logging;
-#[cfg(feature = "logging")]
-use crate::{app::Event, settings::Logging};
-#[cfg(feature = "logging")]
-use crossbeam::channel::Sender;
+
 #[cfg(feature = "logging")]
 pub use logging::{DEFAULT_TIMESTAMP_FORMAT, LoggingEvent, LoggingHandle, LoggingWorkerMissing};
 #[cfg(feature = "logging")]
-use takeable::Takeable;
-
-#[cfg(feature = "defmt")]
-pub mod defmt;
-// #[cfg(feature = "defmt")]
-// pub mod ;
+use {crossbeam::channel::Sender, takeable::Takeable};
 
 #[cfg(test)]
 mod tests;
-
-// mod wrap;
-
-// use crate::app::{LINE_ENDINGS, LINE_ENDINGS_DEFAULT};
 
 pub struct Buffer {
     /// Raw bytes from the port.
