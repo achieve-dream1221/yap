@@ -43,6 +43,8 @@ pub enum DefmtPacketError {
     RzcobsDecompress,
     #[error("packet decode failed")]
     DefmtDecode,
+    #[error("defmt raw/uncompressed parse error, ceasing further attempts")]
+    MalformedRawFrame,
 }
 
 #[derive(Debug, thiserror::Error)]

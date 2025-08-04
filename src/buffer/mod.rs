@@ -925,14 +925,12 @@ impl Buffer {
                             }
                             Err(defmt_decoder::DecodeError::Malformed) => {
                                 self.defmt_raw_malformed = true;
-                                let line =
-                                    Line::raw("defmt raw parse error, ceasing further attempts.");
-                                self.styled_lines.rx.push(BufLine::port_text_line(
-                                    line,
+                                self.styled_lines.failed_decode(
+                                    delimited_slice,
+                                    DefmtPacketError::MalformedRawFrame,
                                     kit,
-                                    None,
-                                    &LineEnding::None,
-                                ));
+                                    &self.line_ending,
+                                );
                                 break;
                             }
                         }
@@ -1102,7 +1100,6 @@ impl Buffer {
             );
 
         for x in buffer_slices {
-            eprintln!("{x:?}");
             let (slice, timestamp, was_user_line, _range) = x;
             // If this was where a user line we allow to render is,
             // then we'll finish this line early if it's not already finished.
