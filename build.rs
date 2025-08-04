@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, fs};
 
 use copy_to_output::copy_to_output;
 
@@ -11,6 +11,10 @@ fn main() {
     ];
 
     for file in &items_to_copy {
+        // Skip files that don't exist.
+        if !fs::exists(file).unwrap() {
+            continue;
+        }
         copy_to_output(file, &env::var("PROFILE").unwrap())
             .unwrap_or_else(|_| panic!("Could not copy {file}"));
     }
