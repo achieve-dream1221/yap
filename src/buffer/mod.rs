@@ -19,29 +19,22 @@ use ratatui::{
 use ratatui_macros::span;
 use tracing::{debug, error, warn};
 
-#[cfg(feature = "defmt")]
-use crate::buffer::defmt::DefmtDecoder;
+use crate::{
+    buffer::buf_line::{BufLineKit, LineFinished, RenderSettings},
+    changed,
+    settings::{Rendering, Settings},
+    traits::{ByteSuffixCheck, LineHelpers, interleave_by},
+    tui::color_rules::ColorRules,
+};
 
 #[cfg(feature = "defmt")]
-use crate::settings::Defmt;
 use crate::{
     buffer::{
-        buf_line::{BufLineKit, LineFinished, RenderSettings},
-        tui::COLOR_RULES_PATH,
+        buf_line::FrameLocation,
+        defmt::{DefmtDecoder, DefmtPacketError, rzcobs_decode},
     },
-    changed, config_adjacent_path,
-    settings::Rendering,
-    traits::{ByteSuffixCheck, LineHelpers, interleave_by},
-    tui::color_rules::{ColorRuleLoadError, ColorRules},
+    settings::{Defmt, DefmtSupport},
 };
-
-#[cfg(feature = "defmt")]
-use crate::buffer::{
-    buf_line::FrameLocation,
-    defmt::{DefmtPacketError, rzcobs_decode},
-};
-#[cfg(feature = "defmt")]
-use crate::settings::DefmtSupport;
 
 mod buf_line;
 mod hex_spans;
@@ -120,6 +113,7 @@ pub struct Buffer {
 }
 
 #[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
 /// Controls for how the buffer will be rendered.
 pub struct BufferState {
     /// Positive offset from bottom, scrolling up into past inputs.
@@ -345,11 +339,12 @@ impl From<&[u8]> for LineEnding {
 // TODO tests for buffer behavior with new lines
 // (i broke it once before with tests passing, so, bleh)
 
+#[cfg_attr(test, derive(Debug, Clone, PartialEq))]
 struct RawBuffer {
     /// Raw bytes as recieved from the serial port.
     inner: Vec<u8>,
     /// Time-tagged indexes into `raw_buffer`, from each input from the port.
-    buffer_timestamps: Vec<(usize, DateTime<Local>)>,
+    buffer_timestamps: Vec<(usize, DateTime<Local>, usize)>,
     /// Slice retrieval methods start from this index.
     consumed_up_to: usize,
 }
@@ -372,7 +367,8 @@ impl RawBuffer {
     /// Fresh bytes!
     fn feed(&mut self, new: &[u8], timestamp: DateTime<Local>) {
         // warn!("fed {} bytes", new.len());
-        self.buffer_timestamps.push((self.inner.len(), timestamp));
+        self.buffer_timestamps
+            .push((self.inner.len(), timestamp, new.len()));
         self.inner.extend(new);
     }
     fn consumed(&mut self, amount: usize) {
@@ -484,6 +480,7 @@ impl DelimitedSlice<'_> {
     }
 }
 
+#[cfg_attr(test, derive(Debug, Clone, PartialEq))]
 struct StyledLines {
     /// Text and Defmt lines recieved from the port.
     rx: Vec<BufLine>,
@@ -749,26 +746,31 @@ impl StyledLines {
 impl Buffer {
     // TODO lower sources of truth for all these settings structs.
     // Rc<Something> with the settings that's shared around?
-    pub fn build(
+    pub fn new(
         line_ending: &[u8],
-        rendering: Rendering,
-        #[cfg(feature = "logging")] logging: Logging,
+        color_rules: ColorRules,
+        settings: &Settings,
         #[cfg(feature = "logging")] event_tx: Sender<Event>,
-        #[cfg(feature = "defmt")] defmt: Defmt,
-    ) -> Result<Self, ColorRuleLoadError> {
+    ) -> Self {
         let line_ending: LineEnding = line_ending.into();
+
+        let rendering = settings.rendering.clone();
+        #[cfg(feature = "defmt")]
+        let defmt = settings.defmt.clone();
+        #[cfg(feature = "logging")]
+        let logging = settings.logging.clone();
+
         #[cfg(feature = "logging")]
         let (log_handle, log_thread) = LoggingHandle::new(
             line_ending.clone(),
             logging.clone(),
+            #[cfg(feature = "logging")]
             event_tx,
             #[cfg(feature = "defmt")]
             defmt.clone(),
         );
 
-        let color_rules = ColorRules::load_from_file(config_adjacent_path(COLOR_RULES_PATH))?;
-
-        Ok(Self {
+        Self {
             raw: RawBuffer {
                 inner: Vec::with_capacity(1024),
                 buffer_timestamps: Vec::with_capacity(1024),
@@ -791,19 +793,21 @@ impl Buffer {
             rendering,
             line_ending,
             color_rules,
+
             #[cfg(feature = "logging")]
             log_handle,
             #[cfg(feature = "logging")]
             log_thread: Takeable::new(log_thread),
             #[cfg(feature = "logging")]
             log_settings: logging,
+
             #[cfg(feature = "defmt")]
             defmt_decoder: None,
             #[cfg(feature = "defmt")]
             defmt_settings: defmt,
             #[cfg(feature = "defmt")]
             defmt_raw_malformed: false,
-        })
+        }
     }
 
     /// The public interface where newly recieved bytes are sent.
@@ -1017,15 +1021,19 @@ impl Buffer {
             .iter()
             .map(|b| {
                 let LineType::User {
-                    is_bytes, is_macro, ..
+                    is_bytes,
+                    #[cfg(feature = "macros")]
+                    is_macro,
+                    ..
                 } = &b.line_type
                 else {
-                    unreachable!();
+                    unreachable!("only user lines should be in here");
                 };
 
                 (
                     LineType::User {
                         is_bytes: *is_bytes,
+                        #[cfg(feature = "macros")]
                         is_macro: *is_macro,
                         reloggable_raw: Vec::new(),
                         escaped_line_ending: None,
@@ -1056,7 +1064,7 @@ impl Buffer {
             rx_buffer
                 .buffer_timestamps
                 .iter()
-                .map(|(index, timestamp)| (*index, *timestamp, false))
+                .map(|(index, timestamp, _len)| (*index, *timestamp, false))
                 // Add a "finale" element to capture any remaining buffer, always placed at the end.
                 .chain(std::iter::once((orig_buf_len, Local::now(), false))),
             user_timestamps
@@ -1093,7 +1101,9 @@ impl Buffer {
                 },
             );
 
-        for (slice, timestamp, was_user_line, _range) in buffer_slices {
+        for x in buffer_slices {
+            eprintln!("{x:?}");
+            let (slice, timestamp, was_user_line, _range) = x;
             // If this was where a user line we allow to render is,
             // then we'll finish this line early if it's not already finished.
             if was_user_line {
@@ -1193,7 +1203,7 @@ impl Buffer {
             self.raw
                 .buffer_timestamps
                 .iter()
-                .map(|(index, timestamp)| (*index, *timestamp, blank_port_line_type.clone()))
+                .map(|(index, timestamp, _len)| (*index, *timestamp, blank_port_line_type.clone()))
                 // Add a "finale" element to capture any remaining buffer, always placed at the end.
                 .chain(std::iter::once((
                     orig_buf_len,
@@ -1246,7 +1256,8 @@ impl Buffer {
             // then we'll finish this line early if it's not already finished.
             if let LineType::User {
                 is_bytes: _,
-                is_macro: _,
+                #[cfg(feature = "macros")]
+                    is_macro: _,
                 escaped_line_ending,
                 reloggable_raw,
             } = line_type
@@ -1389,10 +1400,13 @@ impl Buffer {
         &mut self,
         bytes: &[u8],
         line_ending_bytes: &[u8],
-        macro_sensitivity: Option<bool>,
+        #[cfg(feature = "macros")] macro_sensitivity: Option<bool>,
     ) {
         let now = Local::now();
         let user_span = span!(Color::DarkGray; "BYTE> ");
+
+        #[cfg(not(feature = "macros"))]
+        let macro_sensitivity = None;
 
         // If input is a macro and is marked sensitive, just replace every shown byte with a *
         let text = if let Some(true) = macro_sensitivity {
@@ -1431,6 +1445,7 @@ impl Buffer {
             kit,
             &tx_line_ending,
             true,
+            #[cfg(feature = "macros")]
             macro_sensitivity.is_some(),
             reloggable_raw,
         );
@@ -1467,7 +1482,7 @@ impl Buffer {
         &mut self,
         text: &str,
         line_ending_bytes: &[u8],
-        macro_sensitivity: Option<bool>,
+        #[cfg(feature = "macros")] macro_sensitivity: Option<bool>,
     ) {
         let now = Local::now();
 
@@ -1477,6 +1492,9 @@ impl Buffer {
 
         // TODO HANDLE MULTI-LINE USER INPUT IN THE UI AAAAAAAAA
         for (trunc, _orig, _range) in line_ending_iter(text.as_bytes(), &tx_line_ending) {
+            #[cfg(not(feature = "macros"))]
+            let macro_sensitivity = None;
+
             let line = if let Some(true) = macro_sensitivity {
                 let text = span!(Style::new().dark_gray(); "*".repeat(trunc.len()));
                 Line::from(vec![user_span.clone(), text])
@@ -1506,6 +1524,7 @@ impl Buffer {
                 kit,
                 &tx_line_ending,
                 false,
+                #[cfg(feature = "macros")]
                 macro_sensitivity.is_some(),
                 reloggable_raw,
             );

@@ -1,5 +1,10 @@
-use crate::buffer::{LineEnding, line_ending_iter};
+use crate::{
+    buffer::{Buffer, LineEnding, line_ending_iter},
+    tui::color_rules::ColorRules,
+};
+use chrono::Local;
 use memchr::memmem::Finder;
+use rand::distr::SampleString;
 
 #[test]
 fn test_single_line() {
@@ -213,4 +218,74 @@ fn test_finder_multiple_consecutive() {
     assert_eq!(res[0].1, b"xaaxaaxyz");
     assert_eq!(res[1].0, b"aa");
     assert_eq!(res[1].1, b"aaxyz");
+}
+
+#[test]
+fn reconsumption_smoke_test() {
+    use rand::prelude::*;
+
+    let settings = crate::settings::Settings::default();
+
+    let color_rules = ColorRules::default();
+
+    #[cfg(feature = "logging")]
+    let (tx, rx) = crossbeam::channel::bounded(0);
+
+    let mut buffer = Buffer::new(
+        &[b'\n'],
+        color_rules,
+        &settings,
+        #[cfg(feature = "logging")]
+        tx,
+    );
+
+    let mut rng = rand::rng();
+    let alphanumeric = rand::distr::Alphanumeric::default();
+
+    let line_count = rng.random_range(128..=512);
+
+    for _ in 0..line_count {
+        let random_string = rng.random_bool(0.5);
+        let is_tx = rng.random_bool(0.4);
+        let byte_count: u8 = rng.random_range(1..=255);
+        let mut bytes: Vec<u8> = Vec::with_capacity(byte_count as usize);
+        for _ in 0..byte_count {
+            bytes.push(rng.random());
+        }
+        if is_tx {
+            if random_string {
+                let text = alphanumeric.sample_string(&mut rng, byte_count as usize);
+                buffer.append_user_text(
+                    &text,
+                    &[b'\n'],
+                    #[cfg(feature = "macros")]
+                    None,
+                );
+            } else {
+                buffer.append_user_bytes(
+                    &bytes,
+                    &[b'\n'],
+                    #[cfg(feature = "macros")]
+                    None,
+                );
+            }
+        } else {
+            if random_string {
+                let text = alphanumeric.sample_string(&mut rng, byte_count as usize);
+                let bytes = text.into();
+                buffer.fresh_rx_bytes(Local::now(), bytes);
+            } else {
+                buffer.fresh_rx_bytes(Local::now(), bytes);
+            }
+        }
+    }
+    let pre_raw = buffer.raw.clone();
+    let pre_lines = buffer.styled_lines.clone();
+    buffer.reconsume_raw_buffer();
+
+    assert_eq!(pre_raw, buffer.raw);
+    assert_eq!(pre_lines, buffer.styled_lines);
+
+    #[cfg(feature = "logging")]
+    assert!(rx.is_empty());
 }

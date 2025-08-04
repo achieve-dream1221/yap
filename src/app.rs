@@ -60,6 +60,7 @@ use crate::{
     traits::{FirstChars, LastIndex, LineHelpers, RequiresPort, ToggleBool},
     tui::{
         POPUP_MENU_SELECTOR_COUNT, centered_rect_size,
+        color_rules::{COLOR_RULES_PATH, ColorRules},
         prompts::{
             AttemptReconnectPrompt, DisconnectPrompt, IgnorePortByNamePrompt,
             IgnoreUsbDevicePrompt, PromptKeybind, PromptTable,
@@ -445,16 +446,15 @@ impl App {
             event_tx.clone(),
         )?;
 
-        let buffer = Buffer::build(
+        let color_rules = ColorRules::load_from_file(config_adjacent_path(COLOR_RULES_PATH))?;
+
+        let buffer = Buffer::new(
             line_ending,
-            settings.rendering.clone(),
-            #[cfg(feature = "logging")]
-            settings.logging.clone(),
+            color_rules,
+            &settings,
             #[cfg(feature = "logging")]
             event_tx.clone(),
-            #[cfg(feature = "defmt")]
-            settings.defmt.clone(),
-        )?;
+        );
 
         // Silly but simple, since this doesn't always need to be mutable, and Clippy wants things proper.
         #[cfg(feature = "defmt")]
@@ -1068,6 +1068,7 @@ impl App {
                 self.buffer.append_user_bytes(
                     &content,
                     &macro_line_ending,
+                    #[cfg(feature = "macros")]
                     Some(macro_content.sensitive),
                 );
             }
@@ -1077,6 +1078,7 @@ impl App {
                 self.buffer.append_user_text(
                     &macro_content.content,
                     &macro_line_ending,
+                    #[cfg(feature = "macros")]
                     Some(macro_content.sensitive),
                 );
 
@@ -2745,8 +2747,12 @@ impl App {
 
                     if user_le_bytes.is_some() || !bytes.is_empty() {
                         self.serial.send_bytes(bytes.clone(), user_le_bytes)?;
-                        self.buffer
-                            .append_user_bytes(&bytes, user_le_bytes.unwrap_or(&[]), None);
+                        self.buffer.append_user_bytes(
+                            &bytes,
+                            user_le_bytes.unwrap_or(&[]),
+                            #[cfg(feature = "macros")]
+                            None,
+                        );
                         self.repeating_line_flip.flip();
                     }
                 } else if !user_input.is_empty() || !user_le_bytes.is_empty() {
@@ -2755,8 +2761,12 @@ impl App {
                         user_le_bytes,
                         self.settings.behavior.unescape_typed_bytes,
                     )?;
-                    self.buffer
-                        .append_user_text(user_input, user_le_bytes, None);
+                    self.buffer.append_user_text(
+                        user_input,
+                        user_le_bytes,
+                        #[cfg(feature = "macros")]
+                        None,
+                    );
                     self.repeating_line_flip.flip();
                 }
 

@@ -32,7 +32,7 @@ pub fn esp_println_delimited(input: &[u8]) -> IResult<&[u8], DelimitedSlice<'_>>
                     // skip any leading 0x00 bytes after FRAME_START before content
                     complete::take_till(|b| b != FRAME_END[0]),
                     // payload, never empty, must not contain 0x00 mid-data
-                    // fails until FRAME_END is encountered
+                    // streaming version fails until FRAME_END is encountered
                     streaming::take_till(|b| b == FRAME_END[0]),
                 ),
                 tag(FRAME_END), // terminator, 0x00, rzcobs frame end
@@ -112,22 +112,22 @@ pub fn zero_delimited(input: &[u8]) -> IResult<&[u8], DelimitedSlice<'_>> {
     map(
         terminated(
             preceded(
-                // taking every byte until 0x00 is encountered
+                // skip any leading 0x00 bytes
                 complete::take_till(|b| b != 0x00),
-                // fail until there _is_ a 0x00 found
+                // streaming version fails until 0x00 is encountered
                 streaming::take_till(|b| b == 0x00),
             ),
             // and then consume it, as it should not be present in the "clean" output
             tag(&[0x00]),
         ),
-        |complete: &[u8]| {
+        |inner: &[u8]| {
+            let range_slice = unsafe { RangeSlice::from_parent_and_child(input, inner) };
             // Add length of terminating tag,
-            let raw_end = complete.len().wrapping_add(1);
-
+            let raw_end = range_slice.range.end.wrapping_add(1);
             // and can simply start from the beginning of the input for the rest.
             DelimitedSlice::DefmtRzcobs {
                 raw: &input[..raw_end],
-                inner: complete,
+                inner,
             }
         },
     )(input)
@@ -138,6 +138,7 @@ fn zero_delimit_test() {
     let packet = &[0xFF, 0x00, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x00];
     //                       1.........  ----------- 2...........................
     //                       Packet 1    Ignored     Packet 2
+    //        Inner values:  ....                    ......................
 
     let (rest, delimited) = zero_delimited(packet).unwrap();
     println!("{rest:#?}");
@@ -177,11 +178,11 @@ fn zero_delimit_test() {
         }
     );
 
-    let packet = &[0x00, 0xFF];
+    let packet = &[0x00, 0x00, 0xFF];
     let res = zero_delimited(packet);
-    assert!(res.is_err());
+    assert!(res.is_err()); // Incomplete, missing trailing 0x00
 
     let packet = &[0xDE, 0xAD, 0xBE, 0xEF];
     let res = zero_delimited(packet);
-    assert!(res.is_err());
+    assert!(res.is_err()); // Incomplete, missing trailing 0x00
 }

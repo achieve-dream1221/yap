@@ -24,6 +24,7 @@ use crate::{
 
 use super::{LineEnding, line_ending_iter};
 
+#[cfg_attr(test, derive(Clone))]
 pub struct LoggingHandle {
     command_tx: Sender<LoggingCommand>,
 }

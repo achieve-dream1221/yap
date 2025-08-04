@@ -4,7 +4,6 @@ fn main() -> color_eyre::Result<()> {
 
 // Sooner TODOs:
 // deduplication of code for defmt and logging defmt
-// "fuzz" testing with reconsume_raw, just compare cloned structs
 
 // General TODOs:
 // Mouse select in line mode?

@@ -8,7 +8,7 @@ version = "0.1.0-pre.0"
 edition = "2024"
 
 [features]
-default = ["yap-full"]
+default = []
 # Allow flashing connected ESP32 targets with binary and ELF files
 espflash = ["dep:espflash"]
 logging = []
@@ -146,6 +146,7 @@ copy_to_output = { git = "https://github.com/dougcooper/copy_to_output", rev = "
 
 [dev-dependencies]
 enable-ansi-support = "0.2.1"
+rand = "0.9.2"
 
 # Enable when flamegraphing
 # [profile.release]

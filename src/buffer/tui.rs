@@ -18,12 +18,10 @@ use crate::{
     config_adjacent_path,
     settings::HexHighlightStyle,
     traits::{ToggleBool, interleave_by},
-    tui::color_rules::{ColorRuleLoadError, ColorRules},
+    tui::color_rules::{COLOR_RULES_PATH, ColorRuleLoadError, ColorRules},
 };
 
 use super::{Buffer, UserEcho, buf_line::BufLine, hex_spans::*};
-
-pub const COLOR_RULES_PATH: &str = "yap_colors.toml";
 
 impl Buffer {
     /// Updates each BufLine's render height with the new terminal width, returning the sum total at the end

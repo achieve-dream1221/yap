@@ -19,6 +19,7 @@ use crate::{
 const TIME_FORMAT: &str = "[%H:%M:%S%.3f] ";
 
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq))]
 /// The shared base object-to-render between Port/User lines.
 pub struct BufLine {
     pub(super) timestamp: DateTime<Local>,
@@ -88,6 +89,7 @@ pub(super) enum LineType {
     PortHidden(LineFinished),
     User {
         is_bytes: bool,
+        #[cfg(feature = "macros")]
         is_macro: bool,
         escaped_line_ending: Option<CompactString>,
         /// Complete byte sequence that was sent to port, including line ending.
@@ -274,11 +276,12 @@ impl BufLine {
         kit: BufLineKit,
         tx_line_ending: &LineEnding,
         is_bytes: bool,
-        is_macro: bool,
+        #[cfg(feature = "macros")] is_macro: bool,
         reloggable_raw: Vec<u8>,
     ) -> Self {
         let line_type = LineType::User {
             is_bytes,
+            #[cfg(feature = "macros")]
             is_macro,
             escaped_line_ending: tx_line_ending.escaped_from(&reloggable_raw),
             reloggable_raw,

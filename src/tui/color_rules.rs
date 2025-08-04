@@ -18,7 +18,10 @@ use crate::{
     traits::{LineHelpers, LineMutator},
 };
 
+pub const COLOR_RULES_PATH: &str = "yap_colors.toml";
+
 #[derive(Debug, Default)]
+#[cfg_attr(test, derive(Clone))]
 pub struct ColorRules {
     regex_lines: Vec<(RegexRule, RuleType)>,
     regex_words: Vec<(RegexRule, RuleType)>,
@@ -26,14 +29,17 @@ pub struct ColorRules {
     literal_words: Vec<(LiteralRule, RuleType)>,
 }
 #[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
 struct RegexRule {
     regex: Regex,
 }
 #[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
 struct LiteralRule {
     finder: Finder<'static>,
 }
 #[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
 enum RuleType {
     Color(Color),
     Hide,
