@@ -92,9 +92,7 @@ use crate::{
 
 #[cfg(feature = "logging")]
 use crate::{
-    buffer::{LoggingEvent, LoggingHandle, LoggingWorkerMissing},
-    keybinds::LoggingAction,
-    settings::Logging,
+    buffer::LoggingEvent, keybinds::LoggingAction, settings::Logging,
     tui::logging::sync_logs_button,
 };
 
@@ -5016,7 +5014,7 @@ pub enum YapLoadDefmtError {
     DefmtLoad(#[from] DefmtLoadError),
     #[cfg(feature = "logging")]
     #[error("failed to send logging worker new defmt table")]
-    LoggingWorker(#[from] LoggingWorkerMissing),
+    LoggingWorker(#[from] crate::buffer::LoggingWorkerMissing),
     #[cfg(feature = "defmt-watch")]
     #[error(transparent)]
     ElfWatcher(#[from] ElfWatcherMissing),
@@ -5027,7 +5025,7 @@ pub fn _try_load_defmt_elf(
     path: &Utf8Path,
     decoder_opt: &mut Option<Arc<DefmtDecoder>>,
     recent_elfs: &mut DefmtRecentElfs,
-    #[cfg(feature = "logging")] logging: &LoggingHandle,
+    #[cfg(feature = "logging")] logging: &crate::buffer::LoggingHandle,
     #[cfg(feature = "defmt-watch")] watcher_handle: &mut ElfWatchHandle,
 ) -> Result<Option<LocationsError>, YapLoadDefmtError> {
     let new_decoder = DefmtDecoder::from_elf_path(path);
