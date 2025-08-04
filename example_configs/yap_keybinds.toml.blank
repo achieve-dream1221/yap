@@ -1,4 +1,4 @@
-# use --print-actions (-p) to see all built-in actions and more help!
+# Use --print-actions (-p) to see all built-in actions and more help!
 
 [keybindings]
 # ctrl-o = "toggle-dtr"

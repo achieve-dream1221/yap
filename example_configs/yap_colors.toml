@@ -10,9 +10,9 @@
 # Note: hidden/censored contents are still saved to log files raw.
 
 # Example: Regex, color all instances of "lorem" cyan, case-insensitive
-# [[regex]]
-# rule = '(?i)lorem'
-# color = "cyan"
+[[regex]]
+rule = '(?i)lorem'
+color = "cyan"
 
 # Example: Literal, color entire line red if "STOP" is found, case-sensitive.
 # [[literal]]
@@ -23,34 +23,39 @@
 # Supported colors can be seen here:
 # https://docs.rs/ratatui/latest/ratatui/style/enum.Color.html
 
-[[regex]]
-rule = '^\[\s*\d+\]\[D\]\[[^\]:]+(?::\d+)?\]'
-color = "blue"
-line = true
+## OpenShock Log Line Highlighting Examples
 
-[[regex]]
-rule = '^\[\s*\d+\]\[I\]\[[^\]:]+(?::\d+)?\]'
-color = "green"
-line = true
-
-[[regex]]
-rule = '^\[\s*\d+\]\[E\]\[[^\]:]+(?::\d+)?\]'
-color = "red"
-line = true
-
-[[regex]]
-rule = '^\[\s*\d+\]\[W\]\[[^\]:]+(?::\d+)?\]'
-color = "yellow"
-line = true
-
+# Verbose
 [[regex]]
 rule = '^\[\s*\d+\]\[V\]\[[^\]:]+(?::\d+)?\]'
 color = "magenta"
 line = true
 
+# Debug
 [[regex]]
-rule = '(?i)lorem'
-color = "cyan"
+rule = '^\[\s*\d+\]\[D\]\[[^\]:]+(?::\d+)?\]'
+color = "blue"
+line = true
+
+# Info
+[[regex]]
+rule = '^\[\s*\d+\]\[I\]\[[^\]:]+(?::\d+)?\]'
+color = "green"
+line = true
+
+# Warning
+[[regex]]
+rule = '^\[\s*\d+\]\[W\]\[[^\]:]+(?::\d+)?\]'
+color = "yellow"
+line = true
+
+# Error
+[[regex]]
+rule = '^\[\s*\d+\]\[E\]\[[^\]:]+(?::\d+)?\]'
+color = "red"
+line = true
+
+## Misc Examples
 
 [[regex]]
 rule = "(?i)OpenShock"
