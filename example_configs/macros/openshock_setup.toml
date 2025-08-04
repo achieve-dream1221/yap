@@ -1,4 +1,4 @@
-name = "OpenShock Setup" ## name is optional, if missing, will use file name
+category = "OpenShock Setup" ## category is optional, if missing, will use file name
 
 [[macro]]
 name = "Factory Reset"

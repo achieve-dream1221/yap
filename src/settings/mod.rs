@@ -296,6 +296,7 @@ pub struct Logging {
     #[derivative(Default(value = "true"))]
     /// Log any disconnect and reconnect events in text outputs.
     pub log_connection_events: bool,
+    // TODO maybe add option to strip ansi escapes for text output?
 }
 
 #[serde_inline_default]
@@ -650,7 +651,7 @@ pub struct Ignored {
 
 fn default_hidden_usb() -> Vec<DeserializedUsb> {
     vec![
-        // Valve Index/Bigscreen Beyond's Bluetooth COM Port
+        // Valve Index/Bigscreen Beyond's Bluetooth COM Port (Watchman)
         DeserializedUsb {
             vid: 0x28DE,
             pid: 0x2102,

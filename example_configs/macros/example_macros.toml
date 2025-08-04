@@ -4,7 +4,7 @@
 # content = "ping 1.1.1.1" ## content to send
 # line_ending = "\n\n\n" ## (optional) if not provided, uses the configured Macro line ending in Port Settings
 
-category = "Examples" ## name is optional, if missing, will use file name
+category = "Examples" ## category is optional, if missing, will use file name
 
 [[macro]]
 name = "Backspace"

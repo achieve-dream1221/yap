@@ -1,5 +1,6 @@
 use color_eyre::Result;
 use ratatui::crossterm::event::DisableMouseCapture;
+use std::backtrace::Backtrace;
 
 pub fn initialize_panic_handler() -> Result<()> {
     let (panic_hook, eyre_hook) = color_eyre::config::HookBuilder::default()
@@ -16,6 +17,8 @@ pub fn initialize_panic_handler() -> Result<()> {
         _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
 
         let msg = format!("{}", panic_hook.panic_report(panic_info));
+        let backtrace = Backtrace::force_capture();
+        let backtrace_str = format!("{backtrace}");
         #[cfg(not(debug_assertions))]
         {
             eprintln!("{msg}");
@@ -34,6 +37,10 @@ pub fn initialize_panic_handler() -> Result<()> {
                 .expect("human-panic: printing error message to console failed");
         }
         tracing::log::error!("Error: {}", strip_ansi_escapes::strip_str(msg));
+        tracing::log::error!(
+            "Backtrace:\n{}",
+            strip_ansi_escapes::strip_str(backtrace_str.as_str())
+        );
 
         #[cfg(debug_assertions)]
         {

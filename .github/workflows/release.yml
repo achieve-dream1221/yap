@@ -2,72 +2,72 @@
 name: Release
 
 permissions:
-    contents: write
-    id-token: write
-    attestations: write
+  contents: write
+  id-token: write
+  attestations: write
 
 on:
-    release:
-        types: [created]
+  release:
+    types: [created]
 
 env:
-    CARGO_TERM_COLOR: always
+  CARGO_TERM_COLOR: always
 
 jobs:
-    upload-assets:
-        strategy:
-            matrix:
-                include:
-                    - target: x86_64-unknown-linux-gnu
-                      os: ubuntu-latest
-                    - target: x86_64-apple-darwin
-                      os: macos-latest
-                    - target: x86_64-pc-windows-msvc
-                      os: windows-latest
-        runs-on: ${{ matrix.os }}
-        steps:
-            - uses: actions/checkout@v4
-            - name: Get Dependencies (Linux)
-              shell: bash
-              run: sudo apt-get update && sudo apt-get install -y libudev-dev
-              if: startsWith(matrix.os, 'ubuntu')
-            # Nevermind :(
-            # After I got it working, I thought about it and realized that
-            # any subsequent releases (i.e. -pre.1) would be annoying.
-            # - name: Conditionally add -pre to built version number (Ubuntu)
-            #   if: endsWith(github.event.release.tag_name, '-pre') && startsWith(matrix.os, 'ubuntu')
-            #   run: sed -i -E 's/^(version = ")([^"]+)"/\1\2-pre"/' Cargo.toml
-            # - name: Conditionally add -pre to built version number (MacOS)
-            #   if: endsWith(github.event.release.tag_name, '-pre') && startsWith(matrix.os, 'macos')
-            #   run: sed -i '' -E 's/^(version = ")([^"]+)"/\1\2-pre"/' Cargo.toml
-            # - name: Conditionally add -pre to built version number (Windows)
-            #   if: endsWith(github.event.release.tag_name, '-pre') && startsWith(matrix.os, 'windows')
-            #   shell: pwsh
-            #   run: (Get-Content Cargo.toml) -replace '^(version = ")([^"]+)(")', '${1}${2}-pre${3}' | Set-Content Cargo.toml
-            - name: Build and Publish yap-full
-              uses: taiki-e/upload-rust-binary-action@v1
-              with:
-                  bin: yap
-                  features: yap-full
-                  target: ${{ matrix.target }}
-                  # include: LICENSE,README.md
-                  tar: unix
-                  zip: windows
-                  archive: $bin-full-$tag-$target
-                  token: ${{ secrets.GITHUB_TOKEN }}
-                  checksum: sha512
-            - name: Build and Publish yap-lite
-              uses: taiki-e/upload-rust-binary-action@v1
-              with:
-                  bin: yap
-                  features: yap-lite
-                  target: ${{ matrix.target }}
-                  # include: LICENSE,README.md
-                  tar: unix
-                  zip: windows
-                  archive: $bin-lite-$tag-$target
-                  token: ${{ secrets.GITHUB_TOKEN }}
-                  checksum: sha512
-            # - uses: actions/attest-build-provenance@v1
-            #   with:
-            #     subject-path: "**/*.tar.gz,**/*.zip"
+  upload-assets:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get Dependencies (Linux)
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+        if: startsWith(matrix.os, 'ubuntu')
+      # Nevermind :(
+      # After I got it working, I thought about it and realized that
+      # any subsequent releases (i.e. -pre.1) would be annoying.
+      # - name: Conditionally add -pre to built version number (Ubuntu)
+      #   if: endsWith(github.event.release.tag_name, '-pre') && startsWith(matrix.os, 'ubuntu')
+      #   run: sed -i -E 's/^(version = ")([^"]+)"/\1\2-pre"/' Cargo.toml
+      # - name: Conditionally add -pre to built version number (MacOS)
+      #   if: endsWith(github.event.release.tag_name, '-pre') && startsWith(matrix.os, 'macos')
+      #   run: sed -i '' -E 's/^(version = ")([^"]+)"/\1\2-pre"/' Cargo.toml
+      # - name: Conditionally add -pre to built version number (Windows)
+      #   if: endsWith(github.event.release.tag_name, '-pre') && startsWith(matrix.os, 'windows')
+      #   shell: pwsh
+      #   run: (Get-Content Cargo.toml) -replace '^(version = ")([^"]+)(")', '${1}${2}-pre${3}' | Set-Content Cargo.toml
+      - name: Build and Publish yap-full
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: yap
+          features: yap-full
+          target: ${{ matrix.target }}
+          include: LICENSE,README.md,example_configs
+          tar: unix
+          zip: windows
+          archive: $bin-full-$tag-$target
+          token: ${{ secrets.GITHUB_TOKEN }}
+          checksum: sha512
+      - name: Build and Publish yap-lite
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: yap
+          features: yap-lite
+          target: ${{ matrix.target }}
+          include: LICENSE,README.md,example_configs
+          tar: unix
+          zip: windows
+          archive: $bin-lite-$tag-$target
+          token: ${{ secrets.GITHUB_TOKEN }}
+          checksum: sha512
+      # - uses: actions/attest-build-provenance@v1
+      #   with:
+      #     subject-path: "**/*.tar.gz,**/*.zip"

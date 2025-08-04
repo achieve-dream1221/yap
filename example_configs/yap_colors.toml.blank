@@ -22,3 +22,48 @@
 
 # Supported colors can be seen here:
 # https://docs.rs/ratatui/latest/ratatui/style/enum.Color.html
+
+## OpenShock Log Line Highlighting Examples
+
+# Verbose
+# [[regex]]
+# rule = '^\[\s*\d+\]\[V\]\[[^\]:]+(?::\d+)?\]'
+# color = "magenta"
+# line = true
+
+# Debug
+# [[regex]]
+# rule = '^\[\s*\d+\]\[D\]\[[^\]:]+(?::\d+)?\]'
+# color = "blue"
+# line = true
+
+# Info
+# [[regex]]
+# rule = '^\[\s*\d+\]\[I\]\[[^\]:]+(?::\d+)?\]'
+# color = "green"
+# line = true
+
+# Warning
+# [[regex]]
+# rule = '^\[\s*\d+\]\[W\]\[[^\]:]+(?::\d+)?\]'
+# color = "yellow"
+# line = true
+
+# Error
+# [[regex]]
+# rule = '^\[\s*\d+\]\[E\]\[[^\]:]+(?::\d+)?\]'
+# color = "red"
+# line = true
+
+## Misc Examples
+
+# Censor scanned networks from OpenShock captive portal
+# [[regex]]
+# rule = '[Nn]etwork\s+(.+?)\s*\(([0-9A-Fa-f:]+)\)'
+# censor = true
+
+# # \x1B[K
+# [[regex]]
+# rule = '(?-u)\x1b\x5b\x4b'
+# color = "red"
+# line = true
