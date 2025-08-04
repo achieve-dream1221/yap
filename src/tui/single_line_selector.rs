@@ -22,11 +22,45 @@ pub struct SingleLineSelectorState {
     pub active: bool,
 }
 
-// const DEFAULT_NEXT_SYMBOL: &str = ">";
-// const DEFAULT_PREV_SYMBOL: &str = "<";
-const DEFAULT_NEXT_SYMBOL: &str = "→";
-const DEFAULT_PREV_SYMBOL: &str = "←";
-// TODO change this to something else when not on the latin codepage on windows
+#[cfg(unix)]
+pub fn default_next_symbol() -> &'static str {
+    "→"
+}
+#[cfg(unix)]
+pub fn default_prev_symbol() -> &'static str {
+    "←"
+}
+
+// Ughhhhhhh.
+// So, on some codepages on Windows (this was encountered on the Japanese codepage, 932),
+// the arrow symbols from the extended graphics page, are _multi-cell_ characters.
+//
+// Now this normally wouldn't be a concern, but some older versions of
+// `conhost.exe` (CMD and PowerShell's shared backend!) in some older versions of Windows (but as recent as Windows 10!)
+// don't know how to handle this character properly and will crash with a stack overflow exception (0xc0000409).
+// Newer builds of `conhost` than the one in Windows 10 (as of writing) do not seem to suffer from this bug,
+// likely fixed around this time: https://github.com/microsoft/terminal/pull/4415
+//
+// The standalone Windows Terminal is unaffected.
+#[cfg(windows)]
+static DEFAULT_NEXT_SYMBOL: OnceLock<&'static str> = OnceLock::new();
+#[cfg(windows)]
+static DEFAULT_PREV_SYMBOL: OnceLock<&'static str> = OnceLock::new();
+
+#[cfg(windows)]
+pub fn default_next_symbol() -> &'static str {
+    DEFAULT_NEXT_SYMBOL.get_or_init(|| {
+        let acp = unsafe { windows_sys::Win32::Globalization::GetACP() };
+        if acp == 1252 { "→" } else { ">" }
+    })
+}
+#[cfg(windows)]
+pub fn default_prev_symbol() -> &'static str {
+    DEFAULT_PREV_SYMBOL.get_or_init(|| {
+        let acp = unsafe { windows_sys::Win32::Globalization::GetACP() };
+        if acp == 1252 { "←" } else { "<" }
+    })
+}
 
 impl<'a> SingleLineSelector<'a> {
     pub fn new<I>(items: I) -> Self
@@ -108,7 +142,7 @@ impl StatefulWidget for &SingleLineSelector<'_> {
             Span::raw(" ")
         } else {
             Span::styled(
-                self.prev_symbol.unwrap_or(DEFAULT_PREV_SYMBOL),
+                self.prev_symbol.unwrap_or(default_prev_symbol()),
                 self.prev_style,
             )
         };
@@ -117,7 +151,7 @@ impl StatefulWidget for &SingleLineSelector<'_> {
             Span::raw(" ")
         } else {
             Span::styled(
-                self.next_symbol.unwrap_or(DEFAULT_NEXT_SYMBOL),
+                self.next_symbol.unwrap_or(default_next_symbol()),
                 self.next_style,
             )
         };
