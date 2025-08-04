@@ -67,7 +67,9 @@ impl From<UpdateEvent> for Event {
 pub struct UpdateBackend {
     command_rx: Receiver<UpdateCommand>,
     event_tx: Sender<Event>,
+    /// Link to archive containing the updated executable
     archive_asset: Option<ReleaseAsset>,
+    /// Link to SHA512 checksum for `archive_asset`
     checksum_asset: Option<ReleaseAsset>,
     #[cfg(feature = "self-replace")]
     current_exe: PathBuf,
@@ -105,7 +107,7 @@ impl UpdateBackend {
                 Err(e) => self
                     .event_tx
                     .send(UpdateEvent::UpdateError(UpdateError::StartNewVersion(e)).into())?,
-                _ => unreachable!(),
+                _ => unreachable!("should never return Ok(())"),
             },
         }
         Ok(())

@@ -10,7 +10,12 @@ use ratatui::{
 use ratatui_macros::{row, span};
 use strum::{EnumProperty, VariantArray, VariantNames};
 
+// TODO another prop for alternate label?
+// maybe just a single shared bool for all of them,
+// and whichever is active is the one that gets flipped
+
 pub trait PromptKeybind: Clone + strum::VariantArray + strum::EnumProperty {
+    /// Take a crossterm KeyCode and return the variant that has a matching shortcut.
     fn from_key_code(value: KeyCode) -> Option<Self> {
         Self::VARIANTS
             .iter()
@@ -35,6 +40,7 @@ pub trait PromptKeybind: Clone + strum::VariantArray + strum::EnumProperty {
 )]
 #[repr(u8)]
 #[strum(serialize_all = "title_case")]
+/// For Terminal Screen only, when ESC pressed.
 pub enum DisconnectPrompt {
     #[strum(props(keybind = "p"))]
     BackToPortSelection,
@@ -55,6 +61,7 @@ impl PromptKeybind for DisconnectPrompt {}
 )]
 #[repr(u8)]
 #[strum(serialize_all = "title_case")]
+/// For Terminal Screen only, when ESC pressed _and_ reconnections are off/paused.
 pub enum AttemptReconnectPrompt {
     #[strum(props(keybind = "p"))]
     BackToPortSelection,
@@ -194,4 +201,5 @@ pub trait PromptTable: VariantNames + VariantArray + EnumProperty + Into<u8> + T
     }
 }
 
+// Blanket impl for compatible enums.
 impl<T: VariantNames + VariantArray + EnumProperty + Into<u8> + TryFrom<u8>> PromptTable for T {}

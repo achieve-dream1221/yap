@@ -240,7 +240,7 @@ impl Buffer {
                     .vert_scroll
                     .saturating_add(x.unsigned_abs() as usize);
             }
-            _ => unreachable!(),
+            _ => unreachable!("all cases handled"),
         }
 
         let last_size = &self.last_terminal_size;
@@ -270,7 +270,7 @@ impl Buffer {
     /// Returns the total amount of lines that can be rendered,
     /// taking into account if text wrapping is enabled or not.
     pub fn combined_height(&self) -> usize {
-        if let Some(cached) = self.cached_total_lines.get() {
+        if let Some(cached) = self.cached_combined_height.get() {
             return cached;
         }
         if self.raw.inner.is_empty() {
@@ -322,12 +322,12 @@ impl Buffer {
                 + header_margin
         };
 
-        self.cached_total_lines.set(Some(result));
+        self.cached_combined_height.set(Some(result));
         result
     }
 
     pub fn invalidate_height_cache(&self) {
-        self.cached_total_lines.set(None);
+        self.cached_combined_height.set(None);
     }
 
     pub fn port_lines_len(&self) -> usize {
@@ -949,7 +949,8 @@ fn hex_digits(n: usize) -> usize {
     (1 + ((n as f64).log2() / 4.0).floor() as usize).max(1)
 }
 
-/// Maybe StatefulWidget would make more sense? Unsure.
+// Maybe StatefulWidget would make more sense? Unsure.
+// What's called to render all recieved data to screen.
 impl Widget for &mut Buffer {
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer)
     where

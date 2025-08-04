@@ -18,7 +18,15 @@ pub enum EspCommand {
 
 #[derive(Debug)]
 pub enum EspRestartType {
+    /// Attempt to restart the ESP into the ROM booloader.
+    ///
+    /// If `active` is `true`, will give several attempts until success is confirmed or enough failures occur.
+    ///
+    /// Otherwise, will try once to do the DTR-RTS dance to restart the ESP into the bootloader,
+    /// and will not check for success.
     Bootloader { active: bool },
+    /// Will try once to do the DTR-RTS dance to restart the ESP into the flashed firmware,
+    /// not checking for success.
     UserCode,
 }
 
@@ -31,23 +39,27 @@ impl From<EspCommand> for SerialWorkerCommand {
 type HandleResult<T> = Result<T, SerialWorkerMissing>;
 
 impl SerialHandle {
+    /// Ask the serial worker to attempt to restart the connected ESP
     pub fn esp_restart(&self, restart_type: EspRestartType) -> HandleResult<()> {
         self.command_tx
             .send(EspCommand::Restart(restart_type).into())?;
         Ok(())
     }
 
+    /// Ask the serial worker to attempt to query ESP device info
     pub fn esp_device_info(&self) -> HandleResult<()> {
         self.command_tx.send(EspCommand::DeviceInfo.into())?;
         Ok(())
     }
 
+    /// Ask the serial worker to attempt to flash a given set of files using espflash
     pub fn esp_flash_profile(&self, profile: EspProfile) -> HandleResult<()> {
         self.command_tx
             .send(EspCommand::FlashProfile(profile).into())?;
         Ok(())
     }
 
+    /// Ask the serial worker to connect to the device as an ESP and request a flash erase.
     pub fn esp_erase_flash(&self) -> HandleResult<()> {
         self.command_tx.send(EspCommand::EraseFlash.into())?;
         Ok(())
@@ -56,30 +68,54 @@ impl SerialHandle {
 
 #[derive(Debug, Clone)]
 pub enum EspEvent {
+    /// Serial worker is attempting to connect to the port as an ESP.
     Connecting,
-    Connected { chip: CompactString },
-    BootloaderSuccess { chip: CompactString },
+    /// Serial worker was able to connect to ESP, silicon variant was read and sent.
+    Connected {
+        chip: CompactString,
+    },
+    /// Serial worker successfully rebooted ESP into bootloader.
+    BootloaderSuccess {
+        chip: CompactString,
+    },
+    /// Serial worker blindly attempted to reboot ESP into bootloader.
     BootloaderAttempt,
+    /// Serial worker blindly attempted to reboot ESP into user code.
     HardResetAttempt,
-    EraseStart { chip: CompactString },
-    EraseSuccess { chip: CompactString },
+    /// ESP has began erasing all flash contents
+    EraseStart {
+        chip: CompactString,
+    },
+    /// ESP has finished erasing all flash contents
+    EraseSuccess {
+        chip: CompactString,
+    },
+    /// Serial worker successfully queried ESP device info
     DeviceInfo(DeviceInfo),
     FlashProgress(FlashProgress),
     Error(String),
+    /// Port ownership has been returned from espflash back to the serial worker.
     PortReturned,
 }
 
 #[derive(Debug, Clone)]
 pub enum FlashProgress {
+    /// Info of segment-to-flash
     SegmentInit {
         chip: CompactString,
         addr: u32,
         size: usize,
         file_name: Option<String>,
     },
+    /// Current progress of segment: progress <= SegmentInit.size
     Progress(usize),
+    /// Segment has finished flashing, awaiting MD5 hash from ESP to compare results.
     Verifying,
+    /// Segment has finished entirely.
     SegmentFinished {
+        /// Indicates if espflash chose to skip flashing
+        /// due to the target's flash segment's contents hash
+        /// already matches the MD5 hash of the segment-to-flash.
         skipped: bool,
     },
 }
@@ -102,6 +138,8 @@ impl From<FlashProgress> for Event {
     }
 }
 
+/// Progress callback object passed to espflash
+/// When applicable, will try to report the name of the file being flashed.
 pub struct ProgressPropagator<'a> {
     chip: CompactString,
     tx: Sender<Event>,

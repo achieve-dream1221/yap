@@ -250,7 +250,7 @@ fn struct_table_inner(input: proc_macro2::TokenStream) -> deluxe::Result<proc_ma
                 match input {
                     ::struct_table::ArrowKey::Right => next = true,
                     ::struct_table::ArrowKey::Left => next = false,
-                    _ => unreachable!(),
+                    _ => panic!("Expected only Left or Right!"),
                 }
 
                 match field_index {

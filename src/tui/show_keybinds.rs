@@ -26,16 +26,16 @@ enum ActionOption {
 //         let inter_action_ordering = matches!(
 //             (self, rhs),
 //             (
-//                 ActionOption::Recognized(Action::AppAction(_)),
-//                 ActionOption::Recognized(Action::AppAction(_))
+//                 ActionOption::Recognized(Action::BuiltinAction(_)),
+//                 ActionOption::Recognized(Action::BuiltinAction(_))
 //             )
 //         );
 
 //         if inter_action_ordering {
-//             let ActionOption::Recognized(Action::AppAction(lhs_action)) = &self else {
+//             let ActionOption::Recognized(Action::BuiltinAction(lhs_action)) = &self else {
 //                 unreachable!()
 //             };
-//             let ActionOption::Recognized(Action::AppAction(rhs_action)) = &rhs else {
+//             let ActionOption::Recognized(Action::BuiltinAction(rhs_action)) = &rhs else {
 //                 unreachable!()
 //             };
 //             let lhs: &str = rhs_action.as_ref();
@@ -52,7 +52,7 @@ impl std::fmt::Display for ActionOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ActionOption::Recognized(action) => match action {
-                Action::AppAction(action) => write!(f, "{action}"),
+                Action::BuiltinAction(action) => write!(f, "{action}"),
 
                 #[cfg(feature = "macros")]
                 Action::MacroInvocation(MacroNameTag {
@@ -170,7 +170,7 @@ pub fn show_keybinds(
             //     lines.push(Line::default());
             // }
 
-            // if let Action::AppAction(_) = &action {
+            // if let Action::BuiltinAction(_) = &action {
             //     if let Some(last) = lines.last() {
             //         let action_span = &line.spans[1];
 

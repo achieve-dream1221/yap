@@ -39,7 +39,10 @@ pub enum UpdateBeginPrompt {
 
 impl PromptKeybind for UpdateBeginPrompt {}
 
-// #[cfg(windows)]
+// Windows-only, since Unix OSes let you just swap out the currently running executable.
+// Meanwhile Windows requires you open a new *console window* and spawn the executable in there.
+// And since I don't want to check if we're being run in CMD, just offer the option to open that or just close so the user can relaunch.
+#[cfg(windows)]
 #[derive(
     Debug, Clone, strum::VariantNames, strum::VariantArray, strum::EnumProperty, int_enum::IntEnum,
 )]
@@ -53,5 +56,5 @@ pub enum UpdateLaunchPrompt {
     Close,
 }
 
-// #[cfg(windows)]
+#[cfg(windows)]
 impl PromptKeybind for UpdateLaunchPrompt {}

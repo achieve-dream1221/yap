@@ -41,7 +41,7 @@ impl From<usize> for DefmtPopupSelection {
     }
 }
 
-/// This intentionally holds no decoders! Those're held by Arcs owned by the Buffer and Logging worker.
+/// This intentionally holds no decoders! Those're held by Arcs owned by the Buffer and Logging workers.
 ///
 /// This holds the recently used ELF paths, and the handle to the worker thread that watches for updates to the current ELF.
 pub struct DefmtHelpers {
@@ -198,7 +198,3 @@ impl DefmtRecentElfs {
         self.recent.is_empty()
     }
 }
-
-// pub fn defmt_buttons(decoder: &Option<DefmtDecoder>, frame: &mut Frame, screen: Rect) {
-//     let decoder = decoder.as_ref();
-// }

@@ -9,7 +9,6 @@ pub mod logging;
 
 // pub mod buffer;
 pub mod color_rules;
-pub mod port_settings;
 pub mod prompts;
 mod show_keybinds;
 pub mod single_line_selector;

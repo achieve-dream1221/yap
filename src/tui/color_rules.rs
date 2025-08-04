@@ -54,7 +54,7 @@ struct SerializedRegexRule {
     rule: Regex,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
-    color: Option<ratatui::style::Color>,
+    color: Option<Color>,
     #[serde(default)]
     line: bool,
     #[serde(default)]
@@ -69,7 +69,7 @@ struct SerializedLiteralRule {
     rule: CompactString,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
-    color: Option<ratatui::style::Color>,
+    color: Option<Color>,
     #[serde(default)]
     line: bool,
     #[serde(default)]

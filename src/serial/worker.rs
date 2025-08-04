@@ -34,20 +34,33 @@ pub type NativePort = serialport::COMPort;
 #[derive(Default, strum::EnumIs)]
 enum TakeablePort {
     #[default]
+    /// No port is owned, either:
+    /// - No connection has been made.
+    /// - Connection failure has occurred.
+    /// - Active connection has been broken.
     None,
     #[cfg(feature = "espflash")]
+    /// Port object's ownership has been given to espflash,
+    /// and we're awaiting it to be returned.
+    /// If an error occurs and the port can not be recovered,
+    /// it is considered broken.
     Borrowed,
+    /// Port is owned by us and we can read/write to it.
     Native(NativePort),
+    /// Mock/Loopback port is active, any bytes sent in will be echo'd back.
     Loopback(VirtualPort),
 }
 
 impl TakeablePort {
+    /// Checks if port is owned/lent out.
     fn is_some(&self) -> bool {
         !self.is_none()
     }
+    /// Checks if port is available to read/write to.
     fn is_available(&self) -> bool {
-        matches!(self, TakeablePort::Native(_) | TakeablePort::Loopback(_))
+        self.is_native() || self.is_loopback()
     }
+    /// Drop any held port, clearing any buffer contents on the way out.
     fn drop(&mut self) {
         if let Some(port) = self.as_mut_port() {
             debug!(
@@ -70,6 +83,8 @@ impl TakeablePort {
     #[cfg(feature = "espflash")]
     fn take_native(&mut self) -> Option<NativePort> {
         if let TakeablePort::Native(_) = self {
+            // TODO
+            // This blocks me from impl-ing Drop to clear the buffer.
             if let TakeablePort::Native(port) = std::mem::replace(self, TakeablePort::Borrowed) {
                 Some(port)
             } else {
@@ -109,9 +124,15 @@ pub struct SerialWorker {
     last_signal_check: Instant,
     scan_snapshot: Vec<SerialPortInfo>,
     rx_buffer: Vec<u8>,
-    shared_status: Arc<ArcSwap<PortStatus>>,
-    shared_settings: Arc<ArcSwap<PortSettings>>,
     ignored_devices: Ignored,
+    // These are held in ArcSwaps instead of just a "local" copy
+    // to reduce the sources of truth I have to manage about the status of the current port.
+    // When rendering, the main+UI thread reads from the ArcSwap so it always has the newest information.
+    shared_status: Arc<ArcSwap<PortStatus>>,
+    // I don't want to juggle baud separately, so I read Port Settings in the same way _to get the current baud_.
+    // *Changing* these settings is still done with an actor message rather than the thread owning the Handle
+    // just swapping these themselves, so that there's no ambiguity in the UI as to when the changes were recieved and handled.
+    shared_settings: Arc<ArcSwap<PortSettings>>,
 }
 
 impl SerialWorker {
@@ -129,11 +150,8 @@ impl SerialWorker {
             buffer_tx,
             shared_status: port_status,
             shared_settings: port_settings,
-            // port_status: SerialStatus::idle(),
-            // connected_port_info: None,
             port: TakeablePort::default(),
             last_signal_check: Instant::now(),
-            // settings: PortSettings::default(),
             scan_snapshot: vec![],
             rx_buffer: vec![0; 1024 * 1024],
             ignored_devices,
@@ -152,6 +170,7 @@ impl SerialWorker {
                 Duration::from_millis(100)
             };
             // TODO Fuzz testing with this + buffer
+            // Checking for commands
             match self.command_rx.recv_timeout(sleep_time) {
                 Ok(SerialWorkerCommand::Shutdown(shutdown_tx)) => {
                     debug!("Got shutdown request, dropping port!");
@@ -187,6 +206,7 @@ impl SerialWorker {
                 }
             }
 
+            // Reading from port
             if let Some(port) = self.port.as_mut_port() {
                 // info!(
                 //     "bytes incoming: {}, bytes outcoming: {}",
@@ -216,6 +236,7 @@ impl SerialWorker {
                     }
                 }
 
+                // Periodic signal check
                 if self.last_signal_check.elapsed() >= Duration::from_millis(100) {
                     self.last_signal_check = Instant::now();
                     if let Err(e) = self.read_and_share_serial_signals(false) {
@@ -230,7 +251,14 @@ impl SerialWorker {
     }
 
     fn unhealthy_disconnection(&mut self) {
-        assert!(self.port.is_some(), "must own or be lending out port");
+        // This used to be an assertion but if the main+UI thread accidentally sends a command
+        // when the port is missing (it's supposed to check for port health, but that introduces
+        // time-of-check/time-of-use race conditions, so we'll just gracefully disconnect),
+        // we shouldn't just panic.
+        if !self.port.is_some() {
+            error!("had a connection error with no port object held??");
+        }
+
         self.port.drop();
 
         let last_status = self.shared_status.load().as_ref().clone();
@@ -360,7 +388,7 @@ impl SerialWorker {
             SerialWorkerCommand::RequestPortScan => {
                 let ports = self.scan_for_serial_ports()?;
                 self.scan_snapshot = ports.clone();
-                self.event_tx.send(SerialEvent::Ports(ports).into())?;
+                self.event_tx.send(SerialEvent::PortScan(ports).into())?;
             }
             SerialWorkerCommand::RequestPortScanBlocking(sender) => {
                 let ports = self.scan_for_serial_ports()?;
@@ -375,8 +403,10 @@ impl SerialWorker {
                 }
             }
             SerialWorkerCommand::NewIgnored(ignored) => self.ignored_devices = ignored,
-            SerialWorkerCommand::Shutdown(_) => unreachable!(),
-            SerialWorkerCommand::PortCommand(_) => unreachable!(),
+            SerialWorkerCommand::Shutdown(_) => unreachable!("shutdown handled in work_loop"),
+            SerialWorkerCommand::PortCommand(_) => {
+                unreachable!("handled by other function in caller")
+            }
         }
         Ok(())
     }
@@ -428,6 +458,8 @@ impl SerialWorker {
             }
             // This should maybe reply with a success/fail in case the
             // port is having an issue, so the user's input buffer isn't consumed visually
+            // TODO maybe hold user's input in memory until the Send Ok was recieved?
+            // and return it if it fails?
             PortCommand::TxBuffer(data) if self.port.is_available() => {
                 let port = self
                     .port
@@ -435,8 +467,6 @@ impl SerialWorker {
                     .expect("was told port was available");
 
                 let mut buf = &data[..];
-
-                // let mut writer = BufWriter::new(&mut port);
 
                 // Blech... This is because the ESP32-S3's virtual USB serial port
                 // has an issue with payloads larger than 256 bytes????
@@ -511,8 +541,6 @@ impl SerialWorker {
         &mut self,
         strictness_opt: Option<Reconnections>,
     ) -> Result<(), WorkerError> {
-        // assert!(self.connected_port_info.read().unwrap().is_some());
-        // assert!(self.port.is_none());
         let port_available = self.port.is_available();
         #[cfg(feature = "espflash")]
         let port_available = port_available || self.port.is_borrowed();
@@ -549,6 +577,9 @@ impl SerialWorker {
             self.connect_to_port(port, Some(ReconnectType::PerfectMatch))?;
             return Ok(());
         };
+
+        // Implicitly, reaching this means either Strict or Loose reconnections is enabled,
+        // so let's start with the strict check unconditionally.
 
         // Fuzzy USB searches
         if let SerialPortType::UsbPort(desired_usb) = &desired_port.port_type {
@@ -686,7 +717,7 @@ impl SerialWorker {
         port.set_timeout(Duration::from_millis(100))?;
         port.write_request_to_send(port_status.signals.rts)?;
 
-        port_status.signals.update_with_port(port)?;
+        port_status.signals.update_slave_signals(port)?;
         port_status.current_port = Some(port_info.to_owned());
         port_status.inner = InnerPortStatus::Connected;
         self.shared_status.store(Arc::new(port_status));
@@ -695,7 +726,6 @@ impl SerialWorker {
             "Serial worker connected to: {} @ {baud_rate} baud",
             port_info.port_name
         );
-        // info!("port.baud_rate {}", self.port.as_ref().unwrap().baud_rate()?);
 
         if self
             .event_tx
@@ -720,7 +750,7 @@ impl SerialWorker {
                 // debug_assert later?
                 // assert!(self.baud_rate == port_status.baud_rate);
 
-                let changed = port_status.signals.update_with_port(port)?;
+                let changed = port_status.signals.update_slave_signals(port)?;
                 // Only update the shared status if there's actually a change
                 if changed {
                     self.shared_status.store(Arc::new(port_status));
@@ -745,7 +775,8 @@ impl SerialWorker {
             return Err(WorkerError::MissingPort);
         }
 
-        use std::{borrow::Cow, fs};
+        use fs_err as fs;
+        use std::borrow::Cow;
 
         use compact_str::ToCompactString;
         use espflash::flasher::{FlashData, FlashSettings};
@@ -760,7 +791,7 @@ impl SerialWorker {
 
         let usb_port_info = {
             match &status.current_port {
-                None => unreachable!(),
+                None => unreachable!("esp command shouldn't be sent with no port"),
                 Some(info) => match &info.port_type {
                     SerialPortType::UsbPort(e) => e.clone(),
                     _not_usb => UsbPortInfo {
@@ -1049,7 +1080,7 @@ impl SerialWorker {
 
         self.shared_status.store(Arc::new(status));
 
-        // Let the UI thread know to update
+        // Let the main+UI thread know to update
         // self.event_tx.send(SerialEvent::Connected(None).into())?;
         self.event_tx.send(EspEvent::PortReturned.into())?;
 
@@ -1122,7 +1153,7 @@ pub(crate) enum WorkerError {
     ImageFormat(#[source] espflash::Error),
 
     #[cfg(feature = "espflash")]
-    #[error("tried to act on lent out port")]
+    #[error("tried to act on missing port")]
     MissingPort,
 }
 
@@ -1137,28 +1168,20 @@ impl<T> From<crossbeam::channel::SendError<T>> for WorkerError {
 // (between connections and app start)
 // maybe something better will come to me.
 
-#[derive(Debug, Clone, Copy, Default, strum::EnumIs)]
-pub enum InnerPortStatus {
-    #[default]
-    Idle,
-    PrematureDisconnect,
-    #[cfg(feature = "espflash")]
-    LentOut,
-    Connected,
-}
-
-#[cfg(not(feature = "espflash"))]
-impl InnerPortStatus {
-    pub fn is_lent_out(&self) -> bool {
-        false
-    }
-}
-
 #[derive(Debug, Clone, Default)]
+/// Port status, shared with the main+UI thread.
 pub struct PortStatus {
+    /// The actual state of the port.
     pub inner: InnerPortStatus,
+
+    /// Some: contains currently/last-connected port.
+    ///
+    /// Also used as the "desired device" to reconnect to if the port disconnects unexpectedly.
+    ///
+    /// None: Idle, not yet connected or disconnected intentionally.
     pub current_port: Option<SerialPortInfo>,
 
+    /// The current state of the auxillary RS232 signals.
     pub signals: SerialSignals,
 }
 
@@ -1201,6 +1224,27 @@ impl PortStatus {
     //         ..self
     //     }
     // }
+}
+
+#[derive(Debug, Clone, Copy, Default, strum::EnumIs)]
+pub enum InnerPortStatus {
+    #[default]
+    /// No connection has been made.
+    Idle,
+    /// Port was lost unexpectedly.
+    PrematureDisconnect,
+    #[cfg(feature = "espflash")]
+    /// Port is temporarily owned by espflash.
+    LentOut,
+    /// Port is owned by us and we can read/write to it.
+    Connected,
+}
+
+#[cfg(not(feature = "espflash"))]
+impl InnerPortStatus {
+    pub fn is_lent_out(&self) -> bool {
+        false
+    }
 }
 
 pub const MOCK_PORT_NAME: &str = "lorem-ipsum";

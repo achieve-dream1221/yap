@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MacroNameTag {
     pub name: CompactString,
+    /// Category is set to None if it would be empty.
     pub category: Option<CompactString>,
 }
 

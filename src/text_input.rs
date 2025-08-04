@@ -102,17 +102,20 @@ impl TextInput {
     /// If in byte-entry mode, only searches for byte history entries, and the same goes for text entries.
     pub fn find_input_in_history(&mut self) {
         // Skip if there's no text to search with.
-        if self.input_box.value().is_empty()
-            && self
-                .preserved_input
-                .as_ref()
-                .map(HistoryEntry::as_str)
-                .map(str::is_empty)
-                .unwrap_or(true)
-        {
-            assert!(self.search_result.is_none());
+        if self.input_box.value().is_empty() {
+            assert!(
+                self.search_result.is_none(),
+                "empty search result shouldn't be possible"
+            );
             return;
         }
+
+        let (search_query, bytes_only) = self
+            .preserved_input
+            .as_ref()
+            .map(|h| (h.as_str(), h.is_bytes()))
+            .unwrap_or((self.input_box.value(), self.bytes_input));
+
         // Skip if there's no history to search in.
         if self.history.inner.is_empty() {
             return;
@@ -138,17 +141,9 @@ impl TextInput {
                 .map(|(i, h)| (last - i - 1, h))
         };
 
-        let found = match (&self.search_result, &self.preserved_input) {
-            (None, _) => {
-                if self.input_box.value().is_empty() {
-                    return;
-                }
-                find(history_len, self.input_box.value(), self.bytes_input)
-            }
-            (Some(last_index), Some(saved_query)) => {
-                find(*last_index, saved_query.as_str(), saved_query.is_bytes())
-            }
-            (Some(_), None) => unreachable!(),
+        let found = match &self.search_result {
+            None => find(history_len, search_query, bytes_only),
+            Some(last_index) => find(*last_index, search_query, bytes_only),
         };
 
         // debug!("found: {:?}", found);
@@ -164,6 +159,7 @@ impl TextInput {
                 self.preserved_input = Some(input_to_preserve);
             }
             self.search_result = Some(new_index);
+            self.history.selected = Some(new_index);
             self.input_box = result_text.as_str().into();
         }
     }

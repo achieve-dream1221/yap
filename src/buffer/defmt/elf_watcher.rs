@@ -26,8 +26,9 @@ impl From<ElfWatchEvent> for Event {
 }
 
 enum ElfWatchCommand {
+    /// Begin watching the specified path for changes, triggering a defmt
+    /// decoder rebuild.
     BeginWatch(Utf8PathBuf),
-    EndWatch,
     Shutdown(Sender<()>),
 }
 
@@ -225,14 +226,12 @@ impl ElfWatchWorker {
                     return Ok(());
                 }
                 // Forget old file
-                _ = self.file_under_watch.take();
+                self.unwatch_last_path();
 
                 let Some(new_file_parent) = new_file.parent() else {
                     error!("Requested file to watch has no parent? Not acting further.");
                     return Ok(());
                 };
-
-                self.handle_command(ElfWatchCommand::EndWatch)?;
 
                 if let Err(e) = self.watcher.watch(
                     new_file_parent.as_ref(),
@@ -245,17 +244,16 @@ impl ElfWatchWorker {
                     _ = self.file_under_watch.insert(new_file);
                 }
             }
-            ElfWatchCommand::EndWatch => {
-                if let Some(old_path) = self.file_under_watch.take() {
-                    let old_path_parent =
-                        old_path.parent().expect("inserted path should have parent");
-                    if let Err(e) = self.watcher.unwatch(old_path_parent.as_ref()) {
-                        error!("Error unwatching file: {e}, but continuing anyway")
-                    }
-                }
-            }
-            ElfWatchCommand::Shutdown(_) => unreachable!(),
+            ElfWatchCommand::Shutdown(_) => unreachable!("shutdown handled in work_loop"),
         }
         Ok(())
+    }
+    fn unwatch_last_path(&mut self) {
+        if let Some(old_path) = self.file_under_watch.take() {
+            let old_path_parent = old_path.parent().expect("inserted path should have parent");
+            if let Err(e) = self.watcher.unwatch(old_path_parent.as_ref()) {
+                error!("Error unwatching file: {e}, but continuing anyway")
+            }
+        }
     }
 }

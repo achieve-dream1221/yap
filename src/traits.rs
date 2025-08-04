@@ -293,13 +293,13 @@ impl HasEscapedBytes for str {
     fn has_escaped_bytes(&self) -> bool {
         // Fast path: if not even a single backslash exists, then bail.
 
-        use bstr::ByteVec;
         if memchr::memchr(b'\\', self.as_bytes()).is_none() {
             return false;
         }
 
         // Otherwise, directly compare the results of a full unescape.
 
+        use bstr::ByteVec;
         let unescaped = Vec::unescape_bytes(self);
 
         unescaped != self.as_bytes()
@@ -755,5 +755,9 @@ pub trait RequiresPort {
     /// Returns `true` if the Action requires an active, healthy connection to the port.
     fn requires_connection(&self) -> bool;
     /// Returns `true` if the Action requires at least the terminal view to be active (the port can be lent out or disconnected).
-    fn requires_terminal_view(&self) -> bool;
+    ///
+    /// Definition only required if conditions should differ from `requires_connection`.
+    fn requires_terminal_view(&self) -> bool {
+        self.requires_connection()
+    }
 }

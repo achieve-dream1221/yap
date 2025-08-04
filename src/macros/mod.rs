@@ -27,9 +27,6 @@ mod macro_nametag;
 pub use macro_nametag::MacroNameTag;
 mod tui;
 
-// pub use macro_ref::MacroNameTag;
-// pub use tui::{MacroEditSelected, MacroEditing};
-
 // #[derive(Debug)]
 // #[repr(u8)]
 // pub enum MacrosPrompt {
@@ -108,6 +105,7 @@ impl Macros {
             ),
         }
     }
+    /// Return an iterator of all Macros, filtered by the selected category in the UI
     fn filtered_by_category(
         &self,
     ) -> impl DoubleEndedIterator<Item = (&MacroNameTag, &MacroContent)> {
@@ -117,12 +115,13 @@ impl Macros {
             .iter()
             .filter(move |(tag, content)| match category {
                 MacroCategorySelection::AllMacros => true,
-                MacroCategorySelection::StringsOnly => !content.has_bytes,
-                MacroCategorySelection::WithBytes => content.has_bytes,
+                MacroCategorySelection::StringsOnly => !content.has_escaped_bytes,
+                MacroCategorySelection::WithBytes => content.has_escaped_bytes,
                 MacroCategorySelection::NoCategory => tag.category.is_none(),
                 MacroCategorySelection::Category(cat) => tag.category.as_deref() == Some(cat),
             })
     }
+    /// Return an iterator of all Macros, filtered by the entered search query, case-insensitive.
     fn filtered_by_search(
         &self,
     ) -> impl DoubleEndedIterator<Item = (&MacroNameTag, &MacroContent)> {
@@ -444,7 +443,7 @@ impl SerializedMacro {
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MacroContent {
     pub content: CompactString,
-    pub has_bytes: bool,
+    pub has_escaped_bytes: bool,
     // #[serde(skip_serializing_if = "Option::is_none")]
     pub escaped_line_ending: Option<CompactString>,
     pub sensitive: bool,
@@ -468,7 +467,7 @@ impl MacroContent {
         sensitive: bool,
     ) -> Self {
         Self {
-            has_bytes: value.as_ref().has_escaped_bytes(),
+            has_escaped_bytes: value.as_ref().has_escaped_bytes(),
             content: value.as_ref().into(),
             escaped_line_ending,
             sensitive,

@@ -14,17 +14,25 @@ pub mod esp;
 use esp::EspEvent;
 
 #[derive(Debug, Clone)]
+/// Describes the type of Reconnection that has occurred.
 pub enum ReconnectType {
+    /// A device was found matching all known characteristics of the last port (Port Name + Port Type).
     PerfectMatch,
+    /// A USB device was found matching _all_ the last known device's USB Characteristics (PID, VID, Serial, and more).
     UsbStrict,
+    /// A USB device was found matching just the last device's USB PID and VID.
     UsbLoose,
+    /// We found a port with a matching name to the last one. That's it.
     LastDitch,
 }
 
 #[derive(Debug, Clone)]
 pub enum SerialEvent {
-    Ports(Vec<SerialPortInfo>),
+    /// All found serial ports. Ignored devices are filtered out by the worker already.
+    PortScan(Vec<SerialPortInfo>),
+    /// Successful port connection. Option indicates if a reconnect from a premature disconnect occurred.
     Connected(Option<ReconnectType>),
+    /// The worker was not able to send the given buffer to the port (due to no connection/error during sending), and has been returned in whole.
     UnsentTx(Vec<u8>),
     #[cfg(feature = "espflash")]
     EspFlash(EspEvent),
@@ -33,8 +41,11 @@ pub enum SerialEvent {
 
 #[derive(Debug, Clone)]
 pub enum SerialDisconnectReason {
+    /// User has chosen to return to port selection.
     Intentional,
+    /// User has chosen to break serial connection but remain in the terminal view.
     UserBrokeConnection,
+    /// An error has occurred.
     Error(String),
 }
 
@@ -61,9 +72,18 @@ impl From<SerialEvent> for Event {
     strum::VariantArray,
 )]
 #[strum(serialize_all = "title_case")]
+/// Allowance level of Auto-Reconnections
 pub enum Reconnections {
+    /// No auto reconnections
     Disabled,
+    /// Will only reconnect to devices that either:
+    /// 1. Match the last device exactly (Port Name + Port Type) -> PerfectMatch
+    /// 2. Match the USB characteristics exactly (PID, VID, Serial, and the rest) -> UsbStrict
     StrictChecks,
+    /// also known as "Best-Effort"
+    /// Will first try the Strict Checks and if those fail, will try to connect to devices that:
+    /// 3. Match the USB PID and VID of the last device -> UsbLoose
+    /// 4. Any port at the same path of the last device -> LastDitch
     LooseChecks,
 }
 
@@ -120,29 +140,14 @@ pub struct SerialSignals {
 }
 
 impl SerialSignals {
-    // fn toggle_dtr(&mut self, serial_port: &mut dyn SerialPort) -> Result<bool, serialport::Error> {
-    //     let dtr = !self.dtr;
-    //     serial_port.write_data_terminal_ready(dtr)?;
-    //     Ok(dtr)
-    // }
-    // fn toggle_rts(&mut self, serial_port: &mut dyn SerialPort) -> Result<bool, serialport::Error> {
-    //     let rts = !self.rts;
-    //     serial_port.write_request_to_send(rts)?;
-    //     Ok(rts)
-    // }
-    // fn new_from_port(serial_port: &mut dyn SerialPort) -> Result<Self, serialport::Error> {
-    //     let mut signals = Self::default();
-    //     signals.update_with_port(serial_port)?;
-    //     Ok(signals)
-    // }
-    fn update_with_port(
+    fn update_slave_signals(
         &mut self,
-        serial_port: &mut dyn SerialPort,
+        slave: &mut dyn SerialPort,
     ) -> Result<bool, serialport::Error> {
-        let cts = serial_port.read_clear_to_send()?;
-        let dsr = serial_port.read_data_set_ready()?;
-        let ri = serial_port.read_ring_indicator()?;
-        let cd = serial_port.read_carrier_detect()?;
+        let cts = slave.read_clear_to_send()?;
+        let dsr = slave.read_data_set_ready()?;
+        let ri = slave.read_ring_indicator()?;
+        let cd = slave.read_carrier_detect()?;
 
         let changed = self.cts != cts || self.dsr != dsr || self.ri != ri || self.cd != cd;
 

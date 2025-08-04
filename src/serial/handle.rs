@@ -56,11 +56,14 @@ pub enum PortCommand {
 #[derive(Clone)]
 pub struct SerialHandle {
     pub(super) command_tx: Sender<SerialWorkerCommand>,
+    /// Status of serial port connection and signals
     pub port_status: Arc<ArcSwap<PortStatus>>,
+    /// The serial worker's working settings
     pub port_settings: Arc<ArcSwap<PortSettings>>,
 }
 
 impl SerialHandle {
+    /// Try to build a SerialWorker and Handle, and get the current list of available serial ports.
     pub fn build(
         event_tx: Sender<Event>,
         buffer_tx: Sender<(DateTime<Local>, Vec<u8>)>,
@@ -126,18 +129,21 @@ impl SerialHandle {
             }
         }
     }
-    pub fn request_break_connection(&self) -> HandleResult<()> {
-        self.command_tx.send(SerialWorkerCommand::Disconnect {
-            user_wants_break: true,
-        })?;
-        Ok(())
-    }
+    /// User is returning to Port Selection, disconnect and forget old port.
     pub fn request_disconnect(&self) -> HandleResult<()> {
         self.command_tx.send(SerialWorkerCommand::Disconnect {
             user_wants_break: false,
         })?;
         Ok(())
     }
+    /// Request serial worker to disconnect from port but retain port info for later reconnection.
+    pub fn request_break_connection(&self) -> HandleResult<()> {
+        self.command_tx.send(SerialWorkerCommand::Disconnect {
+            user_wants_break: true,
+        })?;
+        Ok(())
+    }
+    /// Port settings should be updated via this method, and not via the ArcSwap directly.
     pub fn update_settings(&self, settings: PortSettings) -> HandleResult<()> {
         self.command_tx
             .send(SerialWorkerCommand::PortCommand(PortCommand::PortSettings(
@@ -148,7 +154,7 @@ impl SerialHandle {
     /// Sends the supplied bytes through the connected Serial device.
     pub fn send_bytes(&self, mut input: Vec<u8>, line_ending: Option<&[u8]>) -> HandleResult<()> {
         if let Some(ending) = line_ending {
-            input.extend(ending.iter());
+            input.extend(ending);
         }
         self.command_tx
             .send(SerialWorkerCommand::PortCommand(PortCommand::TxBuffer(
@@ -156,6 +162,9 @@ impl SerialHandle {
             )))?;
         Ok(())
     }
+    /// Sends the supplied text through the connected Serial device.
+    ///
+    /// If `unescape_bytes` is `true`, sequences like `\n` or `\xFF` will be turned into their respective bytes.
     pub fn send_str(
         &self,
         input: &str,
@@ -170,17 +179,20 @@ impl SerialHandle {
         };
         self.send_bytes(buffer, Some(line_ending))
     }
+    // Serial worker reads signals periodically.
     // pub fn read_signals(&self) -> WorkerResult<()> {
     //     self.command_tx
     //         .send(SerialCommand::ReadSignals)?;
     //     Ok(())
     // }
+    /// Set one or both signals to a specific state.
     pub fn write_signals(&self, dtr: Option<bool>, rts: Option<bool>) -> HandleResult<()> {
         self.command_tx.send(SerialWorkerCommand::PortCommand(
             PortCommand::WriteSignals { dtr, rts },
         ))?;
         Ok(())
     }
+    /// Toggle/flip the specified signal(s).
     pub fn toggle_signals(&self, dtr: bool, rts: bool) -> HandleResult<()> {
         self.command_tx.send(SerialWorkerCommand::PortCommand(
             PortCommand::ToggleSignals { dtr, rts },

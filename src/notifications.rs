@@ -14,21 +14,24 @@ use tracing::debug;
 
 use crate::app::{Event, Tick};
 
+/// Very simple helper for showing toast notifications on-screen.
+///
+/// TODO: Scrollable notification history, with timestamps and level(?).
 pub struct Notifications {
-    pub inner: Option<Notification>,
+    pub inner: Option<ToastContent>,
     replaced_amount: (usize, Option<CompactString>),
     tx: Sender<Event>,
 }
 
 #[derive(Debug)]
-pub struct Notification {
+pub struct ToastContent {
     pub line: Line<'static>,
     pub color: Color,
     pub shown_at: Instant,
     pub replaced: bool,
 }
 
-impl Notification {
+impl ToastContent {
     pub fn shown_for(&self) -> Duration {
         self.shown_at.elapsed()
     }
@@ -59,7 +62,7 @@ impl Notifications {
             let text = format_compact!("[+{amount}]");
             (amount, Some(text))
         };
-        self.inner = Some(Notification {
+        self.inner = Some(ToastContent {
             line,
             color,
             shown_at: Instant::now(),
@@ -76,11 +79,21 @@ impl Notifications {
     }
 }
 
+/// Max time a toast should be visible (including transitions!).
 pub const EXPIRE_TIME: Duration = Duration::from_millis(3150);
-pub const PAUSE_TIME: Duration = Duration::from_millis(3000);
+/// Time to show toast on screen.
+pub const PAUSE_AND_SHOW_TIME: Duration = Duration::from_millis(3000);
+/// For when another notification is sent while a toast is
+/// already being shown, overriding it, how long should
+/// the new toast stay in the "expanded" state.
 pub const EXPAND_TIME: Duration = Duration::from_millis(250);
+/// How long toast should take to emerge if none was present before.
 pub const EMERGE_TIME: Duration = Duration::from_millis(75);
 
+/// If the screen width is greater than this value, toasts will be centered.
+///
+/// If the screen width is less than or equal to this value,
+/// the toast will span the full width of the top few rows.
 pub const MIN_NOTIF_WIDTH: u16 = 70;
 
 impl Widget for &Notifications {
@@ -88,7 +101,7 @@ impl Widget for &Notifications {
     where
         Self: Sized,
     {
-        let Some(notification) = &self.inner else {
+        let Some(toast) = &self.inner else {
             return;
         };
 
@@ -101,9 +114,7 @@ impl Widget for &Notifications {
             } else {
                 horizontal![*=1,*=5,*=1].areas(top_lines)
             };
-            let mut new_width = centered_area
-                .width
-                .max(notification.line.width() as u16 + 4);
+            let mut new_width = centered_area.width.max(toast.line.width() as u16 + 4);
             new_width = new_width.min(area.width);
             let mut new_area = centered_area;
             new_area.width = new_width;
@@ -123,25 +134,31 @@ impl Widget for &Notifications {
             new_area
         };
 
-        let (meow_height, expand) = match (notification.shown_for(), notification.replaced) {
-            (d, _) if d >= EXPIRE_TIME => (0, false),
-            (d, _) if d >= PAUSE_TIME => (1, false),
+        let (toast_height, expand) = match (toast.shown_for(), toast.replaced) {
+            // Any toast: if longer than expire time, hide.
+            (d, _) if d >= EXPIRE_TIME => return,
+            // Any toast: if longer than time to show, begin "sliding" back into top.
+            (d, _) if d >= PAUSE_AND_SHOW_TIME => (1, false),
 
-            (d, true) if d >= EXPAND_TIME => (2, false),
-            (_, true) => (0, true),
-
-            (d, false) if d >= EMERGE_TIME => (2, true),
+            // Normal toast: if longer than emerge time, then show full toast.
+            (d, false) if d >= EMERGE_TIME => (2, false),
+            // Normal toast: if under emerge time, show only bottom line of toast.
             (_, false) => (1, false),
+
+            // Replacement toast: if longer than expand time, then show full toast.
+            (d, true) if d >= EXPAND_TIME => (2, false),
+            // Replacement toast: if under expand time, use expanded area (full toast + 1 width + 1 height)
+            (_, true) => (0, true),
         };
 
         let block_area = {
-            let mut area = if notification.replaced && expand {
+            let mut area = if toast.replaced && expand {
                 expand_area
             } else {
                 center_area
             };
             if !expand {
-                area.height = meow_height;
+                area.height = toast_height;
             }
             area
         };
@@ -150,15 +167,15 @@ impl Widget for &Notifications {
             Clear::render(Clear, block_area, buf);
             let mut block = Block::new()
                 .borders(Borders::BOTTOM)
-                .border_style(Style::from(notification.color));
+                .border_style(Style::from(toast.color));
 
             if area.width.saturating_sub(center_area.width) >= 2 {
                 block = block.borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT);
             }
 
             let inner_area = block.inner(center_area);
-            let text = &notification.line;
-            if notification.replaced
+            let text = &toast.line;
+            if toast.replaced
                 && text.width() < inner_area.width as usize
                 && self.replaced_amount.0 > 0
             {

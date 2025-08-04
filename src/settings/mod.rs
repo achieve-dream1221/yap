@@ -363,11 +363,17 @@ pub struct Behavior {
     strum::EnumString,
     strum::Display,
 )]
+/// Expected format of incoming bytes in relation to defmt support.
 pub enum DefmtSupport {
+    /// Expects defmt logs to be framed by `0xFF 0x00 ... 0x00`, any data outside of
+    /// those frames is asssumed to be text.
     FramedRzcobs,
+    /// Expects all input to be rzCOBS-compressed frames, delimited by 0x00.
     UnframedRzcobs,
+    /// Expects all input to be uncompressed defmt frames, as-is.
     Raw,
     #[default]
+    /// Defmt support is disabled, all input is assumed to be text.
     Disabled,
 }
 

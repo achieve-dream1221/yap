@@ -41,12 +41,13 @@ mod notifications;
 mod panic_handler;
 mod serial;
 mod settings;
+mod text_input;
 mod traits;
 mod tui;
 mod updates;
-mod user_input;
 
 static CONFIG_PARENT_PATH_CELL: OnceLock<Utf8PathBuf> = OnceLock::new();
+/// Joins the given path to the current working directory (adjacent to configs and logs).
 pub fn config_adjacent_path<P: Into<Utf8PathBuf>>(path: P) -> Utf8PathBuf {
     let path = path.into();
     let config_path = CONFIG_PARENT_PATH_CELL.get_or_init(|| {
@@ -58,12 +59,13 @@ pub fn config_adjacent_path<P: Into<Utf8PathBuf>>(path: P) -> Utf8PathBuf {
 
     config_path.join(path)
 }
+
 static EXECUTABLE_FILE_STEM: OnceLock<Utf8PathBuf> = OnceLock::new();
+/// Returns name of executable stripped of executable suffix.
 pub fn get_executable_name() -> Utf8PathBuf {
     let exec_name = EXECUTABLE_FILE_STEM.get_or_init(|| {
         let exe_pathbuf = std::env::current_exe().expect("failed to get path of executable");
-        let original = exe_pathbuf.with_extension("toml");
-        let exec_name_str = original
+        let exec_name_str = exe_pathbuf
             .file_stem()
             .expect("can't have file without name")
             .to_str()
@@ -438,7 +440,7 @@ pub fn initialize_logging<P: AsRef<Path>>(
     Ok((guard, tcp_socket_health))
 }
 
-/// Returns the directory that logs, config, and other files should be placed in by default.
+/// Returns the directory that logs, config, and other files should be placed in by default (if no override was given).
 // The rules for how it determines the directory is as follows:
 // If the app is built with the portable feature, it will just return it's parent directory.
 // If there is a config file present adjacent to the executable, the executable's parent path is returned.

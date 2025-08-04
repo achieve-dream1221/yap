@@ -8,8 +8,6 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-// #[cfg(feature = "defmt")]
-// use defmt_parser::Level;
 #[cfg(feature = "defmt")]
 use crate::settings::Defmt;
 use crate::{
@@ -21,13 +19,10 @@ use crate::{
 const TIME_FORMAT: &str = "[%H:%M:%S%.3f] ";
 
 #[derive(Debug, Clone)]
+/// The shared base object-to-render between Port/User lines.
 pub struct BufLine {
     pub(super) timestamp: DateTime<Local>,
 
-    // removing for now to see if the smaller bufline size
-    // is worth the extra work needed to make a timestamp each time
-    // timestamp_str: CompactString,
-    //
     range_in_raw_buffer: Range<usize>,
 
     pub(super) value: Line<'static>,
@@ -37,8 +32,6 @@ pub struct BufLine {
     rendered_line_height: u16,
 
     pub line_type: LineType,
-    // #[cfg(feature = "defmt")]
-    // defmt_level: Option<Level>,
 }
 
 #[derive(Clone, Copy)]
@@ -68,38 +61,44 @@ pub struct RenderSettings<'a> {
 //     }
 // }
 
-// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// pub(super) struct UserLine {
-//     pub(super) is_bytes: bool,
-//     pub(super) is_macro: bool,
-// }
-
 #[derive(Debug, Clone, PartialEq, Eq, strum::EnumIs)]
+/// Termination status of a BufLine.
 pub enum LineFinished {
+    /// No line ending has yet been encountered.
     Unfinished {
+        /// If Some, an ANSI Line Clear was found during parsing,
+        /// containing the index after the Line Clear command (as any bytes before it can be ignored for rendering purposes),
+        /// and the active Style at that point.
+        ///
+        /// If another is found during later consumptions, the later index and unterminated style is used.
         clear_occurred: Option<(usize, Style)>,
     },
+    /// Line was finished! Contains escaped line ending.
     LineEnding(CompactString),
+    /// Before a line ending could be found, the user sent a line that was visible, and thus
+    /// cut this line short.
     CutShort,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LineType {
+    /// Text from serial port
     Port(LineFinished),
+    /// Color Rules have omitted this line's contents entirely.
     PortHidden(LineFinished),
     User {
         is_bytes: bool,
         is_macro: bool,
         escaped_line_ending: Option<CompactString>,
+        /// Complete byte sequence that was sent to port, including line ending.
         reloggable_raw: Vec<u8>,
     },
     #[cfg(feature = "defmt")]
     PortDefmt {
         level: Option<defmt_parser::Level>,
         location: Option<FrameLocation>,
+        /// Timestamp generated using a format string and device's local time-since-boot.
         device_timestamp: Option<CompactString>,
-        // /// Includes any potential prefix or terminator
-        // total_frame_len: usize,
     },
 }
 
@@ -114,6 +113,7 @@ impl LineType {
 
 #[cfg(feature = "defmt")]
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// defmt log location in source files
 pub struct FrameLocation {
     // Original type is u64 but I'm not storing that.
     line: u32,
@@ -150,16 +150,21 @@ impl LineType {
     }
 }
 
+/// Helper struct to lower function parameter count :sweat_smile:
 pub struct BufLineKit<'a> {
+    /// Original slice (containing line ending) and it's range in RawBuffer.
     pub full_range_slice: RangeSlice<'a>,
-    pub area_width: u16,
-    pub render: RenderSettings<'a>,
+    /// Timestamp of slice's arrival from port
     pub timestamp: DateTime<Local>,
+    /// `last_terminal_size`'s width field copied in
+    pub area_width: u16,
+    /// References to Rendering setting and defmt Settings
+    pub render: RenderSettings<'a>,
 }
 
 // Many changes needed, esp. in regards to current app-state things (index, width, color, showing timestamp)
 impl BufLine {
-    fn new(line: Line<'static>, kit: BufLineKit, line_type: LineType) -> Self {
+    fn new_inner(line: Line<'static>, kit: BufLineKit, line_type: LineType) -> Self {
         let timestamp = kit.timestamp;
 
         let mut bufline = Self {
@@ -174,6 +179,7 @@ impl BufLine {
         bufline.update_line_height(kit.area_width, kit.render);
         bufline
     }
+    /// Normal case, taking in an `ansi-to-tui`-parsed Line and converting to a BufLine
     pub fn port_text_line(
         line: Line<'static>,
         kit: BufLineKit,
@@ -181,6 +187,7 @@ impl BufLine {
         line_ending: &LineEnding,
     ) -> Self {
         let line_type = LineType::Port(
+            // Checking if the line's backing slice was terminated with the current line ending.
             if let Some(escaped_line_ending) = line_ending.escaped_from(kit.full_range_slice.slice)
             {
                 LineFinished::LineEnding(escaped_line_ending)
@@ -191,28 +198,24 @@ impl BufLine {
             },
         );
 
-        Self::new(line, kit, line_type)
+        Self::new_inner(line, kit, line_type)
     }
     /// Create a port line with no internal content but has a valid line ending.
-    //
-    // Thus hollow, not exactly empty, but not filled with content either.
+    ///
+    /// Thus hollow, not exactly empty, but not filled with content either.
     pub fn hollow_port_line(kit: BufLineKit, line_ending: &LineEnding) -> Self {
-        let line_type = LineType::Port(
-            if let Some(escaped_line_ending) = line_ending.as_escaped() {
-                LineFinished::LineEnding(escaped_line_ending)
-            } else {
-                LineFinished::CutShort
-            },
+        let escaped_line_ending = line_ending.as_escaped().expect(
+            "should only be called when the line's content is **only** a non-empty line ending",
         );
+        let line_type = LineType::Port(LineFinished::LineEnding(escaped_line_ending));
 
-        Self::new(Line::default(), kit, line_type)
+        Self::new_inner(Line::default(), kit, line_type)
     }
-    // pub fn censored_port_line(kit: BufLineKit, line_ending: &LineEnding) -> Self {
-    //     todo!()
-    // }
+    /// Create a port line in the case where all contents were _omitted_ by the user's color rules
+    /// (censoring _replaces_ contents, won't _omit_ them).
     pub fn hidden_content_port_line(kit: BufLineKit, line_ending: &LineEnding) -> Self {
         let span = Span::styled(
-            "[All content hidden by color rules.]",
+            "[All content was omitted by color rules.]",
             Style::new().dark_gray(),
         );
 
@@ -227,9 +230,10 @@ impl BufLine {
             },
         );
 
-        Self::new(span.into(), kit, line_type)
+        Self::new_inner(span.into(), kit, line_type)
     }
     #[cfg(feature = "defmt")]
+    /// Creating port line from post-processed defmt message text and frame info.
     pub fn port_defmt_line(
         line: Line<'static>,
         kit: BufLineKit,
@@ -243,7 +247,26 @@ impl BufLine {
             location,
         };
 
-        Self::new(line, kit, line_type)
+        Self::new_inner(line, kit, line_type)
+    }
+    #[cfg(feature = "defmt")]
+    pub fn hidden_content_port_defmt_line(
+        kit: BufLineKit,
+        level: Option<defmt_parser::Level>,
+        device_timestamp: Option<&dyn std::fmt::Display>,
+        location: Option<FrameLocation>,
+    ) -> Self {
+        let span = Span::styled(
+            "[All content was omitted by color rules.]",
+            Style::new().dark_gray(),
+        );
+        let line_type = LineType::PortDefmt {
+            level,
+            device_timestamp: device_timestamp.map(|ts| format_compact!("[{ts}] ")),
+            location,
+        };
+
+        Self::new_inner(span.into(), kit, line_type)
     }
     pub fn user_line(
         line: Line<'static>,
@@ -260,10 +283,10 @@ impl BufLine {
             reloggable_raw,
         };
 
-        Self::new(line, kit, line_type)
+        Self::new_inner(line, kit, line_type)
     }
 
-    pub fn update_line(&mut self, mut new: BufLine) {
+    pub fn replace_contents_with(&mut self, mut new: BufLine) {
         assert!(matches!(
             self.line_type,
             LineType::Port(LineFinished::Unfinished { .. })
@@ -271,11 +294,11 @@ impl BufLine {
         ));
 
         new.timestamp = self.timestamp;
-        // new.value.remove_unsavory_chars(false);
 
         *self = new;
     }
 
+    /// Determine and cache how many vertical lines this BufLine would take to show fully on screen.
     pub fn update_line_height(&mut self, terminal_width: u16, rendering: RenderSettings) -> usize {
         // Acting as if the scrollbar is always visible, since otherwise it appearing would require
         // redoing the line height check again.
@@ -293,7 +316,8 @@ impl BufLine {
         self.rendered_line_height
     }
 
-    /// Returns an owned `Line` that borrows from the current line's spans.
+    /// Returns an owned `ratatui::Line` that borrows from the BufLine's actual text spans,
+    /// and appending optional Spans depending on line type and user's rendering/defmt settings.
     pub fn as_line(&self, rendering: RenderSettings) -> Line {
         let borrowed_spans = self.value.borrowed_spans_iter();
 
@@ -319,12 +343,6 @@ impl BufLine {
             .timestamps
             .then(|| Span::styled(self.timestamp.format(TIME_FORMAT).to_string(), dark_gray))
             .into_iter();
-
-        // let timestamp = std::iter::once(Span::styled(
-        //     Cow::Borrowed(self.timestamp_str.as_ref()),
-        //     dark_gray,
-        // ))
-        // .filter(|_| rendering.rendering.timestamps);
 
         #[cfg(feature = "defmt")]
         let defmt_device_timestamp = std::iter::once(&self.line_type).filter_map(|lt| match lt {
@@ -428,15 +446,17 @@ impl BufLine {
         let line_ending = std::iter::once(&self.line_type).filter_map(|lt| match lt {
             _ if !rendering.rendering.show_line_ending => None,
 
-            LineType::Port(LineFinished::LineEnding(line_ending))
-            | LineType::PortHidden(LineFinished::LineEnding(line_ending)) => {
+            LineType::Port(LineFinished::LineEnding(line_ending)) => {
+                Some(Span::styled(Cow::Borrowed(line_ending.as_str()), dark_gray))
+            }
+            LineType::PortHidden(LineFinished::LineEnding(line_ending)) => {
                 Some(Span::styled(Cow::Borrowed(line_ending.as_str()), dark_gray))
             }
 
-            LineType::Port(LineFinished::CutShort)
-            | LineType::PortHidden(LineFinished::CutShort) => None,
-            LineType::Port(LineFinished::Unfinished { .. })
-            | LineType::PortHidden(LineFinished::Unfinished { .. }) => None,
+            LineType::Port(LineFinished::CutShort) => None,
+            LineType::Port(LineFinished::Unfinished { .. }) => None,
+            LineType::PortHidden(LineFinished::CutShort) => None,
+            LineType::PortHidden(LineFinished::Unfinished { .. }) => None,
 
             LineType::User {
                 escaped_line_ending: Some(line_ending),
@@ -451,6 +471,8 @@ impl BufLine {
             #[cfg(feature = "defmt")]
             LineType::PortDefmt { .. } => None,
         });
+
+        // A little silly but it works.
 
         let spans = timestamp;
 

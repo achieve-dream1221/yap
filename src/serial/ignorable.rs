@@ -17,7 +17,9 @@ impl PartialEq<UsbPortInfo> for DeserializedUsb {
         self.vid == other.vid
             && self.pid == other.pid
             && match (&self.serial_number, &other.serial_number) {
+                // no serial number was specified by the user, so we'll match any that matched vid and pid
                 (None, _) => true,
+                // compare serial numbers!
                 (Some(serial_num), Some(other_serial_num)) => serial_num == other_serial_num,
                 // if we're checking for a specific serial number but the checked device doesn't have one.
                 (Some(_), None) => false,
@@ -60,7 +62,7 @@ impl From<DeserializedUsb> for UsbPortInfo {
 impl std::fmt::Display for DeserializedUsb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.serial_number {
-            Some(serial) => write!(f, "{:04X}:{:04X}:{}", self.vid, self.pid, serial),
+            Some(serial) => write!(f, "{:04X}:{:04X}:{serial}", self.vid, self.pid),
             None => write!(f, "{:04X}:{:04X}", self.vid, self.pid),
         }
     }

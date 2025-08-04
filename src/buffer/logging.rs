@@ -40,9 +40,9 @@ pub enum LoggingCommand {
     PortConnected(DateTime<Local>, SerialPortInfo, Option<ReconnectType>),
     PortDisconnect {
         timestamp: DateTime<Local>,
-        intentional: bool,
+        back_to_port_selection: bool,
     },
-    BeginRelogging(Receiver<Relogging>),
+    BeginRelogging(Receiver<SyncBatch>),
     RxBytes(DateTime<Local>, Vec<u8>),
     TxBytes(TxPayload),
     LineEndingChange(LineEnding),
@@ -54,37 +54,23 @@ pub enum LoggingCommand {
     Shutdown(Sender<()>),
 }
 
-pub enum Relogging {
+// When user requests to re-sync all buffer contents to file,
+// we batch together consecutive RX/TX entries
+// (just to minimize the amount of chatter between threads)
+pub enum SyncBatch {
     RxBatch(Vec<(DateTime<Local>, Vec<u8>)>),
     TxBatch(Vec<TxPayload>),
     Done,
 }
 
-enum LoggingLineType {
+enum LineType {
+    /// Recieved from port
     Rx,
-    Tx {
-        line_ending: Vec<u8>,
-    },
+    /// Sent by user
+    Tx { line_ending: Vec<u8> },
+    /// Decoded from port
     #[cfg(feature = "defmt")]
     DefmtRx,
-}
-
-#[derive(Debug, thiserror::Error)]
-enum LoggingError {
-    #[error("logging file error")]
-    File(#[from] std::io::Error),
-    #[error("failed to send event to main app")]
-    EventSend,
-    #[error("failed to reply to shutdown request in time")]
-    ShutdownReply,
-    #[error("handle dropped, can't recieve commands")]
-    HandleDropped,
-}
-
-impl<T> From<SendError<T>> for LoggingError {
-    fn from(_value: SendError<T>) -> Self {
-        Self::EventSend
-    }
 }
 
 #[derive(Debug)]
@@ -102,12 +88,14 @@ impl From<LoggingEvent> for Event {
 struct LoggingWorker {
     event_tx: Sender<Event>,
     command_rx: Receiver<LoggingCommand>,
-    // path: PathBuf,
+
     text_file: Option<fs::File>,
     raw_file: Option<fs::File>,
     started_logging_at: Option<DateTime<Local>>,
     settings: Logging,
     line_ending: LineEnding,
+
+    /// Flag for if continued RX content could be appended without adding a newline first.
     last_rx_completed: bool,
 
     current_port: Option<SerialPortInfo>,
@@ -131,10 +119,15 @@ impl<T> From<crossbeam::channel::SendError<T>> for LoggingWorkerMissing {
 #[cfg(feature = "defmt")]
 #[derive(Default)]
 struct DefmtKit {
+    /// Since the worker typically writes the recieved buffer to disk and then drops it,
+    /// there's no existing cache for when an incomplete defmt frame is recieved,
+    /// so this holds the incomplete frame's bytes and when it was first being recieved.
+    unconsumed: Option<(DateTime<Local>, Vec<u8>)>,
     settings: Defmt,
     decoder: Option<Arc<super::defmt::DefmtDecoder>>,
-    unconsumed: Option<(DateTime<Local>, Vec<u8>)>,
-    raw_defmt_malformed: bool,
+    /// Flag if last defmt raw/uncompressed decode attempt failed.
+    /// Further parsing attempts will not be allowed if set to true.
+    defmt_raw_malformed: bool,
 }
 
 impl LoggingHandle {
@@ -151,7 +144,6 @@ impl LoggingHandle {
             command_rx,
             settings,
             line_ending,
-            // path: "meow.log".into(),
             text_file: None,
             raw_file: None,
             started_logging_at: None,
@@ -186,7 +178,7 @@ impl LoggingHandle {
         ))?;
         Ok(())
     }
-    pub(super) fn begin_relogging(&self, receiver: Receiver<Relogging>) -> HandleResult<()> {
+    pub(super) fn begin_relogging(&self, receiver: Receiver<SyncBatch>) -> HandleResult<()> {
         self.command_tx
             .send(LoggingCommand::BeginRelogging(receiver))?;
         Ok(())
@@ -213,11 +205,6 @@ impl LoggingHandle {
         }))?;
         Ok(())
     }
-    // pub(super) fn log_bufline(&self, line: BufLine) -> WorkerResult<()> {
-    //     self.command_tx
-    //         .send(LoggingCommand::RxTxLine(line))?;
-    //     Ok(())
-    // }
     #[cfg(feature = "defmt")]
     pub fn update_defmt_settings(&self, settings: Defmt) -> HandleResult<()> {
         self.command_tx
@@ -242,10 +229,10 @@ impl LoggingHandle {
         self.command_tx.send(LoggingCommand::Settings(logging))?;
         Ok(())
     }
-    pub fn log_port_disconnected(&self, intentional: bool) -> HandleResult<()> {
+    pub fn log_port_disconnected(&self, back_to_port_selection: bool) -> HandleResult<()> {
         self.command_tx.send(LoggingCommand::PortDisconnect {
             timestamp: Local::now(),
-            intentional,
+            back_to_port_selection,
         })?;
         Ok(())
     }
@@ -349,17 +336,17 @@ impl LoggingWorker {
 
                 for msg in receiver.into_iter() {
                     match msg {
-                        Relogging::RxBatch(rx_batch) => {
+                        SyncBatch::RxBatch(rx_batch) => {
                             for (timestamp, bytes) in rx_batch {
                                 if let Some(raw_file) = &mut self.raw_file {
                                     raw_file.write_all(&bytes)?;
                                 }
                                 if self.text_file.is_some() {
-                                    self.consume_text_bytes(timestamp, bytes)?;
+                                    self.consume_bytes_for_text_file(timestamp, bytes)?;
                                 }
                             }
                         }
-                        Relogging::TxBatch(tx_batch) => {
+                        SyncBatch::TxBatch(tx_batch) => {
                             for TxPayload {
                                 timestamp,
                                 bytes,
@@ -382,11 +369,11 @@ impl LoggingWorker {
                                     text_file,
                                     &self.line_ending,
                                     // self.settings.timestamps,
-                                    LoggingLineType::Tx { line_ending },
+                                    LineType::Tx { line_ending },
                                 )?;
                             }
                         }
-                        Relogging::Done => {
+                        SyncBatch::Done => {
                             self.flush_files(false)?;
                             self.event_tx
                                 .send(LoggingEvent::FinishedReconsumption.into())?;
@@ -399,7 +386,7 @@ impl LoggingWorker {
                     raw_file.write_all(&buf)?;
                 }
                 if self.text_file.is_some() {
-                    self.consume_text_bytes(timestamp, buf)?;
+                    self.consume_bytes_for_text_file(timestamp, buf)?;
                 }
             }
             LoggingCommand::TxBytes(TxPayload {
@@ -423,7 +410,7 @@ impl LoggingWorker {
                     text_file,
                     &self.line_ending,
                     // self.settings.timestamps,
-                    LoggingLineType::Tx { line_ending },
+                    LineType::Tx { line_ending },
                 )?;
             }
             LoggingCommand::LineEndingChange(new_ending) => self.line_ending = new_ending,
@@ -441,7 +428,7 @@ impl LoggingWorker {
                 let new = &self.defmt.settings;
 
                 if changed!(old, new, defmt_parsing) && self.defmt.unconsumed.is_some() {
-                    self.defmt.raw_defmt_malformed = false;
+                    self.defmt.defmt_raw_malformed = false;
                     _ = self.defmt.unconsumed.take();
                 }
             }
@@ -451,24 +438,24 @@ impl LoggingWorker {
             }
             LoggingCommand::PortDisconnect {
                 timestamp,
-                intentional,
+                back_to_port_selection,
             } => {
                 if self.raw_file.is_none() && self.text_file.is_none() {
                     return Ok(());
                 }
                 self.log_connection_event(timestamp, None)?;
-                if intentional {
+                if back_to_port_selection {
                     self.close_files(false)?;
                 } else {
                     self.flush_files(false)?;
                 }
             }
-            LoggingCommand::Shutdown(_) => unreachable!(),
+            LoggingCommand::Shutdown(_) => unreachable!("shutdown handled in work_loop"),
         }
         Ok(())
     }
 
-    fn consume_text_bytes(
+    fn consume_bytes_for_text_file(
         &mut self,
         timestamp: DateTime<Local>,
         buf: Vec<u8>,
@@ -486,8 +473,7 @@ impl LoggingWorker {
                         self.last_rx_completed,
                         text_file,
                         &self.line_ending,
-                        // self.settings.timestamps,
-                        LoggingLineType::Rx,
+                        LineType::Rx,
                     )?;
                 }
                 DefmtSupport::FramedRzcobs | DefmtSupport::UnframedRzcobs | DefmtSupport::Raw => {
@@ -510,7 +496,7 @@ impl LoggingWorker {
                 text_file,
                 &self.line_ending,
                 // self.settings.timestamps,
-                LoggingLineType::Rx,
+                LineType::Rx,
             )?;
         }
         Ok(())
@@ -518,7 +504,7 @@ impl LoggingWorker {
 
     #[cfg(feature = "defmt")]
     fn consume_with_defmt(&mut self) -> Result<(), std::io::Error> {
-        if self.defmt.raw_defmt_malformed {
+        if self.defmt.defmt_raw_malformed {
             _ = self.defmt.unconsumed.take();
             return Ok(());
         }
@@ -558,7 +544,7 @@ impl LoggingWorker {
                 true,
                 text_file,
                 &LineEnding::None,
-                LoggingLineType::DefmtRx,
+                LineType::DefmtRx,
             )?;
             write_line_ending(text_file)?;
 
@@ -569,7 +555,7 @@ impl LoggingWorker {
         use defmt_decoder::DecodeError;
 
         match self.defmt.settings.defmt_parsing {
-            DefmtSupport::Disabled => unreachable!(),
+            DefmtSupport::Disabled => unreachable!("shouldn't be called when disabled"),
             DefmtSupport::Raw => loop {
                 match decoder.table.decode(unconsumed_buf) {
                     Ok((decoded_frame, _consumed)) => {
@@ -583,7 +569,7 @@ impl LoggingWorker {
                     }
                     Err(DecodeError::UnexpectedEof) => break,
                     Err(DecodeError::Malformed) => {
-                        self.defmt.raw_defmt_malformed = true;
+                        self.defmt.defmt_raw_malformed = true;
 
                         self.last_rx_completed = write_buffer_to_text_file(
                             *timestamp,
@@ -592,7 +578,7 @@ impl LoggingWorker {
                             self.last_rx_completed,
                             text_file,
                             &LineEnding::None,
-                            LoggingLineType::DefmtRx,
+                            LineType::DefmtRx,
                         )?;
 
                         break;
@@ -620,7 +606,7 @@ impl LoggingWorker {
                         self.last_rx_completed,
                         text_file,
                         &LineEnding::None,
-                        LoggingLineType::DefmtRx,
+                        LineType::DefmtRx,
                     )?;
 
                     unconsumed_buf.drain(..unconsumed_len - rest.len());
@@ -645,7 +631,7 @@ impl LoggingWorker {
                             true,
                             text_file,
                             &LineEnding::None,
-                            LoggingLineType::DefmtRx,
+                            LineType::DefmtRx,
                         )?;
 
                         unconsumed_buf.drain(..unconsumed_len - rest.len());
@@ -675,7 +661,7 @@ impl LoggingWorker {
                                 self.last_rx_completed,
                                 text_file,
                                 &LineEnding::None,
-                                LoggingLineType::DefmtRx,
+                                LineType::DefmtRx,
                             )?;
 
                             unconsumed_buf.drain(..unconsumed_len - rest.len());
@@ -700,7 +686,7 @@ impl LoggingWorker {
                                     self.last_rx_completed,
                                     text_file,
                                     &LineEnding::None,
-                                    LoggingLineType::DefmtRx,
+                                    LineType::DefmtRx,
                                 )?;
 
                                 unconsumed_buf.drain(..unconsumed_len - rest.len());
@@ -716,7 +702,7 @@ impl LoggingWorker {
                             self.last_rx_completed,
                             text_file,
                             &self.line_ending,
-                            LoggingLineType::Rx,
+                            LineType::Rx,
                         )?;
                     }
                     DelimitedSlice::DefmtRaw(_) => unreachable!(),
@@ -900,10 +886,11 @@ fn write_buffer_to_text_file(
     text_file: &mut fs::File,
     line_ending: &LineEnding,
     // with_timestamp: bool,
-    line_type: LoggingLineType,
+    line_type: LineType,
 ) -> Result<bool, std::io::Error> {
-    let is_tx_line = matches!(&line_type, LoggingLineType::Tx { .. });
-    let appendable_text = matches!(&line_type, LoggingLineType::Rx);
+    // Incomplete UTF-8 sequences aren't handled as gracefully here as they are with the actual UI....
+    let is_tx_line = matches!(&line_type, LineType::Tx { .. });
+    let appendable_text = matches!(&line_type, LineType::Rx);
     let timestamp_string = if timestamp_fmt.trim().is_empty() {
         None
     } else {
@@ -940,7 +927,7 @@ fn write_buffer_to_text_file(
         for c in orig.escape_ascii() {
             text_file.write_all(&[c])?;
         }
-        if let LoggingLineType::Tx { line_ending } = &line_type {
+        if let LineType::Tx { line_ending } = &line_type {
             for c in line_ending.escape_ascii() {
                 text_file.write_all(&[c])?;
             }
@@ -994,32 +981,20 @@ fn write_defmt_frame_to_text_file(
     Ok(true)
 }
 
-// fn write_bufline_to_file(
-//     text_file: &mut fs::File,
-//     line: &BufLine,
-//     with_timestamp: bool,
-// ) -> Result<(), std::io::Error> {
-//     let line_capacity = line.value.iter().map(|s| s.content.len()).sum();
+#[derive(Debug, thiserror::Error)]
+enum LoggingError {
+    #[error("logging file error")]
+    File(#[from] std::io::Error),
+    #[error("failed to send event to main app")]
+    EventSend,
+    #[error("failed to reply to shutdown request in time")]
+    ShutdownReply,
+    #[error("handle dropped, can't recieve commands")]
+    HandleDropped,
+}
 
-//     let line_to_write = {
-//         let mut output = String::with_capacity(line_capacity);
-
-//
-
-//         // match line.line_type {
-//         //     LineType::Port => (),
-//         //     LineType::User {
-//         //         is_macro: false, ..
-//         //     } => output.push_str("(USER) "),
-//         //     LineType::User { is_macro: true, .. } => output.push_str("(MACRO) "),
-//         // }
-
-//         line.value.iter().for_each(|s| output.push_str(&s.content));
-
-//         output
-//     };
-
-//     text_file.write_all(line_to_write.as_bytes())?;
-//     text_file.write_all(&[b'\n'])?;
-//     Ok(())
-// }
+impl<T> From<SendError<T>> for LoggingError {
+    fn from(_value: SendError<T>) -> Self {
+        Self::EventSend
+    }
+}

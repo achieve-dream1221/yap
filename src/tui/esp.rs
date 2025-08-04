@@ -66,7 +66,6 @@ pub struct EspBins {
     pub bins: Vec<(u32, Utf8PathBuf)>,
     pub upload_baud: Option<u32>,
     pub expected_chip: Option<Chip>,
-    // pub partition_table: Option<PathBuf>,
     pub no_skip: bool,
     pub no_verify: bool,
     #[cfg(feature = "defmt")]
@@ -80,7 +79,6 @@ pub struct EspElf {
     pub upload_baud: Option<u32>,
     pub expected_chip: Option<Chip>,
     pub partition_table: Option<Utf8PathBuf>,
-    // pub partition_table_offset: Option<u32>,
     pub bootloader: Option<Utf8PathBuf>,
     pub no_skip: bool,
     pub no_verify: bool,
@@ -299,13 +297,6 @@ impl<'de> Deserialize<'de> for EspBins {
                     return Err(A::Error::missing_field("chip"));
                 }
 
-                // let upload_baud =
-                //     upload_baud.ok_or_else(|| A::Error::missing_field("upload_baud"))?;
-
-                // // bins in order of offset ascending
-                // let mut bins_vec: Vec<(u32, PathBuf)> = bins.into_iter().collect();
-                // bins_vec.sort_by_key(|(offset, _)| *offset);
-
                 Ok(EspBins {
                     name,
                     bins,
@@ -521,7 +512,7 @@ impl EspFlashHelper {
                 }
                 FlashProgress::Progress(progress) => {
                     let Some(EspPopup::Flashing(flashing)) = self.popup.take() else {
-                        unreachable!();
+                        unreachable!("expected progress to update");
                     };
                     self.popup = Some(EspPopup::Flashing(Flashing {
                         current_progress: progress,
@@ -530,7 +521,7 @@ impl EspFlashHelper {
                 }
                 FlashProgress::Verifying => {
                     let Some(EspPopup::Flashing(flashing)) = self.popup.take() else {
-                        unreachable!();
+                        unreachable!("expected progress to update");
                     };
                     self.popup = Some(EspPopup::Flashing(Flashing {
                         current_action: SegmentAction::Verifying,
@@ -539,7 +530,7 @@ impl EspFlashHelper {
                 }
                 FlashProgress::SegmentFinished { skipped } => {
                     let Some(EspPopup::Flashing(flashing)) = self.popup.take() else {
-                        unreachable!();
+                        unreachable!("expected progress to update");
                     };
                     let current_action = if skipped {
                         SegmentAction::Skipped
@@ -806,7 +797,7 @@ pub fn espflash_buttons(
         ]),
         Row::new([
             Text::raw("ESP->Bootloader ").right_aligned(),
-            // < > ?
+            // TODO < > ?
             Text::raw(if unchecked_bootloader {
                 "Reboot! (Unchecked)"
             } else {

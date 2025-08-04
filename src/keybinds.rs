@@ -1,4 +1,5 @@
 // Since I can't rely on prefix from strum
+// #[strum(prefix = "show-")] doesn't work with FromStr :(
 #![allow(clippy::enum_variant_names)]
 // For RequiresPort, makes more sense to me to keep same format.
 #![allow(clippy::match_like_matches_macro)]
@@ -34,8 +35,7 @@ use crate::{config_adjacent_path, traits::RequiresPort};
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 #[repr(u8)]
-// #[strum(prefix = "show-")]
-// nevermind, doesn't work with FromStr :(
+/// Actions to show settings/tools popups.
 pub enum ShowPopupAction {
     /// Show all current keybinds, highlighting unrecognized actions.
     ShowKeybinds,
@@ -63,10 +63,8 @@ pub enum ShowPopupAction {
 
 impl RequiresPort for ShowPopupAction {
     fn requires_connection(&self) -> bool {
+        // Requires no port presence, only UI actions.
         false
-    }
-    fn requires_terminal_view(&self) -> bool {
-        self.requires_connection()
     }
 }
 
@@ -102,6 +100,8 @@ impl RequiresPort for ShowPopupAction {
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
+/// Actions for interacting with the core of the application,
+/// regardless of features.
 pub enum BaseAction {
     /// Toggle wrapping text longer than the screen.
     ToggleTextwrap,
@@ -133,6 +133,8 @@ impl RequiresPort for BaseAction {
     }
     fn requires_terminal_view(&self) -> bool {
         match self {
+            // Has no use when not in the terminal view,
+            // and behavior doesn't rely on port having healthy connection.
             BaseAction::EscapeKeypress => true,
             _ => false,
         }
@@ -153,6 +155,7 @@ impl RequiresPort for BaseAction {
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
+/// Actions to interact with a connected device.
 pub enum PortAction {
     /// Toggle the state of DTR (Data Terminal Ready).
     ToggleDtr,
@@ -178,11 +181,13 @@ pub enum PortAction {
 impl RequiresPort for PortAction {
     fn requires_connection(&self) -> bool {
         match self {
+            // Can't require a connection for the method to revitalize one.
             Self::AttemptReconnectLoose | Self::AttemptReconnectStrict => false,
             _ => true,
         }
     }
     fn requires_terminal_view(&self) -> bool {
+        // All actions interact with a device.
         true
     }
 }
@@ -212,9 +217,6 @@ impl RequiresPort for MacroBuiltinAction {
     fn requires_connection(&self) -> bool {
         false
     }
-    fn requires_terminal_view(&self) -> bool {
-        self.requires_connection()
-    }
 }
 
 #[cfg(feature = "espflash")]
@@ -232,7 +234,7 @@ impl RequiresPort for MacroBuiltinAction {
 )]
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
-pub enum EspAction {
+pub enum EspBuiltinAction {
     /// Attempt to remotely reset the chip.
     EspHardReset,
     /// Attempt to reboot into bootloader, retries until success or eventual fail.
@@ -249,15 +251,14 @@ pub enum EspAction {
 }
 
 #[cfg(feature = "espflash")]
-impl RequiresPort for EspAction {
+impl RequiresPort for EspBuiltinAction {
     fn requires_connection(&self) -> bool {
         match self {
+            // UI action, can happen whenever.
             Self::ReloadProfiles => false,
+            // But the rest require a healthy connection.
             _ => true,
         }
-    }
-    fn requires_terminal_view(&self) -> bool {
-        self.requires_connection()
     }
 }
 
@@ -274,7 +275,6 @@ impl RequiresPort for EspAction {
     strum::VariantArray,
     strum::EnumMessage,
 )]
-// #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 pub enum LoggingAction {
     #[strum(serialize = "logging-sync")]
@@ -289,6 +289,9 @@ impl RequiresPort for LoggingAction {
     }
     fn requires_terminal_view(&self) -> bool {
         match self {
+            // No log file would be made without a connection,
+            // and any existing files are flushed and dropped
+            // when returning to port selection screen.
             Self::Sync => true,
             // _ => false,
         }
@@ -311,8 +314,7 @@ impl RequiresPort for LoggingAction {
 #[strum(serialize_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 #[repr(u8)]
-// #[strum(prefix = "show-")]
-// nevermind, doesn't work with FromStr :(
+/// Actions to show one of the defmt ELF selection screens.
 pub enum DefmtSelectAction {
     #[strum(serialize = "defmt-select-tui")]
     /// Select a defmt ELF with an in-app file explorer.
@@ -328,29 +330,27 @@ pub enum DefmtSelectAction {
 #[cfg(feature = "defmt")]
 impl RequiresPort for DefmtSelectAction {
     fn requires_connection(&self) -> bool {
+        // "UI" only.
         false
-    }
-    fn requires_terminal_view(&self) -> bool {
-        self.requires_connection()
     }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, strum::AsRefStr)]
-pub enum AppAction {
+pub enum BuiltinAction {
     Base(BaseAction),
     Popup(ShowPopupAction),
     Port(PortAction),
     #[cfg(feature = "macros")]
     MacroBuiltin(MacroBuiltinAction),
     #[cfg(feature = "espflash")]
-    Esp(EspAction),
+    EspBuiltin(EspBuiltinAction),
     #[cfg(feature = "logging")]
     Logging(LoggingAction),
     #[cfg(feature = "defmt")]
     ShowDefmtSelect(DefmtSelectAction),
 }
 
-impl RequiresPort for AppAction {
+impl RequiresPort for BuiltinAction {
     fn requires_connection(&self) -> bool {
         match self {
             Self::Base(action) => action.requires_connection(),
@@ -359,7 +359,7 @@ impl RequiresPort for AppAction {
             #[cfg(feature = "macros")]
             Self::MacroBuiltin(action) => action.requires_connection(),
             #[cfg(feature = "espflash")]
-            Self::Esp(action) => action.requires_connection(),
+            Self::EspBuiltin(action) => action.requires_connection(),
             #[cfg(feature = "logging")]
             Self::Logging(action) => action.requires_connection(),
             #[cfg(feature = "defmt")]
@@ -374,7 +374,7 @@ impl RequiresPort for AppAction {
             #[cfg(feature = "macros")]
             Self::MacroBuiltin(action) => action.requires_terminal_view(),
             #[cfg(feature = "espflash")]
-            Self::Esp(action) => action.requires_terminal_view(),
+            Self::EspBuiltin(action) => action.requires_terminal_view(),
             #[cfg(feature = "logging")]
             Self::Logging(action) => action.requires_terminal_view(),
             #[cfg(feature = "defmt")]
@@ -383,108 +383,110 @@ impl RequiresPort for AppAction {
     }
 }
 
-impl fmt::Display for AppAction {
+impl fmt::Display for BuiltinAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AppAction::Base(action) => write!(f, "{action}"),
-            AppAction::Popup(action) => write!(f, "{action}"),
-            AppAction::Port(action) => write!(f, "{action}"),
+            BuiltinAction::Base(action) => write!(f, "{action}"),
+            BuiltinAction::Popup(action) => write!(f, "{action}"),
+            BuiltinAction::Port(action) => write!(f, "{action}"),
             #[cfg(feature = "macros")]
-            AppAction::MacroBuiltin(action) => write!(f, "{action}"),
+            BuiltinAction::MacroBuiltin(action) => write!(f, "{action}"),
             #[cfg(feature = "espflash")]
-            AppAction::Esp(action) => write!(f, "{action}"),
+            BuiltinAction::EspBuiltin(action) => write!(f, "{action}"),
             #[cfg(feature = "logging")]
-            AppAction::Logging(action) => write!(f, "{action}"),
+            BuiltinAction::Logging(action) => write!(f, "{action}"),
             #[cfg(feature = "defmt")]
-            AppAction::ShowDefmtSelect(action) => write!(f, "{action}"),
+            BuiltinAction::ShowDefmtSelect(action) => write!(f, "{action}"),
         }
     }
 }
 
-impl From<BaseAction> for AppAction {
+impl From<BaseAction> for BuiltinAction {
     fn from(action: BaseAction) -> Self {
-        AppAction::Base(action)
+        BuiltinAction::Base(action)
     }
 }
 
-impl From<ShowPopupAction> for AppAction {
+impl From<ShowPopupAction> for BuiltinAction {
     fn from(action: ShowPopupAction) -> Self {
-        AppAction::Popup(action)
+        BuiltinAction::Popup(action)
     }
 }
 
-impl From<PortAction> for AppAction {
+impl From<PortAction> for BuiltinAction {
     fn from(action: PortAction) -> Self {
-        AppAction::Port(action)
+        BuiltinAction::Port(action)
     }
 }
 
 #[cfg(feature = "macros")]
-impl From<MacroBuiltinAction> for AppAction {
+impl From<MacroBuiltinAction> for BuiltinAction {
     fn from(action: MacroBuiltinAction) -> Self {
-        AppAction::MacroBuiltin(action)
+        BuiltinAction::MacroBuiltin(action)
     }
 }
 
 #[cfg(feature = "espflash")]
-impl From<EspAction> for AppAction {
-    fn from(action: EspAction) -> Self {
-        AppAction::Esp(action)
+impl From<EspBuiltinAction> for BuiltinAction {
+    fn from(action: EspBuiltinAction) -> Self {
+        BuiltinAction::EspBuiltin(action)
     }
 }
 
 #[cfg(feature = "logging")]
-impl From<LoggingAction> for AppAction {
+impl From<LoggingAction> for BuiltinAction {
     fn from(action: LoggingAction) -> Self {
-        AppAction::Logging(action)
+        BuiltinAction::Logging(action)
     }
 }
 
 #[cfg(feature = "defmt")]
-impl From<DefmtSelectAction> for AppAction {
+impl From<DefmtSelectAction> for BuiltinAction {
     fn from(action: DefmtSelectAction) -> Self {
-        AppAction::ShowDefmtSelect(action)
+        BuiltinAction::ShowDefmtSelect(action)
     }
 }
 
-impl FromStr for AppAction {
+impl FromStr for BuiltinAction {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
         if let Ok(base) = s.parse::<BaseAction>() {
-            return Ok(AppAction::Base(base));
+            return Ok(BuiltinAction::Base(base));
         }
         if let Ok(popup) = s.parse::<ShowPopupAction>() {
-            return Ok(AppAction::Popup(popup));
+            return Ok(BuiltinAction::Popup(popup));
         }
         if let Ok(port) = s.parse::<PortAction>() {
-            return Ok(AppAction::Port(port));
+            return Ok(BuiltinAction::Port(port));
         }
         #[cfg(feature = "logging")]
         if let Ok(logging) = s.parse::<LoggingAction>() {
-            return Ok(AppAction::Logging(logging));
+            return Ok(BuiltinAction::Logging(logging));
         }
         #[cfg(feature = "macros")]
         if let Ok(macros) = s.parse::<MacroBuiltinAction>() {
-            return Ok(AppAction::MacroBuiltin(macros));
+            return Ok(BuiltinAction::MacroBuiltin(macros));
         }
         #[cfg(feature = "espflash")]
-        if let Ok(esp) = s.parse::<EspAction>() {
-            return Ok(AppAction::Esp(esp));
+        if let Ok(esp) = s.parse::<EspBuiltinAction>() {
+            return Ok(BuiltinAction::EspBuiltin(esp));
         }
         #[cfg(feature = "defmt")]
         if let Ok(defmt_select) = s.parse::<DefmtSelectAction>() {
-            return Ok(AppAction::ShowDefmtSelect(defmt_select));
+            return Ok(BuiltinAction::ShowDefmtSelect(defmt_select));
         }
 
-        Err(format!("Unrecognized AppAction variant for string: {s}"))
+        Err(format!(
+            "Unrecognized BuiltinAction variant for string: {s}"
+        ))
     }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
-    AppAction(AppAction),
+    BuiltinAction(BuiltinAction),
     #[cfg(feature = "espflash")]
     EspFlashProfile(String),
     #[cfg(feature = "macros")]
@@ -495,26 +497,28 @@ pub enum Action {
 impl RequiresPort for Action {
     fn requires_connection(&self) -> bool {
         match self {
-            Self::AppAction(action) => action.requires_connection(),
+            Self::BuiltinAction(action) => action.requires_connection(),
             #[cfg(feature = "espflash")]
+            // Flashing binaries to a port requires a healthy connection.
             Self::EspFlashProfile(_) => true,
             #[cfg(feature = "macros")]
+            // Sending contents to a port requires a healthy connection.
             Self::MacroInvocation(_) => true,
+            // Sitting around and doing nothing does not.
             Self::Pause(_) => false,
         }
     }
     fn requires_terminal_view(&self) -> bool {
         match self {
-            Self::AppAction(action) => action.requires_terminal_view(),
-            #[cfg(feature = "espflash")]
-            Self::EspFlashProfile(_) => true,
-            #[cfg(feature = "macros")]
-            Self::MacroInvocation(_) => true,
-            Self::Pause(_) => false,
+            Self::BuiltinAction(action) => action.requires_terminal_view(),
+            _ => self.requires_connection(),
         }
     }
 }
 
+/// The default keybinds that are always loaded.
+///
+/// User's keybind file can override these keybinds without error.
 static OVERRIDABLE_DEFAULTS: &str = r#"
 [keybindings]
 ctrl-o = "toggle-dtr"
@@ -538,6 +542,9 @@ ctrl-k = "show-keybinds"
 
 pub const CONFIG_TOML_PATH: &str = "yap_keybinds.toml";
 
+/// If the user does not have an Escape Keypress action bound,
+/// this will override anything they have in Ctrl-t to always allow
+/// escaping the direct keyboard input mode, preventing someone from getting trapped.
 const DEFAULT_KEYPRESS_ESCAPE: KeyCombination =
     KeyCombination::one_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
 
@@ -549,6 +556,9 @@ pub struct Keybinds {
     #[serde(deserialize_with = "deserialize_keybinds_map")]
     #[serde(default)]
     pub keybindings: IndexMap<KeyCombination, Vec<String>>,
+
+    // To avoid doing a search + to_string()
+    // every single time we render these commonly shown hints.
     #[serde(skip)]
     port_settings_hint: Option<CompactString>,
     #[serde(skip)]
@@ -602,6 +612,7 @@ where
             let mut result = IndexMap::new();
 
             // Don't really need this type anywhere else, so it's fine being super private.
+            // Also serde_as already has something for this apparently.
             #[derive(serde::Deserialize)]
             #[serde(untagged)]
             enum SingleOrSeveral<T> {
@@ -637,12 +648,15 @@ where
 }
 
 impl Keybinds {
-    pub fn build() -> Result<Self, KeybindLoadError> {
+    /// Load keybinds from disk.
+    ///
+    /// If not present, creates a file and fills with example contents.
+    pub fn load() -> Result<Self, KeybindLoadError> {
         let keybinds_path = config_adjacent_path(crate::keybinds::CONFIG_TOML_PATH);
         let keybinds = if keybinds_path.exists() {
-            let keybinds_input =
+            let keybinds_str =
                 fs::read_to_string(keybinds_path).map_err(KeybindLoadError::FileRead)?;
-            Keybinds::from_str(&keybinds_input)?
+            Keybinds::from_str(&keybinds_str)?
         } else {
             fs::write(
                 keybinds_path,
@@ -652,21 +666,6 @@ impl Keybinds {
             Keybinds::overridable_defaults()
         };
         Ok(keybinds)
-    }
-    fn find_key_with_single_action(&self, action: AppAction) -> Option<KeyCombination> {
-        self.keybindings
-            .iter()
-            .find(|(_, actions)| {
-                if actions.len() != 1 {
-                    return false;
-                }
-
-                actions[0]
-                    .parse::<AppAction>()
-                    .ok()
-                    .is_some_and(|a| a == action)
-            })
-            .map(|(key_combo, _)| *key_combo)
     }
     fn fill_hints(&mut self) {
         // We require this to be bound since otherwise the user can get themselves stuck.
@@ -732,10 +731,23 @@ impl Keybinds {
 
         Ok(overridable)
     }
-    pub fn action_set_from_key_combo(&self, key_combo: KeyCombination) -> Option<&Vec<String>> {
-        self.keybindings.get(&key_combo)
+    /// Returns the first keybind found with the supplied action as the only bound action.
+    fn find_key_with_single_action(&self, action: BuiltinAction) -> Option<KeyCombination> {
+        self.keybindings
+            .iter()
+            .find(|(_, actions)| {
+                if actions.len() != 1 {
+                    return false;
+                }
+
+                actions[0]
+                    .parse::<BuiltinAction>()
+                    .ok()
+                    .is_some_and(|a| a == action)
+            })
+            .map(|(key_combo, _)| *key_combo)
     }
-    pub fn key_has_single_action(&self, key_combo: KeyCombination, action: AppAction) -> bool {
+    pub fn key_has_single_action(&self, key_combo: KeyCombination, action: BuiltinAction) -> bool {
         self.keybindings
             .get(&key_combo)
             .and_then(|actions| {
@@ -746,6 +758,9 @@ impl Keybinds {
                 }
             })
             .is_some_and(|parsed_action| action == parsed_action)
+    }
+    pub fn action_strs_from_key_combo(&self, key_combo: KeyCombination) -> Option<&Vec<String>> {
+        self.keybindings.get(&key_combo)
     }
 }
 
@@ -783,7 +798,7 @@ pub fn print_all_actions() {
             doc_comment.push_str(
                 variant
                     .get_documentation()
-                    .unwrap_or_else(|| panic!("AppAction {variant} missing doc comment")),
+                    .unwrap_or_else(|| panic!("BuiltinAction {variant} missing doc comment")),
             );
             let styled_doc = doc_comment.dark_grey();
 
@@ -800,7 +815,7 @@ pub fn print_all_actions() {
     print_variants::<MacroBuiltinAction>("Macro Actions");
 
     #[cfg(feature = "espflash")]
-    print_variants::<EspAction>("ESP Actions");
+    print_variants::<EspBuiltinAction>("ESP Actions");
 
     #[cfg(feature = "logging")]
     print_variants::<LoggingAction>("Logging Actions");

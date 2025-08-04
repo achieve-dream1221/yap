@@ -1,5 +1,5 @@
 use camino::Utf8PathBuf;
-use defmt_decoder::{DecodeError, Locations, Table};
+use defmt_decoder::{DecodeError, Locations};
 use fs_err as fs;
 use tracing::warn;
 
@@ -8,12 +8,25 @@ use tracing::warn;
 // and espflash
 // https://github.com/esp-rs/espflash/blob/b993a42fe48f4e679d687d927ba15d73ef495b1f/espflash/src/cli/monitor/parser/esp_defmt.rs
 
+/// Shared defmt helper object.
+///
+/// Luckily, this doesn't require any &mut self methods since this is just
+/// reading reading it's own data based on a given byteslice, so I can place it into
+/// an Arc after construction and share it with any worker who needs it.
 pub struct DefmtDecoder {
     // might need it at some point, who knows.
     // elf_data: Vec<u8>,
+    /// MD5 Hash of entire ELF file.
+    ///
+    /// Only real use is to let the user be sure as to what's loaded.
     pub elf_md5: String,
+    /// Path to loaded ELF.
     pub elf_path: Utf8PathBuf,
-    pub table: Table,
+    /// The actual Table that maps indices to strings.
+    pub table: defmt_decoder::Table,
+    /// Mappings from indices to log invocation location in source files.
+    ///
+    /// If None, locations info was either missing or incomplete (didn't contain all indices' locations).
     pub locations: Option<Locations>,
 }
 
@@ -63,8 +76,8 @@ pub enum LocationsError {
 impl DefmtDecoder {
     fn from_elf_bytes(
         bytes: &[u8],
-    ) -> Result<(Table, Result<Locations, LocationsError>), DefmtTableError> {
-        let table = Table::parse(bytes)
+    ) -> Result<(defmt_decoder::Table, Result<Locations, LocationsError>), DefmtTableError> {
+        let table = defmt_decoder::Table::parse(bytes)
             .map_err(|e| DefmtTableError::ParseFail(e.to_string()))?
             .ok_or(DefmtTableError::DataMissing)?;
 
