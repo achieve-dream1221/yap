@@ -142,6 +142,7 @@ impl LineType {
         }
     }
 
+    #[cfg(feature = "macros")]
     pub(super) fn is_macro(&self) -> bool {
         match *self {
             LineType::User { is_macro, .. } => is_macro,

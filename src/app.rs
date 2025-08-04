@@ -425,7 +425,7 @@ impl App {
 
         let (serial_buf_tx, serial_buf_rx) = crossbeam::channel::unbounded();
 
-        let (event_carousel, carousel_thread) = CarouselHandle::new();
+        let (event_carousel, carousel_thread) = CarouselHandle::new(event_tx.clone());
         let (serial_handle, serial_thread, ports) = SerialHandle::build(
             event_tx.clone(),
             serial_buf_tx,
@@ -435,16 +435,7 @@ impl App {
         )
         .wrap_err("failed to build serial worker")?;
 
-        let tick_tx = event_tx.clone();
-        event_carousel.add_repeating(
-            "PerSecond",
-            Box::new(move || {
-                tick_tx
-                    .send(Tick::PerSecond.into())
-                    .map_err(|e| e.to_string())
-            }),
-            Duration::from_secs(1),
-        )?;
+        event_carousel.add_repeating("PerSecond", Tick::PerSecond, Duration::from_secs(1))?;
 
         let line_ending = settings.serial.rx_line_ending.as_bytes();
 
@@ -792,10 +783,7 @@ impl App {
                     SerialDisconnectReason::Intentional => (),
                     SerialDisconnectReason::UserBrokeConnection => {
                         self.user_broke_connection = true;
-                        let mut text = String::from("Broke serial connection!");
-                        if self.serial.port_settings.load().reconnections.allowed() {
-                            text.push_str(" Reconnections paused!");
-                        }
+                        let text = "Broke serial connection! (Reconnections paused!)";
                         self.notifs.notify_str(text, Color::Red);
                     }
                     SerialDisconnectReason::Error(error) => {
@@ -904,10 +892,9 @@ impl App {
                 }
 
                 if self.popup.is_some() {
-                    let tx = self.event_tx.clone();
                     self.carousel.add_oneshot(
                         "ScrollText",
-                        Box::new(move || tx.send(Tick::Scroll.into()).map_err(|e| e.to_string())),
+                        Tick::Scroll,
                         Duration::from_millis(scroll_millis),
                     )?;
                 }
@@ -918,7 +905,6 @@ impl App {
             Event::Tick(Tick::Notification) => {
                 // debug!("notif!");
                 if let Some(notif) = &self.notifs.inner {
-                    let tx = self.event_tx.clone();
                     let emerging = notif.shown_for() <= EMERGE_TIME;
                     let collapsing = notif.shown_for() >= PAUSE_AND_SHOW_TIME;
                     let sleep_time = if emerging || collapsing {
@@ -928,14 +914,8 @@ impl App {
                     } else {
                         PAUSE_AND_SHOW_TIME.saturating_sub(notif.shown_for())
                     };
-                    self.carousel.add_oneshot(
-                        "Notification",
-                        Box::new(move || {
-                            tx.send(Tick::Notification.into())
-                                .map_err(|e| e.to_string())
-                        }),
-                        sleep_time,
-                    )?;
+                    self.carousel
+                        .add_oneshot("Notification", Tick::Notification, sleep_time)?;
                 }
             }
             Event::Tick(Tick::Requested(origin)) => {
@@ -1602,10 +1582,9 @@ impl App {
             InnerPortStatus::Connected => (),
             #[cfg(feature = "espflash")]
             InnerPortStatus::LentOut => {
-                let tx = self.event_tx.clone();
                 self.carousel.add_oneshot(
                     "ActionQueue",
-                    Box::new(move || tx.send(Tick::Action.into()).map_err(|e| e.to_string())),
+                    Tick::Action,
                     Duration::from_millis(500),
                 )?;
                 return Ok(());
@@ -1637,12 +1616,9 @@ impl App {
 
         let next_action_delay =
             pause_duration_opt.unwrap_or(self.settings.behavior.action_chain_delay);
-        let tx = self.event_tx.clone();
-        self.carousel.add_oneshot(
-            "ActionQueue",
-            Box::new(move || tx.send(Tick::Action.into()).map_err(|e| e.to_string())),
-            next_action_delay,
-        )?;
+
+        self.carousel
+            .add_oneshot("ActionQueue", Tick::Action, next_action_delay)?;
 
         Ok(())
     }
@@ -2575,13 +2551,10 @@ impl App {
                         2 => self.run_builtin_action(EspBuiltinAction::EspDeviceInfo.into())?,
                         3 => {
                             use crate::tui::esp::ERASE_FLASH_CONFIRM_PERIOD;
-                            let tx = self.event_tx.clone();
+
                             self.carousel.add_oneshot(
                                 "UnreadyEraseFlash",
-                                Box::new(move || {
-                                    tx.send(Tick::Requested("UnreadyEraseFlash").into())
-                                        .map_err(|e| e.to_string())
-                                }),
+                                Tick::Requested("UnreadyEraseFlash"),
                                 ERASE_FLASH_CONFIRM_PERIOD,
                             )?;
 
@@ -2800,13 +2773,10 @@ impl App {
     fn trigger_send_failed_visual(&mut self) -> Result<()> {
         self.failed_send_at = Some(Instant::now());
         // Temporarily show text on red background when trying to send while unhealthy
-        let tx = self.event_tx.clone();
+
         self.carousel.add_oneshot(
             "UnhealthyTxUi",
-            Box::new(move || {
-                tx.send(Tick::Requested("Unhealthy TX Background Removal").into())
-                    .map_err(|e| e.to_string())
-            }),
+            Tick::Requested("Unhealthy TX Background Removal"),
             FAILED_SEND_VISUAL_TIME,
         )?;
         Ok(())

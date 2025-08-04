@@ -135,6 +135,42 @@ pub struct BufferState {
     hex_section_width: u16,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::VariantArray,
+)]
+#[strum(serialize_all = "title_case")]
+/// Whether User input entered via the Pseudo-shell/Macro invocations should be displayed,
+///
+/// Also affects whether a user's input would interrupt an incomplete port line,
+/// making it start fresh in a new line under the user's.
+pub enum UserEcho {
+    #[strum(serialize = "false")]
+    /// No user input should be shown.
+    None,
+    #[strum(serialize = "true")]
+    // All user input should be shown.
+    All,
+    // #[strum(serialize = "All but No Macros")]
+    /// Only user-typed input should be shown.
+    #[cfg(feature = "macros")]
+    NoMacros,
+    // #[strum(serialize = "All but No Bytes")]
+    /// All user _text_ input should be shown, pseudo-shell's byte mode entries are omitted,
+    /// and any macros that contain escaped byte sequences (i.e. `\n` or `\xFF`)
+    NoBytes,
+    /// Only user-typed _text_ will be shown.
+    #[cfg(feature = "macros")]
+    NoMacrosOrBytes,
+}
+
 impl UserEcho {
     /// Determines whether a given `BufLine` should be displayed based on the current `UserEcho` setting.
     ///
@@ -159,7 +195,9 @@ impl UserEcho {
             UserEcho::None => false,
             UserEcho::All => true,
             UserEcho::NoBytes => !line_type.is_bytes(),
+            #[cfg(feature = "macros")]
             UserEcho::NoMacros => !line_type.is_macro(),
+            #[cfg(feature = "macros")]
             UserEcho::NoMacrosOrBytes => !line_type.is_bytes() && !line_type.is_macro(),
         }
     }
@@ -433,6 +471,7 @@ pub enum DelimitedSlice<'a> {
     Unknown(&'a [u8]),
 }
 
+#[cfg(feature = "defmt")]
 impl DelimitedSlice<'_> {
     pub fn raw_len(&self) -> usize {
         match self {
@@ -705,40 +744,6 @@ impl StyledLines {
             }
         }
     }
-}
-
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    strum::Display,
-    strum::VariantArray,
-)]
-#[strum(serialize_all = "title_case")]
-/// Whether User input entered via the Pseudo-shell/Macro invocations should be displayed,
-///
-/// Also affects whether a user's input would interrupt an incomplete port line,
-/// making it start fresh in a new line under the user's.
-pub enum UserEcho {
-    #[strum(serialize = "false")]
-    /// No user input should be shown.
-    None,
-    #[strum(serialize = "true")]
-    // All user input should be shown.
-    All,
-    // #[strum(serialize = "All but No Macros")]
-    /// Only user-typed input should be shown.
-    NoMacros,
-    // #[strum(serialize = "All but No Bytes")]
-    /// All user _text_ input should be shown, pseudo-shell's byte mode entries are omitted,
-    /// and any macros that contain escaped byte sequences (i.e. `\n` or `\xFF`)
-    NoBytes,
-    /// Only user-typed _text_ will be shown.
-    NoMacrosOrBytes,
 }
 
 impl Buffer {

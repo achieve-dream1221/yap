@@ -1,13 +1,11 @@
-//! The "Event Carousel" is a simple actor that takes in closures, and calls them with a delay/on an interval.
+//! The "Event Carousel" is a simple actor that takes in Tick objects, and sends them with a delay/on an interval.
 //!
 //! It's initial purpose was to let me trigger immediate-mode UI updates with a specific delay by sending an event to the main+UI thread,
 //! but it also became useful as a way to delay/schedule other app actions.
 //!
-//! For example, one closure supplied is set to send Tick::PerSecond once per second,
+//! For example, Tick::PerSecond is (unsurprisingly) sent once per second,
 //! which is used to trigger reconnection attempts + flip the repeating line widget for a visual indicator for such,
 //! among other things.
-
-// TODO i think we can go back to just events to main+UI rather than needing closures
 
 use std::{
     thread::JoinHandle,
@@ -17,8 +15,10 @@ use std::{
 use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, bounded};
 use tracing::{debug, error, warn};
 
+use crate::app::{Event, Tick};
+
 enum CarouselCommand {
-    AddEvent(CarouselClosure),
+    AddEvent(CarouselEvent),
     Shutdown(Sender<()>),
 }
 
@@ -27,8 +27,6 @@ pub struct CarouselHandle {
 }
 
 type HandleResult<T> = Result<T, CarouselWorkerMissing>;
-
-type PayloadFn = Box<dyn Fn() -> Result<(), String> + Send + 'static>;
 
 #[derive(Debug, thiserror::Error)]
 #[error("carousel rx handle dropped")]
@@ -43,13 +41,13 @@ impl<T> From<crossbeam::channel::SendError<T>> for CarouselWorkerMissing {
 // impl Drop for CarouselHandle {}
 
 impl CarouselHandle {
-    pub fn new() -> (Self, JoinHandle<()>) {
+    pub fn new(event_tx: Sender<Event>) -> (Self, JoinHandle<()>) {
         let (command_tx, command_rx) = bounded(20);
 
         let mut worker = CarouselWorker {
-            // event_tx,
+            event_tx,
             command_rx,
-            closures: Vec::new(),
+            ticks: Vec::new(),
             last_woke_at: Instant::now(),
         };
 
@@ -63,14 +61,14 @@ impl CarouselHandle {
 
         (Self { command_tx }, worker)
     }
-    /// Supply a closure to be called ad-infinitum at a specified interval.
+    /// Supply a Tick to be sent ad-infinitum at a specified interval.
     pub fn add_repeating<S: Into<String>>(
         &self,
         name: S,
-        payload: PayloadFn,
+        payload: Tick,
         interval: Duration,
     ) -> HandleResult<()> {
-        let event = CarouselClosure {
+        let event = CarouselEvent {
             name: name.into(),
             payload,
             interval,
@@ -80,15 +78,15 @@ impl CarouselHandle {
         self.command_tx.send(CarouselCommand::AddEvent(event))?;
         Ok(())
     }
-    /// Supply a closure to be called after a specified delay,
+    /// Supply a Tick to be sent after a specified delay,
     /// calling again with the same name will "reset" the delay.
     pub fn add_oneshot<S: Into<String>>(
         &self,
         name: S,
-        payload: PayloadFn,
+        payload: Tick,
         delay: Duration,
     ) -> HandleResult<()> {
-        let event = CarouselClosure {
+        let event = CarouselEvent {
             name: name.into(),
             payload,
             interval: delay,
@@ -118,10 +116,10 @@ impl CarouselHandle {
     }
 }
 
-struct CarouselClosure {
+struct CarouselEvent {
     name: String,
     interval: Duration,
-    payload: PayloadFn,
+    payload: Tick,
     last_sent: Instant,
     event_type: EventType,
 }
@@ -133,25 +131,26 @@ enum EventType {
     ExpiredOneshot,
 }
 
-/// Worker that sleeps until it's time to call a closure.
+/// Worker that sleeps until it's time to call a Tick.
 struct CarouselWorker {
     command_rx: Receiver<CarouselCommand>,
+    event_tx: Sender<Event>,
     last_woke_at: Instant,
-    closures: Vec<CarouselClosure>,
+    ticks: Vec<CarouselEvent>,
 }
 
 impl CarouselWorker {
     fn work_loop(&mut self) -> Result<(), CarouselWorkerError> {
         let mut sleep_time = Duration::from_secs(5);
-        let mut closure_had_error = false;
+        let mut sending_had_error = false;
         loop {
             match self.command_rx.recv_timeout(sleep_time) {
                 Ok(CarouselCommand::AddEvent(event)) => {
                     // Replace any event with the same name if one is present.
-                    if let Some(index) = self.closures.iter().position(|ev| ev.name == event.name) {
-                        self.closures.remove(index);
+                    if let Some(index) = self.ticks.iter().position(|ev| ev.name == event.name) {
+                        self.ticks.remove(index);
                     }
-                    self.closures.push(event);
+                    self.ticks.push(event);
                 }
                 Ok(CarouselCommand::Shutdown(shutdown_tx)) => {
                     if shutdown_tx.send(()).is_err() {
@@ -171,7 +170,7 @@ impl CarouselWorker {
             self.last_woke_at = now;
 
             sleep_time = self
-                .closures
+                .ticks
                 .iter_mut()
                 .fold(Duration::from_secs(5), |shortest, ev| {
                     let since_last_send = now.duration_since(ev.last_sent);
@@ -180,13 +179,12 @@ impl CarouselWorker {
                     let until_next_send = if since_last_send >= ev.interval {
                         ev.last_sent = now;
 
-                        // info!("meow! {:?}", e.interval);
-                        if let Err(err) = (ev.payload)() {
+                        if let Err(err) = self.event_tx.send(Event::Tick(ev.payload.clone())) {
                             error!(
                                 "Event {name}'s payload had error `{err}`, closing carousel thread.",
                                 name = ev.name
                             );
-                            closure_had_error = true;
+                            sending_had_error = true;
                         }
 
                         if ev.event_type == EventType::Oneshot {
@@ -202,12 +200,12 @@ impl CarouselWorker {
                     shortest.min(until_next_send)
                 });
 
-            if closure_had_error {
-                break Err(CarouselWorkerError::EventTrigger);
+            if sending_had_error {
+                break Err(CarouselWorkerError::SendError);
             }
 
             // Removing any expired oneshots
-            self.closures
+            self.ticks
                 .retain(|e| e.event_type != EventType::ExpiredOneshot);
             // info!("Waiting for {sleep_time:?}");
         }
@@ -216,8 +214,8 @@ impl CarouselWorker {
 
 #[derive(Debug, thiserror::Error)]
 enum CarouselWorkerError {
-    #[error("closure returned error")]
-    EventTrigger,
+    #[error("failed to send tick")]
+    SendError,
     #[error("failed to reply to shutdown request in time")]
     ShutdownReply,
     #[error("handle dropped, can't recieve commands")]

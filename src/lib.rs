@@ -281,41 +281,31 @@ fn run_inner(
     }
 
     if let Some(port) = cli_args.port {
-        if port.contains(':') {
+        let port_info = if port.contains(':') {
             let usb_query = DeserializedUsb::from_str(&port)?;
-            let port_info = SerialPortInfo {
+            SerialPortInfo {
                 port_name: String::new(),
                 port_type: SerialPortType::UsbPort(UsbPortInfo::from(usb_query)),
-            };
-
-            app.try_cli_connect(port_info, cli_args.baud)?;
-            let terminal = ratatui::init();
-            crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-            let result = app.run(terminal);
-            ratatui::restore();
-            crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
-            result
+            }
         } else {
-            let port_info = SerialPortInfo {
+            SerialPortInfo {
                 port_name: port,
                 port_type: SerialPortType::Unknown,
-            };
-            app.try_cli_connect(port_info, cli_args.baud)?;
-            let terminal = ratatui::init();
-            crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-            let result = app.run(terminal);
-            ratatui::restore();
-            crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
-            result
-        }
-    } else {
-        let terminal = ratatui::init();
-        crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-        let result = app.run(terminal);
-        ratatui::restore();
-        crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
-        result
-    }
+            }
+        };
+
+        app.try_cli_connect(port_info, cli_args.baud)?;
+    };
+
+    let terminal = ratatui::init();
+    crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+
+    let app_result = app.run(terminal);
+
+    ratatui::restore();
+    crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+
+    app_result
 }
 
 pub fn is_ctrl_c(key: &crossterm::event::KeyEvent) -> bool {
