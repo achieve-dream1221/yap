@@ -129,7 +129,9 @@ impl Buffer {
                         }
                     }
 
-                    let visible_lines = lines_from_top - vert_scroll;
+                    // Hmm, this crashed with an overflow when resizing once.
+                    // TODO, ensure scrolls are valid for size calcing? Unsure.
+                    let visible_lines = lines_from_top.saturating_sub(vert_scroll);
 
                     let spillover_lines = if current_line_height == visible_lines {
                         // If we can see all of the lines of this entry, then it's not spilling over

@@ -56,7 +56,7 @@ pub fn esp_println_delimited(input: &[u8]) -> IResult<&[u8], DelimitedSlice<'_>>
     // If no frame was found (incomplete or otherwise), spit out raw bytes
     // up to (but not including) the next thing that could be the start of a frame.
     let raw_run = map(
-        complete::take_till(|b| b == FRAME_INIT_BYTE),
+        complete::take_till1(|b| b == FRAME_INIT_BYTE),
         DelimitedSlice::Unknown,
     );
 
