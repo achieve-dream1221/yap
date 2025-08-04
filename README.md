@@ -30,3 +30,55 @@ https://github.com/user-attachments/assets/647d0172-3f79-4d47-974d-48f344adc645
 
 ### espflash Flashing Example:
 https://github.com/user-attachments/assets/d14e6aa2-51d1-489f-b8ba-ca88f74ad3d2
+
+# Pre-compiled Downloads
+
+Pre-compiled portable binaries can be found in [Releases](https://github.com/nullstalgia/yap/releases).
+
+`yap-full` builds have all optional features enabled!
+
+`yap-lite` builds exclude less universally-applicable features (currently excluded: `espflash`, `defmt`, `defmt_watch`).
+
+# Installation
+
+Crates.io releases are not yet available (due to some dependencies not being available/yet released to crates.io).
+
+Local installation can be accomplished by cloning the repository and running
+
+```cargo install --path . --no-default-features --features yap-full```
+
+(or `yap-lite` or any other combination of features).
+
+Enabling `self-replace` or `portable` on installed builds is not recommended or supported.
+
+# Usage
+
+Open port selection:
+
+```
+yap
+```
+
+Try to connect to port at `COM1`:
+
+```
+yap COM1
+```
+
+Try to connect to port at `COM1` with 9600 baudrate:
+
+```
+yap COM1 9600
+```
+
+Try to connect to found USB device with VID 303A and PID 1001:
+
+```
+yap 303A:1001
+```
+
+Try to connect to found USB device with VID 303A and PID 1001 and Serial Number 123456 with 9600 baudrate:
+
+```
+yap 303A:1001:123456 9600
+```

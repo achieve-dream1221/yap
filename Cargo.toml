@@ -31,7 +31,7 @@ self-replace = ["dep:self-replace", "portable", "yap-lite"]
 # Full should have _all_ features enabled and available
 yap-full = ["yap-lite", "espflash", "defmt-watch"]
 # Lite trims things not everyone might want (i.e. espflash and defmt support)
-yap-lite = ["self-replace", "logging", "macros"]
+yap-lite = ["logging", "macros"]
 
 [dependencies]
 ansi-to-tui = { git = "https://github.com/nullstalgia/ansi-to-tui", branch = "lossy_and_line_endings" }

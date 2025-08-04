@@ -48,7 +48,7 @@ jobs:
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: yap
-          features: yap-full
+          features: yap-full,self-replace
           target: ${{ matrix.target }}
           include: LICENSE,README.md,example_configs
           tar: unix
@@ -60,7 +60,7 @@ jobs:
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: yap
-          features: yap-lite
+          features: yap-lite,self-replace
           target: ${{ matrix.target }}
           include: LICENSE,README.md,example_configs
           tar: unix
