@@ -43,6 +43,8 @@ pub fn default_prev_symbol() -> &'static str {
 //
 // The standalone Windows Terminal is unaffected.
 #[cfg(windows)]
+use std::sync::OnceLock;
+#[cfg(windows)]
 static DEFAULT_NEXT_SYMBOL: OnceLock<&'static str> = OnceLock::new();
 #[cfg(windows)]
 static DEFAULT_PREV_SYMBOL: OnceLock<&'static str> = OnceLock::new();
@@ -50,15 +52,26 @@ static DEFAULT_PREV_SYMBOL: OnceLock<&'static str> = OnceLock::new();
 #[cfg(windows)]
 pub fn default_next_symbol() -> &'static str {
     DEFAULT_NEXT_SYMBOL.get_or_init(|| {
-        let acp = unsafe { windows_sys::Win32::Globalization::GetACP() };
-        if acp == 1252 { "→" } else { ">" }
+        let acp = unsafe { windows_sys::Win32::System::Console::GetConsoleCP() };
+        // Only allowing the default English US codepages for the fancy arrows.
+        // I think only 437 is possible in the _console_?
+        // But just in case, also allowing 1252, which is the default US-EN Windows Shell codepage.
+        if acp == 1252 || acp == 437 {
+            "→"
+        } else {
+            ">"
+        }
     })
 }
 #[cfg(windows)]
 pub fn default_prev_symbol() -> &'static str {
     DEFAULT_PREV_SYMBOL.get_or_init(|| {
-        let acp = unsafe { windows_sys::Win32::Globalization::GetACP() };
-        if acp == 1252 { "←" } else { "<" }
+        let acp = unsafe { windows_sys::Win32::System::Console::GetConsoleCP() };
+        if acp == 1252 || acp == 437 {
+            "←"
+        } else {
+            "<"
+        }
     })
 }
 
