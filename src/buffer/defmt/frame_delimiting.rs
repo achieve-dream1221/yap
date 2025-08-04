@@ -12,6 +12,9 @@ use nom::{
 use crate::buffer::{DelimitedSlice, RangeSlice};
 
 #[inline(always)]
+/// Finds the first subslice that is framed by:
+///
+/// `0xFF 0x00 [potentially leading 0x00's] ...content... 0x00`
 pub fn esp_println_delimited(input: &[u8]) -> IResult<&[u8], DelimitedSlice<'_>> {
     const FRAME_START: &[u8] = &[0xFF, 0x00];
     const FRAME_END: &[u8] = &[0x00];
@@ -29,12 +32,14 @@ pub fn esp_println_delimited(input: &[u8]) -> IResult<&[u8], DelimitedSlice<'_>>
                     // skip any leading 0x00 bytes after FRAME_START before content
                     complete::take_till(|b| b != FRAME_END[0]),
                     // payload, never empty, must not contain 0x00 mid-data
+                    // fails until FRAME_END is encountered
                     streaming::take_till(|b| b == FRAME_END[0]),
                 ),
                 tag(FRAME_END), // terminator, 0x00, rzcobs frame end
             )),
         ),
         |inner: &[u8]| {
+            // Find the range of the "cleaned" slice within the original buffer.
             let range_slice = unsafe { RangeSlice::from_parent_and_child(input, inner) };
             // Add length of terminating tag,
             let raw_end = range_slice.range.end.wrapping_add(FRAME_END.len());
@@ -102,25 +107,27 @@ fn esp_defmt_delimit_test() {
 }
 
 #[inline(always)]
+/// Finds the first subslice in the input that ends with 0x00.
 pub fn zero_delimited(input: &[u8]) -> IResult<&[u8], DelimitedSlice<'_>> {
     map(
         terminated(
             preceded(
-                // skip any leading 0x00 bytes after FRAME_START before content
+                // taking every byte until 0x00 is encountered
                 complete::take_till(|b| b != 0x00),
-                // payload, never empty, must not contain 0x00 mid-data
+                // fail until there _is_ a 0x00 found
                 streaming::take_till(|b| b == 0x00),
             ),
+            // and then consume it, as it should not be present in the "clean" output
             tag(&[0x00]),
         ),
-        |inner: &[u8]| {
-            let range_slice = unsafe { RangeSlice::from_parent_and_child(input, inner) };
+        |complete: &[u8]| {
             // Add length of terminating tag,
-            let raw_end = range_slice.range.end.wrapping_add(1);
-            // and start from the beginning of the input for the rest.
+            let raw_end = complete.len().wrapping_add(1);
+
+            // and can simply start from the beginning of the input for the rest.
             DelimitedSlice::DefmtRzcobs {
                 raw: &input[..raw_end],
-                inner,
+                inner: complete,
             }
         },
     )(input)

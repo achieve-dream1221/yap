@@ -424,17 +424,17 @@ pub enum DelimitedSlice<'a> {
     Unknown(&'a [u8]),
 }
 
-// impl DelimitedSlice<'_> {
-//     pub fn raw_len(&self) -> usize {
-//         match self {
-//             #[cfg(feature = "defmt")]
-//             DelimitedSlice::DefmtRzcobs { raw, .. } => raw.len(),
-//             #[cfg(feature = "defmt")]
-//             DelimitedSlice::DefmtRaw(raw) => raw.len(),
-//             DelimitedSlice::Unknown(raw) => raw.len(),
-//         }
-//     }
-// }
+impl DelimitedSlice<'_> {
+    pub fn raw_len(&self) -> usize {
+        match self {
+            #[cfg(feature = "defmt")]
+            DelimitedSlice::DefmtRzcobs { raw, .. } => raw.len(),
+            #[cfg(feature = "defmt")]
+            DelimitedSlice::DefmtRaw(raw) => raw.len(),
+            DelimitedSlice::Unknown(raw) => raw.len(),
+        }
+    }
+}
 
 struct StyledLines {
     rx: Vec<BufLine>,
@@ -450,8 +450,10 @@ impl StyledLines {
         kit: BufLineKit,
         line_ending: &LineEnding,
     ) {
-        let DelimitedSlice::DefmtRzcobs { raw, .. } = delimited_slice else {
-            unreachable!()
+        let raw = match delimited_slice {
+            DelimitedSlice::DefmtRaw(raw) => raw,
+            DelimitedSlice::DefmtRzcobs { raw, .. } => raw,
+            _ => unreachable!("non-defmt slice can't fail decoding"),
         };
 
         let mut text = format!("Couldn't decode defmt rzcobs packet ({reason}): ");
@@ -1032,19 +1034,18 @@ impl Buffer {
                     self.raw.consumed(slice.len());
                 }
                 DelimitedSlice::DefmtRaw(raw_uncompressed) => {
+                    let kit = BufLineKit {
+                        timestamp,
+                        area_width: self.last_terminal_size.width,
+                        render: RenderSettings {
+                            rendering: &self.rendering,
+                            defmt: &self.defmt_settings,
+                        },
+                        full_range_slice: unsafe {
+                            RangeSlice::from_parent_and_child(&self.raw.inner, raw_uncompressed)
+                        },
+                    };
                     if let Some(decoder) = &self.defmt_decoder {
-                        let kit = BufLineKit {
-                            timestamp,
-                            area_width: self.last_terminal_size.width,
-                            render: RenderSettings {
-                                rendering: &self.rendering,
-                                defmt: &self.defmt_settings,
-                            },
-                            full_range_slice: unsafe {
-                                RangeSlice::from_parent_and_child(&self.raw.inner, raw_uncompressed)
-                            },
-                        };
-
                         match decoder.table.decode(raw_uncompressed) {
                             Ok((frame, consumed)) => {
                                 self.styled_lines.consume_frame(
@@ -1072,6 +1073,15 @@ impl Buffer {
                                 break;
                             }
                         }
+                    } else {
+                        let slice_len = delimited_slice.raw_len();
+                        self.styled_lines.failed_decode(
+                            delimited_slice,
+                            DefmtPacketError::NoDecoder,
+                            kit,
+                            &self.line_ending,
+                        );
+                        self.raw.consumed(slice_len);
                     }
                 }
                 DelimitedSlice::DefmtRzcobs { raw, inner } => {
