@@ -1,3 +1,6 @@
+# Place as many espflash profiles here as you like!
+# Ensure each one starts with [[bin]] or [[elf]] to denote the profile type.
+
 # .bin example
 # [[bin]] ## type of profile (bin/elf)
 # name = "PlatformIO Core v2 Build" ## name in macros and UI

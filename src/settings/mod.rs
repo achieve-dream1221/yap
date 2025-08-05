@@ -42,12 +42,15 @@ const DEFAULT_LOG_LEVEL: Level = Level::Trace;
 #[cfg(not(debug_assertions))]
 const DEFAULT_LOG_LEVEL: Level = Level::Debug;
 
-const DEFAULT_LOG_SOCKET: SocketAddr = {
+#[cfg(debug_assertions)]
+const DEFAULT_LOG_SOCKET_OPT: Option<SocketAddr> = {
     let addr = Ipv4Addr::new(127, 0, 0, 1);
     let port = 7331;
 
-    SocketAddr::new(IpAddr::V4(addr), port)
+    Some(SocketAddr::new(IpAddr::V4(addr), port))
 };
+#[cfg(not(debug_assertions))]
+const DEFAULT_LOG_SOCKET_OPT: Option<SocketAddr> = None;
 
 #[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
@@ -91,7 +94,7 @@ pub struct Misc {
     pub log_level: Level,
 
     #[serde_inline_default_parent]
-    #[derivative(Default(value = "Some(DEFAULT_LOG_SOCKET)"))]
+    #[derivative(Default(value = "DEFAULT_LOG_SOCKET_OPT"))]
     #[serde_as(as = "NoneAsEmptyString")]
     pub log_tcp_socket: Option<SocketAddr>,
 }

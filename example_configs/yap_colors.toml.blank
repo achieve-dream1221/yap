@@ -1,3 +1,6 @@
+# Place as many Color Rules here as you like!
+# Ensure each one starts with [[literal]] or [[regex]] to denote the rule type.
+
 # Color Highlight Rule Example: case-insensitive match
 # Example
 # [[regex]] ## type of rule (regex/literal)

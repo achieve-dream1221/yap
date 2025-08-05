@@ -1,7 +1,7 @@
 [package]
 name = "yap"
 repository = "https://github.com/nullstalgia/yap"
-version = "0.1.0-pre.0"
+version = "0.1.0"
 # Note to self, if doing a pre-release:
 # start at: -pre.0
 # just -pre will go before any .x entries

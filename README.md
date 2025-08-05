@@ -82,3 +82,16 @@ Try to connect to found USB device with VID 303A and PID 1001 and Serial Number 
 ```
 yap 303A:1001:123456 9600
 ```
+
+## Antivirus notice:
+
+Downloaded Windows builds of `yap` may falsely trigger Windows Defender, likely due to the executable's capacity to self-update.
+
+Release builds have GitHub Attestations enabled to help you to verify their authenticity!
+
+
+## Acknowledgements:
+
+Inspired by the likes of [minicom](https://salsa.debian.org/minicom-team/minicom)/[picocom](https://github.com/npat-efault/picocom), [Termite](https://www.compuphase.com/software_termite.htm), [CuteCom](https://cutecom.sourceforge.net/), [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/), and others.
+
+This wouldn't have been possible without the prior work of the original [`ansi-to-tui`](https://github.com/ratatui/ansi-to-tui) crate, [`esp-rs`'s team](https://github.com/esp-rs), [Ferrous Systems](https://ferrous-systems.com/), and many many other incredible crate authors and educators. Thank you all!

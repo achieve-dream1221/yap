@@ -68,6 +68,6 @@ jobs:
           archive: $bin-lite-$tag-$target
           token: ${{ secrets.GITHUB_TOKEN }}
           checksum: sha512
-      # - uses: actions/attest-build-provenance@v1
-      #   with:
-      #     subject-path: "**/*.tar.gz,**/*.zip"
+      - uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: "**/*.tar.gz,**/*.zip"
