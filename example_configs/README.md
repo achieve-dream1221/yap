@@ -24,6 +24,7 @@ usb = ["28DE:2102"] ## Ignore ports by USB VID:PID or VID:PID:Serial
 # - Valve Index/Bigscreen Beyond's Bluetooth COM Port (Watchman)
 #    VID: 28DE, PID: 2102
 name = [] ## Ignore ports by name/path
+hide_loopback_port = true ## Hide the Lorem Ipsum/Loopback testing port.
 ```
 
 
