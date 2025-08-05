@@ -54,6 +54,11 @@ const DEFAULT_LOG_SOCKET_OPT: Option<SocketAddr> = {
 #[cfg(not(debug_assertions))]
 const DEFAULT_LOG_SOCKET_OPT: Option<SocketAddr> = None;
 
+#[cfg(not(debug_assertions))]
+const DEFAULT_HIDE_LOOPBACK: bool = true;
+#[cfg(debug_assertions)]
+const DEFAULT_HIDE_LOOPBACK: bool = false;
+
 #[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
 #[derivative(Default)]
@@ -531,12 +536,12 @@ pub struct PortSettings {
     /// The baud rate in symbols-per-second.
     #[table(allow_unknown_values)]
     #[table(values = COMMON_BAUD_TRUNC)]
-    #[serde_inline_default(DEFAULT_BAUD)]
+    #[serde_inline_default_parent]
     pub baud_rate: u32,
 
     /// Number of bits per character.
     #[table(values = [DataBits::Five, DataBits::Six, DataBits::Seven, DataBits::Eight])]
-    #[serde_inline_default(DataBits::Eight)]
+    #[serde_inline_default_parent]
     #[serde(
         serialize_with = "serialize_as_u8",
         deserialize_with = "deserialize_from_u8"
@@ -545,17 +550,17 @@ pub struct PortSettings {
 
     /// Flow control modes.
     #[table(values = [FlowControl::None, FlowControl::Software, FlowControl::Hardware])]
-    #[serde_inline_default(FlowControl::None)]
+    #[serde_inline_default_parent]
     pub flow_control: FlowControl,
 
     /// Parity bit modes.
     #[table(values = [Parity::None, Parity::Odd, Parity::Even])]
-    #[serde_inline_default(Parity::None)]
+    #[serde_inline_default_parent]
     pub parity_bits: Parity,
 
     /// Number of stop bits.
     #[table(values = [StopBits::One, StopBits::Two])]
-    #[serde_inline_default(StopBits::One)]
+    #[serde_inline_default_parent]
     #[serde(
         serialize_with = "serialize_as_u8",
         deserialize_with = "deserialize_from_u8"
@@ -564,17 +569,17 @@ pub struct PortSettings {
 
     /// Assert DTR to this state on port connect (and reconnect).
     #[table(rename = "DTR on Connect")]
-    #[serde_inline_default(true)]
+    #[serde_inline_default_parent]
     pub dtr_on_connect: bool,
 
     /// Limit output to 8kbps, regardless of baud. Some devices will overwrite unread data if sent too fast.
     #[table(rename = "Limit TX Speed")]
-    #[serde_inline_default(true)]
+    #[serde_inline_default_parent]
     pub limit_tx_speed: bool,
 
     /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB device/COM port.
     #[table(values = Reconnections::VARIANTS)]
-    #[serde_inline_default(Reconnections::LooseChecks)]
+    #[serde_inline_default_parent]
     pub reconnections: Reconnections,
 
     /// Line endings for RX'd data.
@@ -586,7 +591,7 @@ pub struct PortSettings {
         serialize_with = "serialize_as_string",
         deserialize_with = "deserialize_from_str"
     )]
-    #[serde_inline_default(RxLineEnding::Preset("\\n", b"\\n"))]
+    #[serde_inline_default_parent]
     pub rx_line_ending: RxLineEnding,
 
     /// Line endings for TX'd data.
@@ -598,7 +603,7 @@ pub struct PortSettings {
         serialize_with = "serialize_as_string",
         deserialize_with = "deserialize_from_str"
     )]
-    #[serde_inline_default(TxLineEnding::InheritRx)]
+    #[serde_inline_default_parent]
     pub tx_line_ending: TxLineEnding,
 
     #[cfg(feature = "macros")]
@@ -612,6 +617,25 @@ pub struct PortSettings {
     )]
     #[serde_inline_default(MacroTxLineEnding::InheritTx)]
     pub macro_line_ending: MacroTxLineEnding,
+}
+
+impl Default for PortSettings {
+    fn default() -> Self {
+        Self {
+            baud_rate: DEFAULT_BAUD,
+            data_bits: DataBits::Eight,
+            flow_control: FlowControl::None,
+            parity_bits: Parity::None,
+            stop_bits: StopBits::One,
+            rx_line_ending: "\n".into(),
+            tx_line_ending: TxLineEnding::InheritRx,
+            #[cfg(feature = "macros")]
+            macro_line_ending: MacroTxLineEnding::InheritTx,
+            dtr_on_connect: true,
+            limit_tx_speed: true,
+            reconnections: Reconnections::LooseChecks,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, Derivative)]
@@ -652,6 +676,11 @@ pub struct Ignored {
     #[serde(default)]
     /// Hide any serial ports matching these paths/names.
     pub name: Vec<String>,
+
+    #[serde_inline_default_parent]
+    #[derivative(Default(value = "DEFAULT_HIDE_LOOPBACK"))]
+    /// Hide the Lorem Ipsum/Loopback testing port.
+    pub hide_loopback_port: bool,
 }
 
 fn default_hidden_usb() -> Vec<DeserializedUsb> {
@@ -663,25 +692,6 @@ fn default_hidden_usb() -> Vec<DeserializedUsb> {
             serial_number: None,
         },
     ]
-}
-
-impl Default for PortSettings {
-    fn default() -> Self {
-        Self {
-            baud_rate: DEFAULT_BAUD,
-            data_bits: DataBits::Eight,
-            flow_control: FlowControl::None,
-            parity_bits: Parity::None,
-            stop_bits: StopBits::One,
-            rx_line_ending: "\n".into(),
-            tx_line_ending: TxLineEnding::InheritRx,
-            #[cfg(feature = "macros")]
-            macro_line_ending: MacroTxLineEnding::InheritTx,
-            dtr_on_connect: true,
-            limit_tx_speed: true,
-            reconnections: Reconnections::LooseChecks,
-        }
-    }
 }
 
 impl Settings {

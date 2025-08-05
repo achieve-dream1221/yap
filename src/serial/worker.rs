@@ -672,10 +672,12 @@ impl SerialWorker {
             _ => true,
         });
 
-        ports.push(SerialPortInfo {
-            port_name: MOCK_PORT_NAME.to_owned(),
-            port_type: SerialPortType::Unknown,
-        });
+        if !self.ignored_devices.hide_loopback_port {
+            ports.push(SerialPortInfo {
+                port_name: MOCK_PORT_NAME.to_owned(),
+                port_type: SerialPortType::Unknown,
+            });
+        }
 
         // info!("Serial port scanning found {} ports", ports.len());
         Ok(ports)
