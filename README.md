@@ -43,9 +43,11 @@ Pre-compiled portable binaries can be found in [Releases](https://github.com/nul
 
 Crates.io releases are not yet available (due to some dependencies not being available/yet released to crates.io).
 
-Local installation can be accomplished by cloning the repository and running
+Local installation can be accomplished by running
 
-```cargo install --path . --no-default-features --features yap-full```
+```
+cargo install --git https://github.com/nullstalgia/yap --no-default-features --features yap-full
+```
 
 (or `yap-lite` or any other combination of features).
 

@@ -1,8 +1,12 @@
-use std::{env, fs};
+#[cfg(not(feature = "portable"))]
+fn main() {}
 
-use copy_to_output::copy_to_output;
-
+// Can skip this if the exe isn't portable and so won't even read them.
+#[cfg(feature = "portable")]
 fn main() {
+    use copy_to_output::copy_to_output;
+    use std::{env, fs};
+
     let items_to_copy = [
         "example_configs/yap_colors.toml",
         "example_configs/yap_espflash_profiles.toml",
