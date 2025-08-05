@@ -138,6 +138,10 @@ windows-sys = { version = "0.59", features = [
 [target.'cfg(unix)'.dependencies]
 self_update = { version = "0.42.0", features = ["compression-flate2"] }
 
+# For Raspi 1B via `cross`
+[target.arm-unknown-linux-gnueabihf.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
 # PR #18 finally got merged! But still not on crates.io yet.
 [patch.crates-io]
 indenter = { git = "https://github.com/eyre-rs/indenter", rev = "9ed7e012c678ac58e3204d01af6e23696cf9795d" }

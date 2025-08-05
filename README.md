@@ -51,7 +51,7 @@ cargo install --git https://github.com/nullstalgia/yap --no-default-features --f
 
 (or `yap-lite` or any other combination of features).
 
-Enabling `self-replace` or `portable` on installed builds is not recommended or supported.
+Avoid enabling the `self-replace` or `portable` features on installed builds!
 
 # Usage
 

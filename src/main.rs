@@ -5,6 +5,7 @@ fn main() -> color_eyre::Result<()> {
 // Sooner TODOs:
 // deduplication of code for defmt and logging defmt
 // SignPath for release binaries
+// ARM builds in releases
 
 // General TODOs:
 // Mouse select in line mode?
