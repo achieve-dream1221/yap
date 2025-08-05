@@ -1,6 +1,6 @@
 use std::{
     io::Write,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::SocketAddr,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -44,6 +44,8 @@ const DEFAULT_LOG_LEVEL: Level = Level::Debug;
 
 #[cfg(debug_assertions)]
 const DEFAULT_LOG_SOCKET_OPT: Option<SocketAddr> = {
+    use std::net::{IpAddr, Ipv4Addr};
+
     let addr = Ipv4Addr::new(127, 0, 0, 1);
     let port = 7331;
 
