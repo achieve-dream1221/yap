@@ -1989,8 +1989,9 @@ dependencies = [
 
 [[package]]
 name = "indenter"
-version = "0.3.3"
-source = "git+https://github.com/eyre-rs/indenter?rev=9ed7e012c678ac58e3204d01af6e23696cf9795d#9ed7e012c678ac58e3204d01af6e23696cf9795d"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "964de6e86d545b246d84badc0fef527924ace5134f30641c203ef52ba83f58d5"
 
 [[package]]
 name = "indexmap"
