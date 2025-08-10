@@ -142,6 +142,14 @@ self_update = { version = "0.42.0", features = ["compression-flate2"] }
 [target.arm-unknown-linux-gnueabihf.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
 
+# For Raspi 2-4
+[target.armv7-unknown-linux-gnueabihf.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
+# For Raspi 2-4 (64-bit)
+[target.aarch64-unknown-linux-gnu.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "1.4"
 
