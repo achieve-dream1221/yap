@@ -8,7 +8,6 @@ use std::{
 use derivative::Derivative;
 use fs_err::{self as fs};
 use serde::{Deserialize, Serialize};
-use serde_inline_default::serde_inline_default;
 use serde_with::{NoneAsEmptyString, serde_as};
 use serialport::{DataBits, FlowControl, Parity, StopBits};
 use struct_table::StructTable;
@@ -16,14 +15,6 @@ use strum::VariantArray;
 
 // Copied a lot from my other project, redefaulter
 // https://github.com/nullstalgia/redefaulter/blob/ad81fad9468891b50daaac3215b0532386b6d1aa/src/settings/mod.rs
-
-// TODO Cleaner defaults.
-// What I have now works and is predictable,
-// but there's a lot of gross repetition.
-// Especially with needing both:
-// - #[serde_inline_default] for when a _field_ is missing,
-//   - Since #[serde(default)] gets the default for the field's _type_, and *not* the parent struct's `Default::default()` value for it
-// - #[derivative(Default)] for properly setting up `Default::default()` for when a _struct_ is missing.
 
 use crate::{
     app::{COMMON_BAUD_TRUNC, DEFAULT_BAUD},
@@ -59,32 +50,26 @@ const DEFAULT_HIDE_LOOPBACK: bool = true;
 #[cfg(debug_assertions)]
 const DEFAULT_HIDE_LOOPBACK: bool = false;
 
-#[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
+#[serde(default)]
 #[derivative(Default)]
 pub struct Settings {
-    #[serde(default)]
     pub serial: PortSettings,
-    #[serde(default)]
+
     pub rendering: Rendering,
-    #[serde(default)]
+
     pub behavior: Behavior,
-    #[serde(default)]
+
     pub misc: Misc,
     #[cfg(feature = "espflash")]
-    #[serde(default)]
     pub espflash: Espflash,
     #[cfg(feature = "defmt")]
-    #[serde(default)]
     pub defmt: Defmt,
     #[cfg(feature = "logging")]
-    #[serde(default)]
     pub logging: Logging,
 
-    #[serde(default)]
     pub updates: Updates,
 
-    #[serde(default)]
     pub ignored_devices: Ignored,
 
     #[serde(skip)]
@@ -92,15 +77,13 @@ pub struct Settings {
 }
 
 #[serde_as]
-#[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
+#[serde(default)]
 #[derivative(Default)]
 pub struct Misc {
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "DEFAULT_LOG_LEVEL"))]
     pub log_level: Level,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "DEFAULT_LOG_SOCKET_OPT"))]
     #[serde_as(as = "NoneAsEmptyString")]
     pub log_tcp_socket: Option<SocketAddr>,
@@ -123,65 +106,54 @@ macro_rules! inclusive_increment {
         arr
     }};
 }
-#[serde_inline_default]
+
 #[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
+#[serde(default)]
 #[derivative(Default)]
 pub struct Rendering {
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "UserEcho::All"))]
     #[table(values = UserEcho::VARIANTS)]
     /// Show user input in buffer after sending.
     pub echo_user_input: UserEcho,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Show timestamps next to each incoming line.
     pub timestamps: bool,
 
-    #[serde(default)]
     /// Show line's buffer index and length next to line.
     pub show_indices: bool,
 
-    #[serde(default)]
     /// Whether indices for "Show Indices" should be in hex format.
     pub indices_as_hex: bool,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Wrap text longer than the screen.
     pub wrap_text: bool,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Show line ending at end of recieved lines.
     pub show_line_ending: bool,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Show hidden chars and invalid UTF-8 byte sequences in \xFF notation.
     pub escape_unprintable_bytes: bool,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Show a placeholder for lines who have had their entire content hidden by color rules.
     pub show_hidden_lines: bool,
 
-    #[serde(default)]
     /// Show recieved bytes in a Hex+ASCII view.
     pub hex_view: bool,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Show Address+Offset Markers+ASCII label above hex view.
     pub hex_view_header: bool,
 
-    #[serde(default)]
     #[table(values = inclusive_increment!(48))]
     #[table(allow_unknown_values)]
     /// Set an optional maximum bytes per line.
     pub bytes_per_line: MaxBytesPerLine,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "HexHighlightStyle::HighlightAsciiSymbols"))]
     #[table(values = HexHighlightStyle::VARIANTS)]
     /// Show user input in buffer after sending.
@@ -274,19 +246,16 @@ impl std::fmt::Display for MaxBytesPerLine {
 }
 
 #[cfg(feature = "logging")]
-#[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
+#[serde(default)]
 #[derivative(Default)]
 pub struct Logging {
-    #[serde(default)]
     /// Whether to log the incoming input in a text file.
     pub log_text_to_file: bool,
 
-    #[serde(default)]
     /// Whether to log the incoming input in a raw binary file.
     pub log_raw_input_to_file: bool,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "String::from(crate::buffer::DEFAULT_TIMESTAMP_FORMAT)"))]
     #[table(skip)]
     /// Format for output timestamps.
@@ -297,40 +266,34 @@ pub struct Logging {
     // #[derivative(Default(value = "true"))]
     // /// Escape invalid UTF-8 byte sequences in \xFF notation in text outputs.
     // pub escape_unprintable_bytes: bool,
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Record user input in text outputs.
     pub log_user_input: bool,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Log any disconnect and reconnect events in text outputs.
     pub log_connection_events: bool,
     // TODO maybe add option to strip ansi escapes for text output?
 }
 
-#[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
+#[serde(default)]
 #[derivative(Default)]
 pub struct Behavior {
     // TODO find a better name for this.
     // Text Buffer or something?
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Use text box to type in before sending, with history. If disabled, sends keyboard inputs directly.
     pub pseudo_shell: bool,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Interpret typed escape sequences such as \n or \xFF and send corresponding byte values in text inputs.
     pub unescape_typed_bytes: bool,
 
-    #[serde(default)]
     /// Whether to always send the TX Line Ending when using Pseudo Shell's typed byte input mode.
     pub send_line_ending_with_bytes: bool,
 
     #[table(allow_unknown_values)]
-    #[serde(default)]
     #[table(display = ["-3", "-2", "-1", "Default", "+1", "+2", "+3"])]
     #[table(values = [-3, -2, -1, 0, 1, 2, 3])]
     /// Text scroll speed modifier, positive increases, negative decreases.
@@ -340,7 +303,6 @@ pub struct Behavior {
     // /// Persist Pseudo Shell's command history across sessions (TODO).
     // pub retain_history: bool,
     //
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "Duration::from_millis(500)"))]
     #[table(allow_unknown_values)]
     #[table(display = Debug)]
@@ -356,7 +318,6 @@ pub struct Behavior {
     pub action_chain_delay: Duration,
 
     #[cfg(feature = "macros")]
-    #[serde_inline_default(true)]
     #[derivative(Default(value = "true"))]
     /// Allow entering Macros in keybinds without a category.
     pub fuzzy_macro_match: bool,
@@ -478,70 +439,61 @@ impl From<defmt_parser::Level> for Level {
 
 #[cfg(feature = "espflash")]
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
+#[serde(default)]
 #[derivative(Default)]
 pub struct Espflash {
     /// Skip requirement for double-pressing Enter within a period of time
     /// when selecting Erase Flash on ESP32 Flashing menu.
-    #[serde(default)]
     pub skip_erase_confirm: bool,
 }
 
 #[cfg(feature = "defmt")]
-#[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, StructTable, Derivative)]
+#[serde(default)]
 #[derivative(Default)]
 pub struct Defmt {
-    #[serde(default)]
     #[table(values = DefmtSupport::VARIANTS)]
     /// Enable parsing RX'd serial data as defmt packets.
     pub defmt_parsing: DefmtSupport,
 
-    #[serde(default)]
     #[cfg(feature = "defmt-watch")]
     #[table(rename = "Watch ELF for Changes")]
     /// Reload defmt data from ELF when file is updated.
     pub watch_elf_for_changes: bool,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "Level::Trace"))]
     #[table(display = Debug)]
     #[table(values = Level::VARIANTS)]
     /// Maximum log level to display. Items without a level are always shown.
     pub max_log_level: Level,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Show device-derived timestamps, if available.
     pub device_timestamp: bool,
 
-    #[serde(default)]
     #[table(values = DefmtLocation::VARIANTS)]
     /// Show module where log originated from, if available.
     pub show_module: DefmtLocation,
 
-    #[serde(default)]
     #[table(values = DefmtLocation::VARIANTS)]
     /// Show file where log originated from, if available.
     pub show_file: DefmtLocation,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "true"))]
     /// Show line number in file where log originated from, if available.
     pub show_line_number: bool,
 }
 
-#[serde_inline_default]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, StructTable)]
+#[serde(default)]
 pub struct PortSettings {
     /// The baud rate in symbols-per-second.
     #[table(allow_unknown_values)]
     #[table(values = COMMON_BAUD_TRUNC)]
-    #[serde_inline_default_parent]
     pub baud_rate: u32,
 
     /// Number of bits per character.
     #[table(values = [DataBits::Five, DataBits::Six, DataBits::Seven, DataBits::Eight])]
-    #[serde_inline_default_parent]
     #[serde(
         serialize_with = "serialize_as_u8",
         deserialize_with = "deserialize_from_u8"
@@ -550,17 +502,14 @@ pub struct PortSettings {
 
     /// Flow control modes.
     #[table(values = [FlowControl::None, FlowControl::Software, FlowControl::Hardware])]
-    #[serde_inline_default_parent]
     pub flow_control: FlowControl,
 
     /// Parity bit modes.
     #[table(values = [Parity::None, Parity::Odd, Parity::Even])]
-    #[serde_inline_default_parent]
     pub parity_bits: Parity,
 
     /// Number of stop bits.
     #[table(values = [StopBits::One, StopBits::Two])]
-    #[serde_inline_default_parent]
     #[serde(
         serialize_with = "serialize_as_u8",
         deserialize_with = "deserialize_from_u8"
@@ -569,17 +518,14 @@ pub struct PortSettings {
 
     /// Assert DTR to this state on port connect (and reconnect).
     #[table(rename = "DTR on Connect")]
-    #[serde_inline_default_parent]
     pub dtr_on_connect: bool,
 
     /// Limit output to 8kbps, regardless of baud. Some devices will overwrite unread data if sent too fast.
     #[table(rename = "Limit TX Speed")]
-    #[serde_inline_default_parent]
     pub limit_tx_speed: bool,
 
     /// Enable reconnections. Strict checks USB PID+VID+Serial#. Loose checks for any similar USB device/COM port.
     #[table(values = Reconnections::VARIANTS)]
-    #[serde_inline_default_parent]
     pub reconnections: Reconnections,
 
     /// Line endings for RX'd data.
@@ -591,7 +537,6 @@ pub struct PortSettings {
         serialize_with = "serialize_as_string",
         deserialize_with = "deserialize_from_str"
     )]
-    #[serde_inline_default_parent]
     pub rx_line_ending: RxLineEnding,
 
     /// Line endings for TX'd data.
@@ -603,7 +548,6 @@ pub struct PortSettings {
         serialize_with = "serialize_as_string",
         deserialize_with = "deserialize_from_str"
     )]
-    #[serde_inline_default_parent]
     pub tx_line_ending: TxLineEnding,
 
     #[cfg(feature = "macros")]
@@ -615,7 +559,6 @@ pub struct PortSettings {
         serialize_with = "serialize_as_string",
         deserialize_with = "deserialize_from_str"
     )]
-    #[serde_inline_default(MacroTxLineEnding::InheritTx)]
     pub macro_line_ending: MacroTxLineEnding,
 }
 
@@ -639,33 +582,29 @@ impl Default for PortSettings {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, Derivative)]
+#[serde(default)]
 pub struct Updates {
-    #[serde(default)]
     pub user_dismissed_prompt: bool,
 
-    #[serde(default)]
     pub allow_checking_for_updates: bool,
 
-    #[serde(default)]
     pub skipped_version: String,
 
-    #[serde(default)]
     pub allow_pre_releases: bool,
 }
 
-#[serde_inline_default]
 #[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
 /// Hide certain devices from the Port Selection screen.
 ///
 /// Does not effect CLI USB entry.
+#[serde(default)]
 #[derivative(Default)]
 pub struct Ignored {
     #[cfg(unix)]
-    #[serde(default)]
+
     /// Show /dev/ttyS* ports.
     pub show_ttys_ports: bool,
 
-    #[serde(default = "default_hidden_usb")]
     #[derivative(Default(value = "default_hidden_usb()"))]
     /// Devices in VID:PID[:SERIAL] format to not show in port selection.
     ///
@@ -673,11 +612,9 @@ pub struct Ignored {
     /// entries containing a Serial # require an exact match.
     pub usb: Vec<DeserializedUsb>,
 
-    #[serde(default)]
     /// Hide any serial ports matching these paths/names.
     pub name: Vec<String>,
 
-    #[serde_inline_default_parent]
     #[derivative(Default(value = "DEFAULT_HIDE_LOOPBACK"))]
     /// Hide the Lorem Ipsum/Loopback testing port.
     pub hide_loopback_port: bool,

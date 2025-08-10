@@ -3636,16 +3636,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde-inline-default"
-version = "0.2.3"
-source = "git+https://github.com/kaphula/serde-inline-default?rev=fa7656d5335b9c31febaddbf071995e93944f33f#fa7656d5335b9c31febaddbf071995e93944f33f"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.104",
-]
-
-[[package]]
 name = "serde_derive"
 version = "1.0.219"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5487,7 +5477,6 @@ dependencies = [
  "self_update",
  "semver",
  "serde",
- "serde-inline-default",
  "serde_with",
  "serialport",
  "sha2",
