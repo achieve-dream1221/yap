@@ -1091,6 +1091,12 @@ impl App {
 
         self.notifs.notify(notif_line, notif_color);
 
+        // Scroll all the way down
+        // TODO: Make this behavior a toggle
+        self.buffer.scroll_by(i32::MIN);
+
+        // TODO scroll bar is goofed with just user lines???
+
         Ok(())
     }
     // TODO fuzz this
