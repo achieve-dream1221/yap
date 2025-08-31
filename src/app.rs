@@ -1619,8 +1619,7 @@ impl App {
 
         let pause_duration_opt = self.queued_keybind_action_dispatch(action, key_combo_opt)?;
 
-        let next_action_delay =
-            pause_duration_opt.unwrap_or(self.settings.behavior.action_chain_delay);
+        let next_action_delay = pause_duration_opt.unwrap_or_default();
 
         self.carousel
             .add_oneshot("ActionQueue", Tick::Action, next_action_delay)?;
@@ -1640,7 +1639,16 @@ impl App {
         key_combo: KeyCombination,
     ) -> Result<Option<Duration>> {
         debug!("Consuming action: {action:?} - Key: {key_combo:?}");
+
+        // If the next action is a delay, this action shouldn't have one of its own.
+        let post_action_pause_duration = match self.action_queue.front() {
+            Some((_, Action::Pause(_))) => None,
+            // Otherwise, use the default.
+            _ => Some(self.settings.behavior.action_chain_delay),
+        };
+
         match action {
+            // But a running Pause action will override with it's own.
             Action::Pause(duration) => return Ok(Some(duration)),
 
             Action::BuiltinAction(method) => self.run_builtin_action(method)?,
@@ -1671,8 +1679,10 @@ impl App {
                 self.esp_flash_profile(profile)?;
             }
         }
-        Ok(None)
+
+        Ok(post_action_pause_duration)
     }
+
     #[cfg(feature = "espflash")]
     fn esp_flash_profile(&mut self, profile: esp::EspProfile) -> Result<(), SerialWorkerMissing> {
         #[cfg(feature = "defmt")]
