@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/nullstalgia/yap/actions/workflows/build.yml/badge.svg)](https://github.com/nullstalgia/yap/actions/workflows/build.yml) [![Release](https://github.com/nullstalgia/yap/actions/workflows/release.yml/badge.svg)](https://github.com/nullstalgia/yap/actions/workflows/release.yml)
 
-<img width="1080" height="607" alt="a split view of yap's port selection screen and port interaction screen" src="https://github.com/user-attachments/assets/fa42e8e8-5481-4600-8c6f-532a4a86d4d9" />
+<img width="1080" height="607" alt="A split view of yap's port selection screen and port interaction screen." src="https://raw.github.com/nullstalgia/yap/master/demos/yap-1.png" />
 
 ### Features
 
@@ -26,10 +26,10 @@
 # Showcase
 
 ### Auto-Reconnection Example:
-https://github.com/user-attachments/assets/647d0172-3f79-4d47-974d-48f344adc645
+![Auto-Reconnection Example](https://raw.github.com/nullstalgia/yap/master/demos/Auto-Reconnection_Showcase.mp4)
 
 ### espflash Flashing Example:
-https://github.com/user-attachments/assets/d14e6aa2-51d1-489f-b8ba-ca88f74ad3d2
+![espflash Flashing Example](https://raw.github.com/nullstalgia/yap/master/demos/espflash_Showcase.mp4)
 
 # Pre-compiled Downloads
 
@@ -46,7 +46,7 @@ Crates.io releases are not yet available (due to some dependencies not being ava
 Local installation can be accomplished by running
 
 ```
-cargo install --git https://github.com/nullstalgia/yap --no-default-features --features yap-full
+cargo install --git https://github.com/nullstalgia/yap --branch master --no-default-features --features yap-full
 ```
 
 (or `yap-lite` or any other combination of features).
@@ -79,7 +79,7 @@ Try to connect to found USB device with VID 303A and PID 1001:
 yap 303A:1001
 ```
 
-Try to connect to found USB device with VID 303A and PID 1001 and Serial Number 123456 with 9600 baudrate:
+Try to connect to found USB device with VID 303A and PID 1001 and Serial Number 123456 at 9600 baudrate:
 
 ```
 yap 303A:1001:123456 9600
