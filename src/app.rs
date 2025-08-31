@@ -3825,15 +3825,15 @@ impl App {
                         "Select an ELF file to decode defmt packets with. Shift/Ctrl to use native system file picker.",
                         "Select from a list of recently used ELFs.",
                     ];
-                    if let Some(idx) = corrected_index {
-                        if let Some(&hint_text) = hints.get(idx) {
-                            render_scrolling_line(
-                                hint_text,
-                                frame,
-                                scrolling_text_area,
-                                &mut self.popup_hint_scroll,
-                            );
-                        }
+                    if let Some(idx) = corrected_index
+                        && let Some(&hint_text) = hints.get(idx)
+                    {
+                        render_scrolling_line(
+                            hint_text,
+                            frame,
+                            scrolling_text_area,
+                            &mut self.popup_hint_scroll,
+                        );
                     }
                 }
                 frame.render_widget(
@@ -4195,15 +4195,15 @@ impl App {
                         "Query ESP for Flash Size, MAC Address, etc.",
                         "Erase all flash contents.",
                     ];
-                    if let Some(button_index) = table_state.selected() {
-                        if let Some(&hint_text) = hints.get(button_index) {
-                            render_scrolling_line(
-                                hint_text,
-                                frame,
-                                scrolling_text_area,
-                                &mut self.popup_hint_scroll,
-                            );
-                        }
+                    if let Some(button_index) = table_state.selected()
+                        && let Some(&hint_text) = hints.get(button_index)
+                    {
+                        render_scrolling_line(
+                            hint_text,
+                            frame,
+                            scrolling_text_area,
+                            &mut self.popup_hint_scroll,
+                        );
                     }
                 }
                 frame.render_widget(

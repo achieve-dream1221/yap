@@ -86,7 +86,7 @@ impl Buffer {
             ))
         }
     }
-    pub fn lines_iter(&self) -> (impl Iterator<Item = Line>, u16) {
+    pub fn lines_iter(&self) -> (impl Iterator<Item = Line<'_>>, u16) {
         let (buflines, wrapped_scroll) = self.visible_buflines_iter();
         (
             buflines.map(|l| l.as_line(self.line_render_settings())),
@@ -401,7 +401,7 @@ impl Buffer {
             }
         }
     }
-    pub fn line_render_settings(&self) -> RenderSettings {
+    pub fn line_render_settings(&self) -> RenderSettings<'_> {
         RenderSettings {
             rendering: &self.rendering,
             #[cfg(feature = "defmt")]
@@ -443,10 +443,10 @@ impl Buffer {
                     .saturating_sub(1) // ASCII cell
                     .saturating_sub(2) // byte as str
                 ;
-                if let Some(max_per_line) = max_bytes {
-                    if bytes_per_line == max_per_line {
-                        break;
-                    }
+                if let Some(max_per_line) = max_bytes
+                    && bytes_per_line == max_per_line
+                {
+                    break;
                 }
                 if remaining_width <= 3 {
                     break;

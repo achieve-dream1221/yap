@@ -327,7 +327,7 @@ impl History {
         }
     }
     /// Create a borrowing version of the selected entry if present.
-    fn get_selected(&self) -> Option<HistoryEntry> {
+    fn get_selected(&self) -> Option<HistoryEntry<'_>> {
         self.selected
             .and_then(|index| self.inner.get(index).map(HistoryEntry::as_ref))
     }
@@ -336,7 +336,7 @@ impl History {
     }
     /// Scroll through history, returning an enum containing a reference to the
     /// (potentially-newly) selected element.
-    fn scroll(&mut self, up: bool) -> Option<HistoryEntry> {
+    fn scroll(&mut self, up: bool) -> Option<HistoryEntry<'_>> {
         if self.inner.is_empty() {
             return None;
         }
@@ -392,7 +392,7 @@ impl<'a> HistoryEntry<'a> {
         }
     }
 
-    pub fn as_ref(&self) -> HistoryEntry {
+    pub fn as_ref(&self) -> HistoryEntry<'_> {
         match self {
             HistoryEntry::Text(text) => HistoryEntry::Text(Cow::Borrowed(text.as_ref())),
             HistoryEntry::Bytes(bytes) => HistoryEntry::Bytes(Cow::Borrowed(bytes.as_ref())),

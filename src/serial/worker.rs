@@ -603,8 +603,8 @@ impl SerialWorker {
             };
 
             // Loose check
-            if reconnections == Reconnections::LooseChecks {
-                if let Some(port) = current_ports
+            if reconnections == Reconnections::LooseChecks
+                && let Some(port) = current_ports
                     .iter()
                     // Filtering out ports that didn't change across scans
                     .filter(|p| !self.scan_snapshot.contains(p))
@@ -618,30 +618,28 @@ impl SerialWorker {
                         }
                         _ => false,
                     })
-                {
-                    info!(
-                        "[NON-STRICT] Connecting to similar USB device with port: {}",
-                        port.port_name
-                    );
-                    std::thread::sleep(Duration::from_secs(1));
-                    self.connect_to_port(port, Some(ReconnectType::UsbLoose))?;
-                    return Ok(());
-                };
-            }
+            {
+                info!(
+                    "[NON-STRICT] Connecting to similar USB device with port: {}",
+                    port.port_name
+                );
+                std::thread::sleep(Duration::from_secs(1));
+                self.connect_to_port(port, Some(ReconnectType::UsbLoose))?;
+                return Ok(());
+            };
         }
 
         // Loose check
-        if reconnections == Reconnections::LooseChecks {
+        if reconnections == Reconnections::LooseChecks
             // Last ditch effort, just try to connect to the same port_name if it's present.
-            if let Some(port) = current_ports
+            && let Some(port) = current_ports
                 .iter()
                 .find(|p| *p.port_name == desired_port.port_name)
-            {
-                info!("Last ditch connect attempt on: {}", port.port_name);
-                std::thread::sleep(Duration::from_secs(1));
-                self.connect_to_port(port, Some(ReconnectType::LastDitch))?;
-                return Ok(());
-            }
+        {
+            info!("Last ditch connect attempt on: {}", port.port_name);
+            std::thread::sleep(Duration::from_secs(1));
+            self.connect_to_port(port, Some(ReconnectType::LastDitch))?;
+            return Ok(());
         }
 
         // {}

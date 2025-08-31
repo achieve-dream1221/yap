@@ -322,7 +322,7 @@ impl BufLine {
 
     /// Returns an owned `ratatui::Line` that borrows from the BufLine's actual text spans,
     /// and appending optional Spans depending on line type and user's rendering/defmt settings.
-    pub fn as_line(&self, rendering: RenderSettings) -> Line {
+    pub fn as_line(&self, rendering: RenderSettings) -> Line<'_> {
         let borrowed_spans = self.value.borrowed_spans_iter();
 
         let dark_gray = Style::new().dark_gray();

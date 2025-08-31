@@ -709,7 +709,7 @@ impl EspFlashHelper {
             }
         }
     }
-    pub fn profiles_table(&self) -> Table {
+    pub fn profiles_table(&self) -> Table<'_> {
         let cell_highlight_style = Style::new().reversed().italic();
 
         let rows: Vec<_> = self

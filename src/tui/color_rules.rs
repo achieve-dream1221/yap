@@ -384,7 +384,7 @@ impl ColorRules {
         for (lit_rule, rule_type) in &self.literal_lines {
             if lit_rule.finder.find(original).is_some() {
                 match rule_type {
-                    RuleType::Style(color) => line.style_all_spans(Style::from(*color)),
+                    RuleType::Style(color) => line.style_all_spans(*color),
                     RuleType::Hide => return None,
                     RuleType::Censor(color_opt) => {
                         line.censor_slice(0..line_len, color_opt.map(Style::from))
@@ -395,7 +395,7 @@ impl ColorRules {
         for (reg_rule, rule_type) in &self.regex_lines {
             if reg_rule.regex.is_match(original) {
                 match rule_type {
-                    RuleType::Style(color) => line.style_all_spans(Style::from(*color)),
+                    RuleType::Style(color) => line.style_all_spans(*color),
                     RuleType::Hide => return None,
                     RuleType::Censor(color_opt) => {
                         line.censor_slice(0..line_len, color_opt.map(Style::from))
@@ -418,7 +418,7 @@ impl ColorRules {
                     for range in ranges_iter {
                         if let Some(new_range) = act_if_possible(line_len, &removed_ranges, range) {
                             // debug!("styling range {range:?} {color}");
-                            line.style_slice(new_range, Style::from(*color));
+                            line.style_slice(new_range, *color);
                         }
                     }
                 }
@@ -449,7 +449,7 @@ impl ColorRules {
                 RuleType::Style(color) => {
                     for range in ranges_iter {
                         if let Some(new_range) = act_if_possible(line_len, &removed_ranges, range) {
-                            line.style_slice(new_range, Style::from(*color));
+                            line.style_slice(new_range, *color);
                         }
                     }
                 }

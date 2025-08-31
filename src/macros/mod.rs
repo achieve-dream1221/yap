@@ -94,7 +94,7 @@ impl Macros {
     pub fn none_visible(&self) -> bool {
         self.visible_len() == 0
     }
-    fn selected_category(&self) -> MacroCategorySelection {
+    fn selected_category(&self) -> MacroCategorySelection<'_> {
         match self.categories_selector.current_index {
             0 => MacroCategorySelection::WithBytes,
             1 => MacroCategorySelection::StringsOnly,
@@ -367,10 +367,10 @@ impl Macros {
                 for ser_macro in deserialized.macros {
                     let (mut tag, content) = ser_macro.into_tag_and_content();
 
-                    if let Some(category) = &mut tag.category {
-                        if category.trim().is_empty() {
-                            tag.category = None;
-                        }
+                    if let Some(category) = &mut tag.category
+                        && category.trim().is_empty()
+                    {
+                        tag.category = None;
                     }
 
                     if let Some(_old) = new_macros.get(&tag) {

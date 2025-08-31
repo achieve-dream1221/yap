@@ -371,7 +371,7 @@ impl RawBuffer {
     /// Returns all unconsumed bytes as-is.
     ///
     /// Returns None if no new bytes are ready.
-    fn next_slice_raw(&self) -> Option<(usize, DelimitedSlice)> {
+    fn next_slice_raw(&self) -> Option<(usize, DelimitedSlice<'_>)> {
         let start_index = self.consumed_up_to;
         let newest = &self.inner[start_index..];
         if newest.is_empty() {
@@ -384,7 +384,10 @@ impl RawBuffer {
     ///
     /// Returns None if either no new bytes are ready or rzcobs sequence is unterminated.
     #[cfg(feature = "defmt")]
-    fn next_slice_checked(&self, defmt_support: DefmtSupport) -> Option<(usize, DelimitedSlice)> {
+    fn next_slice_checked(
+        &self,
+        defmt_support: DefmtSupport,
+    ) -> Option<(usize, DelimitedSlice<'_>)> {
         match defmt_support {
             DefmtSupport::FramedRzcobs => self.next_slice_defmt_rzcobs(true),
             DefmtSupport::UnframedRzcobs => self.next_slice_defmt_rzcobs(false),
@@ -396,7 +399,7 @@ impl RawBuffer {
     /// Returns all unconsumed bytes as uncompressed defmt frame data.
     ///
     /// Returns None if no new bytes are ready.
-    fn next_slice_defmt_raw(&self) -> Option<(usize, DelimitedSlice)> {
+    fn next_slice_defmt_raw(&self) -> Option<(usize, DelimitedSlice<'_>)> {
         let start_index = self.consumed_up_to;
         let newest = &self.inner[start_index..];
         if newest.is_empty() {
@@ -415,7 +418,10 @@ impl RawBuffer {
     /// Otherwise, looks for a subslice ending with 0x00, returning None if not found.
     ///
     /// Returns None if either a defmt frame is incomplete, or there is no new data to give.
-    fn next_slice_defmt_rzcobs(&self, esp_println_framed: bool) -> Option<(usize, DelimitedSlice)> {
+    fn next_slice_defmt_rzcobs(
+        &self,
+        esp_println_framed: bool,
+    ) -> Option<(usize, DelimitedSlice<'_>)> {
         let start_index = self.consumed_up_to;
         let newest = &self.inner[start_index..];
         if newest.is_empty() {

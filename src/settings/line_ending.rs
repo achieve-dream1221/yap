@@ -151,8 +151,8 @@ impl FromStr for TxLineEnding {
 // we just make a dummy that won't be included later anyway.
 #[cfg(not(feature = "macros"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum MacroTxLineEnding {
-    #[allow(dead_code)]
     InheritTx,
 }
 

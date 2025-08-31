@@ -24,23 +24,6 @@ const DEFMT_RECENT_MAX_AMOUNT: usize = 10;
 
 pub const DEFMT_BUTTONS: usize = 2;
 
-#[derive(Debug, PartialEq)]
-pub enum DefmtPopupSelection {
-    SelectElf,
-    RecentElfs,
-    Settings(usize),
-}
-
-impl From<usize> for DefmtPopupSelection {
-    fn from(value: usize) -> Self {
-        match value {
-            0 => Self::SelectElf,
-            1 => Self::RecentElfs,
-            x => Self::Settings(x - 2),
-        }
-    }
-}
-
 /// This intentionally holds no decoders! Those're held by Arcs owned by the Buffer and Logging workers.
 ///
 /// This holds the recently used ELF paths, and the handle to the worker thread that watches for updates to the current ELF.

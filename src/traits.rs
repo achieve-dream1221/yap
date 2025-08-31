@@ -569,66 +569,63 @@ impl<'a> LineMutator<'a> for Line<'a> {
             let (overlap_start, overlap_end) =
                 overlap_region((span_start, span_end), (range.start, range.end));
 
-            if let Some((overlap_start, overlap_end)) = overlap_start.zip(overlap_end) {
-                if overlap_start < overlap_end {
-                    // This span is at least partly in the removal range.
-                    let offset_start = overlap_start - span_start;
-                    let offset_end = overlap_end - span_start;
+            if let Some((overlap_start, overlap_end)) = overlap_start.zip(overlap_end)
+                && overlap_start < overlap_end
+            {
+                // This span is at least partly in the removal range.
+                let offset_start = overlap_start - span_start;
+                let offset_end = overlap_end - span_start;
 
-                    // Doubled up to give borrow checker more detailed info.
-                    match &span.content {
-                        Cow::Borrowed(borrowed) => {
-                            let (pre, _mid, post) =
-                                split_span_content(borrowed, offset_start..offset_end);
+                // Doubled up to give borrow checker more detailed info.
+                match &span.content {
+                    Cow::Borrowed(borrowed) => {
+                        let (pre, _mid, post) =
+                            split_span_content(borrowed, offset_start..offset_end);
 
-                            match (pre.is_empty(), post.is_empty()) {
-                                // empty! easy to handle
-                                (true, true) => span.content = Cow::Borrowed(""),
-                                // pre has content
-                                (false, true) => {
-                                    span.content = Cow::Borrowed(pre);
-                                }
-                                // post has content!
-                                // but this means we can leave now, as nothing else can
-                                // be cut after it
-                                (true, false) => {
-                                    span.content = Cow::Borrowed(post);
-                                    break;
-                                }
-                                // both had content!
-                                // but this means we can just leave early!
-                                (false, false) => {
-                                    span.content = Cow::Borrowed(pre);
-                                    held_output = Some((index + 1, Span::styled(post, span.style)));
-                                    break;
-                                }
+                        match (pre.is_empty(), post.is_empty()) {
+                            // empty! easy to handle
+                            (true, true) => span.content = Cow::Borrowed(""),
+                            // pre has content
+                            (false, true) => {
+                                span.content = Cow::Borrowed(pre);
+                            }
+                            // post has content!
+                            // but this means we can leave now, as nothing else can
+                            // be cut after it
+                            (true, false) => {
+                                span.content = Cow::Borrowed(post);
+                                break;
+                            }
+                            // both had content!
+                            // but this means we can just leave early!
+                            (false, false) => {
+                                span.content = Cow::Borrowed(pre);
+                                held_output = Some((index + 1, Span::styled(post, span.style)));
+                                break;
                             }
                         }
-                        Cow::Owned(owned) => {
-                            let (pre, _mid, post) =
-                                split_span_content(owned, offset_start..offset_end);
+                    }
+                    Cow::Owned(owned) => {
+                        let (pre, _mid, post) = split_span_content(owned, offset_start..offset_end);
 
-                            match (pre.is_empty(), post.is_empty()) {
-                                // empty! easy to handle
-                                (true, true) => span.content = Cow::Borrowed(""),
-                                // pre has content
-                                (false, true) => {
-                                    span.content = Cow::Owned(pre.to_owned());
-                                }
-                                // post has content!
-                                (true, false) => {
-                                    span.content = Cow::Owned(post.to_owned());
-                                    break;
-                                }
-                                // both had content!!
-                                (false, false) => {
-                                    held_output = Some((
-                                        index + 1,
-                                        Span::styled(post.to_owned(), span.style),
-                                    ));
-                                    span.content = Cow::Owned(pre.to_owned());
-                                    break;
-                                }
+                        match (pre.is_empty(), post.is_empty()) {
+                            // empty! easy to handle
+                            (true, true) => span.content = Cow::Borrowed(""),
+                            // pre has content
+                            (false, true) => {
+                                span.content = Cow::Owned(pre.to_owned());
+                            }
+                            // post has content!
+                            (true, false) => {
+                                span.content = Cow::Owned(post.to_owned());
+                                break;
+                            }
+                            // both had content!!
+                            (false, false) => {
+                                held_output =
+                                    Some((index + 1, Span::styled(post.to_owned(), span.style)));
+                                span.content = Cow::Owned(pre.to_owned());
+                                break;
                             }
                         }
                     }
