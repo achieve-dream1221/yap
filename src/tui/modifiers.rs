@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use ratatui::style::Modifier;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct ModifierFromStr {
     inner: Modifier,
 }
@@ -15,6 +15,10 @@ impl FromStr for ModifierFromStr {
         let mut combined_modifier = Modifier::default();
 
         for str in separated {
+            if str.is_empty() {
+                continue;
+            }
+
             let upper = str.to_ascii_uppercase();
             if let Some(parsed) = Modifier::from_name(&upper) {
                 combined_modifier.insert(parsed);

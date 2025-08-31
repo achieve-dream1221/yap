@@ -1,4 +1,4 @@
-use serde_with::{DisplayFromStr, TryFromInto};
+use serde_with::{DisplayFromStr, NoneAsEmptyString, PickFirst, TryFromInto};
 
 use std::{ops::Range, path::Path};
 
@@ -44,9 +44,9 @@ struct LiteralRule {
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone))]
 enum RuleType {
-    Style(Style), // TODO Consider converting Censor into a Style too?
+    Style(Style),
     Hide,
-    Censor(Option<Color>),
+    Censor(Option<Style>),
 }
 #[derive(Debug, serde::Deserialize)]
 struct ColorRulesFile {
@@ -61,7 +61,7 @@ struct ColorRulesFile {
 struct SerializedRegexRule {
     #[serde_as(as = "TryFromInto<String>")]
     rule: Regex,
-    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde_as(as = "PickFirst<(Option<DisplayFromStr>, NoneAsEmptyString)>")]
     #[serde(default)]
     color: Option<Color>,
     #[serde_as(as = "Option<DisplayFromStr>")]
@@ -79,7 +79,7 @@ struct SerializedRegexRule {
 #[derive(Debug, serde::Deserialize)]
 struct SerializedLiteralRule {
     rule: CompactString,
-    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde_as(as = "PickFirst<(Option<DisplayFromStr>, NoneAsEmptyString)>")]
     #[serde(default)]
     color: Option<Color>,
     #[serde_as(as = "Option<DisplayFromStr>")]
@@ -130,18 +130,30 @@ impl ColorRules {
 
         for rule in regex {
             let regex = rule.rule;
-            let modifier: Modifier = rule.modifier.unwrap_or_default().into();
+
+            let rule_style = if rule.color.is_some()
+                || rule
+                    .modifier
+                    // Ignore any impotent modifiers
+                    .is_some_and(|m| m != ModifierFromStr::default())
+            {
+                let modifier = rule.modifier.map(Modifier::from).unwrap_or_default();
+                let style = Style {
+                    fg: rule.color,
+                    add_modifier: modifier,
+                    ..Default::default()
+                };
+                Some(style)
+            } else {
+                None
+            };
+
             let rule_type = {
                 if rule.hide {
                     RuleType::Hide
                 } else if rule.censor {
-                    RuleType::Censor(rule.color)
-                } else if let Some(color) = rule.color {
-                    let style = Style {
-                        fg: Some(color),
-                        add_modifier: modifier,
-                        ..Default::default()
-                    };
+                    RuleType::Censor(rule_style)
+                } else if let Some(style) = rule_style {
                     RuleType::Style(style)
                 } else {
                     return Err(ColorRuleLoadError::UnspecifiedRule(
@@ -158,18 +170,29 @@ impl ColorRules {
         }
 
         for rule in literal {
-            let modifier: Modifier = rule.modifier.unwrap_or_default().into();
+            let rule_style = if rule.color.is_some()
+                || rule
+                    .modifier
+                    // Ignore any impotent modifiers
+                    .is_some_and(|m| m != ModifierFromStr::default())
+            {
+                let modifier = rule.modifier.map(Modifier::from).unwrap_or_default();
+                let style = Style {
+                    fg: rule.color,
+                    add_modifier: modifier,
+                    ..Default::default()
+                };
+                Some(style)
+            } else {
+                None
+            };
+
             let rule_type = {
                 if rule.hide {
                     RuleType::Hide
                 } else if rule.censor {
-                    RuleType::Censor(rule.color)
-                } else if let Some(color) = rule.color {
-                    let style = Style {
-                        fg: Some(color),
-                        add_modifier: modifier,
-                        ..Default::default()
-                    };
+                    RuleType::Censor(rule_style)
+                } else if let Some(style) = rule_style {
                     RuleType::Style(style)
                 } else {
                     return Err(ColorRuleLoadError::UnspecifiedRule(rule.rule.to_string()));
