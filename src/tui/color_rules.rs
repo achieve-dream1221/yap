@@ -6,7 +6,7 @@ use compact_str::CompactString;
 use fs_err as fs;
 use memchr::memmem::Finder;
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::Line,
 };
 use regex::bytes::Regex;
@@ -16,9 +16,12 @@ use tracing::info;
 use crate::{
     buffer::RangeSlice,
     traits::{LineHelpers, LineMutator},
+    tui::modifiers::ModifierFromStr,
 };
 
 pub const COLOR_RULES_PATH: &str = "yap_colors.toml";
+
+// TODO maybe extract line number from toml for priority? or signed priority index field might be easier...
 
 #[derive(Debug, Default)]
 #[cfg_attr(test, derive(Clone))]
@@ -41,7 +44,7 @@ struct LiteralRule {
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone))]
 enum RuleType {
-    Color(Color),
+    Style(Style), // TODO Consider converting Censor into a Style too?
     Hide,
     Censor(Option<Color>),
 }
@@ -61,6 +64,9 @@ struct SerializedRegexRule {
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
     color: Option<Color>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default)]
+    modifier: Option<ModifierFromStr>,
     #[serde(default)]
     line: bool,
     #[serde(default)]
@@ -76,6 +82,9 @@ struct SerializedLiteralRule {
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
     color: Option<Color>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default)]
+    modifier: Option<ModifierFromStr>,
     #[serde(default)]
     line: bool,
     #[serde(default)]
@@ -90,7 +99,7 @@ pub enum ColorRuleLoadError {
     FileRead(#[source] std::io::Error),
     #[error("failed saving to color rules file")]
     FileWrite(#[source] std::io::Error),
-    #[error("invalid color rule format")]
+    #[error("invalid color rule")]
     Deser(#[from] toml::de::Error),
     #[error("rule must either be hiding, censoring, or coloring: \"{0}\"")]
     UnspecifiedRule(String),
@@ -121,13 +130,19 @@ impl ColorRules {
 
         for rule in regex {
             let regex = rule.rule;
+            let modifier: Modifier = rule.modifier.unwrap_or_default().into();
             let rule_type = {
                 if rule.hide {
                     RuleType::Hide
                 } else if rule.censor {
                     RuleType::Censor(rule.color)
                 } else if let Some(color) = rule.color {
-                    RuleType::Color(color)
+                    let style = Style {
+                        fg: Some(color),
+                        add_modifier: modifier,
+                        ..Default::default()
+                    };
+                    RuleType::Style(style)
                 } else {
                     return Err(ColorRuleLoadError::UnspecifiedRule(
                         regex.as_str().to_owned(),
@@ -143,13 +158,19 @@ impl ColorRules {
         }
 
         for rule in literal {
+            let modifier: Modifier = rule.modifier.unwrap_or_default().into();
             let rule_type = {
                 if rule.hide {
                     RuleType::Hide
                 } else if rule.censor {
                     RuleType::Censor(rule.color)
                 } else if let Some(color) = rule.color {
-                    RuleType::Color(color)
+                    let style = Style {
+                        fg: Some(color),
+                        add_modifier: modifier,
+                        ..Default::default()
+                    };
+                    RuleType::Style(style)
                 } else {
                     return Err(ColorRuleLoadError::UnspecifiedRule(rule.rule.to_string()));
                 }
@@ -363,7 +384,7 @@ impl ColorRules {
         for (lit_rule, rule_type) in &self.literal_lines {
             if lit_rule.finder.find(original).is_some() {
                 match rule_type {
-                    RuleType::Color(color) => line.style_all_spans(Style::from(*color)),
+                    RuleType::Style(color) => line.style_all_spans(Style::from(*color)),
                     RuleType::Hide => return None,
                     RuleType::Censor(color_opt) => {
                         line.censor_slice(0..line_len, color_opt.map(Style::from))
@@ -374,7 +395,7 @@ impl ColorRules {
         for (reg_rule, rule_type) in &self.regex_lines {
             if reg_rule.regex.is_match(original) {
                 match rule_type {
-                    RuleType::Color(color) => line.style_all_spans(Style::from(*color)),
+                    RuleType::Style(color) => line.style_all_spans(Style::from(*color)),
                     RuleType::Hide => return None,
                     RuleType::Censor(color_opt) => {
                         line.censor_slice(0..line_len, color_opt.map(Style::from))
@@ -393,7 +414,7 @@ impl ColorRules {
                 .filter_map(|oc_idx| visibility.get_corrected_range(oc_idx..oc_idx + rule_len));
 
             match rule_type {
-                RuleType::Color(color) => {
+                RuleType::Style(color) => {
                     for range in ranges_iter {
                         if let Some(new_range) = act_if_possible(line_len, &removed_ranges, range) {
                             // debug!("styling range {range:?} {color}");
@@ -425,7 +446,7 @@ impl ColorRules {
                 .find_iter(original)
                 .filter_map(|occ| visibility.get_corrected_range(occ.start()..occ.end()));
             match rule_type {
-                RuleType::Color(color) => {
+                RuleType::Style(color) => {
                     for range in ranges_iter {
                         if let Some(new_range) = act_if_possible(line_len, &removed_ranges, range) {
                             line.style_slice(new_range, Style::from(*color));

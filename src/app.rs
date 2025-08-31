@@ -57,7 +57,7 @@ use crate::{
     traits::{FirstChars, LastIndex, LineHelpers, RequiresPort, ToggleBool},
     tui::{
         POPUP_MENU_SELECTOR_COUNT, centered_rect_size,
-        color_rules::{COLOR_RULES_PATH, ColorRules},
+        color_rules::{COLOR_RULES_PATH, ColorRuleLoadError, ColorRules},
         prompts::{
             AttemptReconnectPrompt, DisconnectPrompt, IgnorePortByNamePrompt,
             IgnoreUsbDevicePrompt, PromptKeybind, PromptTable,
@@ -1825,8 +1825,12 @@ impl App {
 
             A::Base(BaseAction::ReloadColors) => {
                 if let Err(e) = self.buffer.reload_color_rules() {
+                    let err_str: Cow<'_, str> = match &e {
+                        ColorRuleLoadError::Deser(deser_err) => deser_err.message().into(),
+                        err => err.to_string().into(),
+                    };
                     self.notifs.notify_str(
-                        format!("Error reloading Color Rules: {e}! See log for details."),
+                        format!("Error reloading Color Rules: {err_str}! See log for details."),
                         Color::Red,
                     );
                     let report = color_eyre::Report::new(e);

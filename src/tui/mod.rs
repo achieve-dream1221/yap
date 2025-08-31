@@ -9,6 +9,7 @@ pub mod logging;
 
 // pub mod buffer;
 pub mod color_rules;
+pub mod modifiers;
 pub mod prompts;
 mod show_keybinds;
 pub mod single_line_selector;
