@@ -1192,6 +1192,7 @@ impl PortStatus {
         Self {
             signals: SerialSignals {
                 dtr: settings.dtr_on_connect,
+                rts: settings.rts_on_connect,
                 ..Default::default()
             },
             ..Default::default()
@@ -1211,6 +1212,7 @@ impl PortStatus {
             current_port: None,
             signals: SerialSignals {
                 dtr: settings.dtr_on_connect,
+                rts: settings.rts_on_connect,
                 ..Default::default()
             },
         }

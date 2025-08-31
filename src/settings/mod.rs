@@ -519,6 +519,10 @@ pub struct PortSettings {
     /// Assert DTR to this state on port connect (and reconnect).
     #[table(rename = "DTR on Connect")]
     pub dtr_on_connect: bool,
+    // TODO, make an enum for Untouched, Set True, Set False
+    /// Assert RTS to this state on port connect (and reconnect).
+    #[table(rename = "RTS on Connect")]
+    pub rts_on_connect: bool,
 
     /// Limit output to 8kbps, regardless of baud. Some devices will overwrite unread data if sent too fast.
     #[table(rename = "Limit TX Speed")]
@@ -575,6 +579,7 @@ impl Default for PortSettings {
             #[cfg(feature = "macros")]
             macro_line_ending: MacroTxLineEnding::InheritTx,
             dtr_on_connect: true,
+            rts_on_connect: true,
             limit_tx_speed: true,
             reconnections: Reconnections::LooseChecks,
         }

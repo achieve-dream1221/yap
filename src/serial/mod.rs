@@ -125,7 +125,7 @@ impl PrintablePortInfo for SerialPortInfo {
 pub struct SerialSignals {
     // Host-controlled
     /// RTS (Request To Send)
-    pub rts: bool,
+    pub rts: bool, // TODO maybe make an option if leaving entirely untouched (for unknown state)?
     /// DTR (Data Terminal Ready)
     pub dtr: bool,
     // Slave-controlled, polled periodically
