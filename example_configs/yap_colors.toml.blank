@@ -1,58 +1,77 @@
-# Place as many Color Rules here as you like!
-# Ensure each one starts with [[literal]] or [[regex]] to denote the rule type.
+# Place as many Text Style rules here as you like!
 
-# Color Highlight Rule Example: case-insensitive match
-# Example
+# Rules match a specific sequence of recieved bytes (via an exact text literal match, or regex pattern),
+# and apply either text coloring, style modifying, censoring (replace all _bytes_ with *), or hiding (omit entirely) operations
+# or some combination therein, to the matched bytes.
+
+# Each one starts with [[literal]] or [[regex]] to denote how the rules match incoming text.
+
+# Regex pattern matching is powered by the `regex` crate's `bytes` module, see it's documentation for capabilities and limitations:
+# https://docs.rs/regex/latest/regex/bytes/index.html
+
+## Text Style Rule Example: case-insensitive match
+## Example
 # [[regex]] ## type of rule (regex/literal)
 # rule = '(?i)lorem' ## rule contents
-# line = true ## affect the whole line if any match found within
-# color = "cyan" ## ansi/hex color to highlight matches (optional if any below used)
+# line = true ## set the whole line to this style if any match found within
+# color = "cyan" ## ansi/hex color to highlight matches (optional if censor or hide enabled)
+# modifier = "cyan" ## text style modifier(s) to apply to matches (optional if censor or hide enabled, aliased to `modifiers`)
 # censor = false ## if true, replace the matched content (or whole line) with `*`
-# hide = false ## if true, remove the matched content (or whole line) entirely.
+# hide = false ## if true, remove the matched content (or whole line) entirely
 
 # Note: hidden/censored contents are still saved to log files raw.
 
-# Example: Regex, color all instances of "lorem" cyan, case-insensitive
+## Example: Regex, color all instances of "lorem" cyan, case-insensitive
 # [[regex]]
 # rule = '(?i)lorem'
 # color = "cyan"
 
-# Example: Literal, color entire line red if "STOP" is found, case-sensitive.
+## Example: Literal, color entire line red and underline it if "STOP" is found, case-sensitive.
 # [[literal]]
 # rule = "STOP"
 # color = "Red"
+# modifier = "underlined"
 # line = true
+
+## Example: Literal, reverse of any instance of "Paprika", and also blink slowly (speed is determined by your terminal's settings).
+# [[literal]]
+# rule = "Paprika"
+# modifier = "slow_blink;reversed"
 
 # Supported colors can be seen here:
 # https://docs.rs/ratatui/latest/ratatui/style/enum.Color.html
 
+# Supported modifiers can be seen here:
+# https://docs.rs/ratatui/latest/ratatui/style/struct.Modifier.html
+# Multiple modifiers can be specified at once when separated with commas or semicolons!
+
 ## OpenShock Log Line Highlighting Examples
 
-# Verbose
+## Verbose
 # [[regex]]
 # rule = '^\[\s*\d+\]\[V\]\[[^\]:]+(?::\d+)?\]'
 # color = "magenta"
 # line = true
 
-# Debug
+## Debug
 # [[regex]]
 # rule = '^\[\s*\d+\]\[D\]\[[^\]:]+(?::\d+)?\]'
 # color = "blue"
 # line = true
 
-# Info
+## Info
 # [[regex]]
 # rule = '^\[\s*\d+\]\[I\]\[[^\]:]+(?::\d+)?\]'
 # color = "green"
 # line = true
 
-# Warning
+## Warning
 # [[regex]]
 # rule = '^\[\s*\d+\]\[W\]\[[^\]:]+(?::\d+)?\]'
 # color = "yellow"
 # line = true
 
-# Error
+## Error
 # [[regex]]
 # rule = '^\[\s*\d+\]\[E\]\[[^\]:]+(?::\d+)?\]'
 # color = "red"
@@ -60,12 +79,12 @@
 
 ## Misc Examples
 
-# Censor scanned networks from OpenShock captive portal
+## Censor scanned networks from OpenShock captive portal
 # [[regex]]
 # rule = '[Nn]etwork\s+(.+?)\s*\(([0-9A-Fa-f:]+)\)'
 # censor = true
 
-# # \x1B[K
+## \x1B[K
 # [[regex]]
 # rule = '(?-u)\x1b\x5b\x4b'
 # color = "red"

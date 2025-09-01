@@ -1,6 +1,6 @@
-# Use --print-actions (-p) to see all built-in actions and more help!
+## Use --print-actions (-p) to see all built-in actions and more help!
 
-# Place all bindings under this line!
+## Place all bindings under this line!
 [keybindings]
 
 # ctrl-o = "toggle-dtr"
@@ -21,7 +21,7 @@
 # ctrl-k = "show-keybinds"
 # 'ctrl-/' = "show-keybinds"
 
-# You can also bind Macros to a keybind!
+## You can also bind Macros to a keybind!
 # F19 = "Restart"
 # ctrl-s = "Shocker Vibrate (ID 12345, 0.5s)"
 # ctrl-g = "OpenShock Setup|Echo Off"
@@ -32,7 +32,7 @@
 #     "OpenShock Setup|Factory Reset",
 # ]
 
-# Or espflash profiles!
+## Or espflash profiles!
 # F18 = [
 #     "Core v2 1.4.0",
 #     "pause_ms:1000",

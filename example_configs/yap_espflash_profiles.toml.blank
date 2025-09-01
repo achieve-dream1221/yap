@@ -1,7 +1,7 @@
 # Place as many espflash profiles here as you like!
 # Ensure each one starts with [[bin]] or [[elf]] to denote the profile type.
 
-# .bin example
+## .bin example
 # [[bin]] ## type of profile (bin/elf)
 # name = "PlatformIO Core v2 Build" ## name in macros and UI
 # 0x0 = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\OpenShock\.pio\build\OpenShock-Core-V2\bootloader.bin' ## provide an offset then a binary
@@ -15,7 +15,7 @@
 # no_skip = false ## (default: false) don't attempt to skip sending segment by checking on-device flash checksum first
 # defmt_elf_path = "" ## (default: empty, requires defmt feature) load designated .elf into defmt decoder while flashing device with binaries
 
-# .elf example
+## .elf example
 # [[elf]] ## type of profile (bin/elf)
 # name = "PIO Elf Core v2"
 # path = 'C:\Users\nullstalgia\Documents\PlatformIO\Projects\OpenShock\.pio\build\OpenShock-Core-V2\app.elf' ## path to .elf to flash

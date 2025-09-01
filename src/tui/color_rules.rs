@@ -66,6 +66,7 @@ struct SerializedRegexRule {
     color: Option<Color>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
+    #[serde(alias = "modifiers")]
     modifier: Option<ModifierFromStr>,
     #[serde(default)]
     line: bool,
@@ -84,6 +85,7 @@ struct SerializedLiteralRule {
     color: Option<Color>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
+    #[serde(alias = "modifiers")]
     modifier: Option<ModifierFromStr>,
     #[serde(default)]
     line: bool,
