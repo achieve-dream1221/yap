@@ -26,10 +26,14 @@
 # Showcase
 
 ### Auto-Reconnection Example:
-![Auto-Reconnection Example](https://raw.github.com/nullstalgia/yap/master/demos/Auto-Reconnection_Showcase.mp4)
+https://github.com/user-attachments/assets/5aa0e07c-6e82-489d-832c-88892c7569e3
+
+
 
 ### espflash Flashing Example:
-![espflash Flashing Example](https://raw.github.com/nullstalgia/yap/master/demos/espflash_Showcase.mp4)
+https://github.com/user-attachments/assets/3290551b-be70-44a8-82cc-33d28056fff6
+
+
 
 # Pre-compiled Downloads
 
